@@ -170,7 +170,6 @@
       if (document.getElementById("v9-live-strip")) return;
 
       const section = document.createElement("section");
-
       section.id = "v9-live-strip";
       section.className = "v9-strip";
 
@@ -186,13 +185,11 @@
         </div>
 
         <div class="v9-cards">
-
           ${items.map(x => `
             <a
               class="v9-card"
               href="/trend/${encodeURIComponent(x.slug)}"
             >
-
               <span class="v9-badge ${badgeClass(x.velocity_label)}">
                 ${x.velocity_label || "観測中"}
               </span>
@@ -202,7 +199,6 @@
               </div>
 
               <div class="v9-metrics">
-
                 <div class="v9-metric">
                   <b>${fmtDelta(x.velocity_30m)}</b>
                   <span>30 MIN</span>
@@ -217,16 +213,13 @@
                   <b>${fmtDelta(x.velocity_3h)}</b>
                   <span>3 HOURS</span>
                 </div>
-
               </div>
 
               <div class="v9-source">
                 FIRST SIGNAL: ${x.first_source || "観測中"}
               </div>
-
             </a>
           `).join("")}
-
         </div>
       `;
 
