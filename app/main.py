@@ -620,6 +620,7 @@ def cautiously_tune_model(c):
 
 
 GOOGLE_TRENDS_RSS = "https://trends.google.com/trending/rss?geo=JP"
+GOOGLE_TRENDS_RSS_FALLBACK = "https://trends.google.co.jp/trending/rss?geo=JP"
 WIKIMEDIA_TOP = "https://wikimedia.org/api/rest_v1/metrics/pageviews/top/ja.wikipedia.org/all-access/{year}/{month}/{day}"
 
 def _clean_keyword(s: str) -> str:
@@ -696,73 +697,176 @@ def upsert_real_trend(c, keyword, source_name, source_score, raw_metric, source_
     ))
     return True
 
-def collect_google_trends(c, ts):
-    source="google_trends_jp"
+def _collector_headers(source="generic"):
+    # Browser-like headers improve compatibility with public endpoints.
+    # No cookies or authentication are used.
+    base = {
+        "User-Agent": "Mozilla/5.0 (compatible; BUZZ-NOW/1.0; +https://buzz-now.onrender.com)",
+        "Accept-Language": "ja,en-US;q=0.8,en;q=0.6",
+        "Cache-Control": "no-cache",
+    }
+    if source == "rss":
+        base["Accept"] = "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.7"
+    else:
+        base["Accept"] = "application/json, */*;q=0.8"
+    return base
+
+
+def _short_preview(response):
     try:
-        r=httpx.get(
-            GOOGLE_TRENDS_RSS,
-            timeout=12,
-            headers={"User-Agent":"BUZZ-NOW/0.7 trend-research"}
-        )
-        r.raise_for_status()
-        feed=feedparser.parse(r.content)
-        entries=feed.entries[:20]
-        count=0
-        total=max(1,len(entries))
-        for idx,e in enumerate(entries):
-            kw=_clean_keyword(getattr(e,"title",""))
-            if not kw:
+        s = response.text.replace("\n", " ").replace("\r", " ").strip()
+        return s[:160]
+    except Exception:
+        return ""
+
+
+def collect_google_trends(c, ts):
+    source = "google_trends_jp"
+    endpoints = [
+        GOOGLE_TRENDS_RSS,
+        GOOGLE_TRENDS_RSS_FALLBACK,
+    ]
+    errors = []
+
+    for url in endpoints:
+        try:
+            r = httpx.get(
+                url,
+                timeout=15,
+                follow_redirects=True,
+                headers=_collector_headers("rss"),
+            )
+            if r.status_code != 200:
+                errors.append(f"{r.status_code} {url} {_short_preview(r)}")
+                logger.warning("Google Trends collector HTTP %s url=%s preview=%s",
+                               r.status_code, url, _short_preview(r))
                 continue
-            # RSS rank is transformed into a normalized signal.
-            score=max(52, 98 - idx * (44/max(1,total-1)))
-            ext=str(getattr(e,"id","") or getattr(e,"link","") or kw)
-            link=str(getattr(e,"link","") or GOOGLE_TRENDS_RSS)
-            if upsert_real_trend(c,kw,"Google Trends",score,total-idx,link,ext,ts):
-                count+=1
-        _collector_state(c,source,"ok","Google Trends RSS取得成功",count,ts)
-        return count
-    except Exception as e:
-        _collector_state(c,source,"error",str(e)[:220],0,ts)
-        return 0
+
+            feed = feedparser.parse(r.content)
+            entries = list(feed.entries[:30])
+
+            if not entries:
+                content_type = r.headers.get("content-type", "")
+                bozo = getattr(feed, "bozo", 0)
+                err = f"0 entries / content-type={content_type} / bozo={bozo} / preview={_short_preview(r)}"
+                errors.append(err)
+                logger.warning("Google Trends RSS parsed zero entries: %s", err)
+                continue
+
+            count = 0
+            total = max(1, len(entries))
+            for idx, e in enumerate(entries):
+                kw = _clean_keyword(getattr(e, "title", ""))
+                if not kw:
+                    continue
+                score = max(52, 98 - idx * (44 / max(1, total - 1)))
+                ext = str(getattr(e, "id", "") or getattr(e, "link", "") or kw)
+                link = str(getattr(e, "link", "") or url)
+                if upsert_real_trend(c, kw, "Google Trends", score, total - idx, link, ext, ts):
+                    count += 1
+
+            if count > 0:
+                msg = f"Google Trends RSS取得成功 / {count}件 / {url}"
+                _collector_state(c, source, "ok", msg, count, ts)
+                logger.info(msg)
+                return count
+
+            errors.append(f"parsed {len(entries)} entries but inserted 0 / {url}")
+
+        except Exception as e:
+            msg = f"{type(e).__name__}: {e}"
+            errors.append(msg)
+            logger.exception("Google Trends collector failed url=%s", url)
+
+    final = " | ".join(errors)[-900:] if errors else "unknown error"
+    _collector_state(c, source, "error", final, 0, ts)
+    logger.error("Google Trends collector exhausted fallbacks: %s", final)
+    return 0
+
 
 def collect_wikimedia(c, ts):
     from datetime import datetime, timedelta, timezone
-    source="wikimedia_ja"
-    try:
-        # Wikimedia daily top data is most reliably available for the previous UTC day.
-        d=datetime.now(timezone.utc)-timedelta(days=1)
-        url=WIKIMEDIA_TOP.format(year=d.strftime("%Y"),month=d.strftime("%m"),day=d.strftime("%d"))
-        r=httpx.get(
-            url,
-            timeout=12,
-            headers={"User-Agent":"BUZZ-NOW/0.7 trend-research"}
+    source = "wikimedia_ja"
+
+    # Try yesterday first, then two days ago in case the daily dump is delayed.
+    days = [
+        datetime.now(timezone.utc) - timedelta(days=1),
+        datetime.now(timezone.utc) - timedelta(days=2),
+    ]
+    errors = []
+
+    for d in days:
+        url = WIKIMEDIA_TOP.format(
+            year=d.strftime("%Y"),
+            month=d.strftime("%m"),
+            day=d.strftime("%d"),
         )
-        r.raise_for_status()
-        payload=r.json()
-        articles=(payload.get("items") or [{}])[0].get("articles") or []
-        # Exclude obvious system/navigation pages.
-        blocked={"メインページ","特別:検索","Special:Search","Main_Page"}
-        clean=[a for a in articles if _clean_keyword(a.get("article","")) not in blocked][:30]
-        max_views=max([int(a.get("views",0) or 0) for a in clean] or [1])
-        count=0
-        for idx,a in enumerate(clean):
-            kw=_clean_keyword(a.get("article",""))
-            views=int(a.get("views",0) or 0)
-            if not kw:
+        try:
+            r = httpx.get(
+                url,
+                timeout=15,
+                follow_redirects=True,
+                headers=_collector_headers("json"),
+            )
+            if r.status_code != 200:
+                errors.append(f"{r.status_code} {d.strftime('%Y-%m-%d')} {_short_preview(r)}")
+                logger.warning("Wikimedia collector HTTP %s url=%s preview=%s",
+                               r.status_code, url, _short_preview(r))
                 continue
-            # Mix rank and relative views so one abnormal page does not dominate.
-            rank_signal=max(45, 88 - idx*1.2)
-            view_signal=min(100, (views/max_views)*100)
-            score=round(rank_signal*0.7 + view_signal*0.3,1)
-            page_url="https://ja.wikipedia.org/wiki/"+quote(str(a.get("article","")).replace(" ","_"))
-            ext=f"{d.strftime('%Y%m%d')}:{a.get('article','')}"
-            if upsert_real_trend(c,kw,"Wikimedia Pageviews",score,views,page_url,ext,ts):
-                count+=1
-        _collector_state(c,source,"ok","Wikimedia Pageviews取得成功",count,ts)
-        return count
-    except Exception as e:
-        _collector_state(c,source,"error",str(e)[:220],0,ts)
-        return 0
+
+            payload = r.json()
+            items = payload.get("items") or []
+            articles = (items[0].get("articles") if items else []) or []
+
+            if not articles:
+                errors.append(f"200 but no articles {d.strftime('%Y-%m-%d')}")
+                logger.warning("Wikimedia returned no articles for %s", d.strftime("%Y-%m-%d"))
+                continue
+
+            blocked = {"メインページ", "特別:検索", "Special:Search", "Main Page", "Main_Page"}
+            clean = [
+                a for a in articles
+                if _clean_keyword(a.get("article", "")) not in blocked
+            ][:50]
+
+            max_views = max([int(a.get("views", 0) or 0) for a in clean] or [1])
+            count = 0
+
+            for idx, a in enumerate(clean):
+                kw = _clean_keyword(a.get("article", ""))
+                views = int(a.get("views", 0) or 0)
+                if not kw:
+                    continue
+                rank_signal = max(45, 88 - idx * 1.0)
+                view_signal = min(100, (views / max_views) * 100)
+                score = round(rank_signal * 0.7 + view_signal * 0.3, 1)
+                page_url = "https://ja.wikipedia.org/wiki/" + quote(
+                    str(a.get("article", "")).replace(" ", "_")
+                )
+                ext = f"{d.strftime('%Y%m%d')}:{a.get('article','')}"
+                if upsert_real_trend(
+                    c, kw, "Wikimedia Pageviews", score, views,
+                    page_url, ext, ts
+                ):
+                    count += 1
+
+            if count > 0:
+                msg = f"Wikimedia Pageviews取得成功 / {count}件 / {d.strftime('%Y-%m-%d')}"
+                _collector_state(c, source, "ok", msg, count, ts)
+                logger.info(msg)
+                return count
+
+            errors.append(f"articles={len(articles)} but inserted 0 {d.strftime('%Y-%m-%d')}")
+
+        except Exception as e:
+            msg = f"{type(e).__name__}: {e}"
+            errors.append(msg)
+            logger.exception("Wikimedia collector failed url=%s", url)
+
+    final = " | ".join(errors)[-900:] if errors else "unknown error"
+    _collector_state(c, source, "error", final, 0, ts)
+    logger.error("Wikimedia collector exhausted fallbacks: %s", final)
+    return 0
 
 
 def normalize_match_key(keyword: str) -> str:
@@ -1374,7 +1478,29 @@ def trend_predictions(slug: str):
 
 @app.post("/api/collect-now")
 def collect_now():
-    return {"ok":True,"result":collect_real_sources()}
+    result = collect_real_sources()
+    with db() as c:
+        states = c.execute("""
+          SELECT source,last_status,last_message,last_count,last_run_at
+          FROM collector_state ORDER BY source
+        """).fetchall()
+    return {
+      "ok": result.get("total", 0) > 0,
+      "result": result,
+      "collectors": [dict(x) for x in states]
+    }
+
+@app.get("/api/collector-debug")
+def collector_debug():
+    with db() as c:
+        states = c.execute("""
+          SELECT source,last_status,last_message,last_count,last_run_at
+          FROM collector_state ORDER BY source
+        """).fetchall()
+    return {
+      "real_data_mode": REAL_DATA_MODE,
+      "states": [dict(x) for x in states]
+    }
 
 @app.get("/api/collectors")
 def collectors():
