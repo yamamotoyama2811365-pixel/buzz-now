@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from pathlib import Path
 from urllib.parse import quote
+from xml.sax.saxutils import escape as xml_escape
 
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
@@ -1920,22 +1921,48 @@ def sitemap():
             ORDER BY updated_at DESC
         """).fetchall()
 
+    # Google向けに sitemap 内のURLをASCII形式へ正規化。
+    # 日本語スラッグはUTF-8でpercent-encodeし、XML特殊文字もescapeする。
+    home_url = xml_escape(f"{SITE_URL}/")
     urls = [f"""  <url>
-    <loc>{SITE_URL}/</loc>
+    <loc>{home_url}</loc>
   </url>"""]
 
     for r in rows:
-        lastmod = r["updated_at"][:10]
-        urls.append(f"""  <url>
-    <loc>{SITE_URL}/trend/{r['slug']}</loc>
+        raw_slug = str(r["slug"] or "").strip()
+        if not raw_slug:
+            continue
+
+        encoded_slug = quote(raw_slug, safe="-._~")
+        loc = xml_escape(f"{SITE_URL}/trend/{encoded_slug}")
+
+        updated_at = str(r["updated_at"] or "")
+        lastmod = updated_at[:10] if re.fullmatch(r"\d{4}-\d{2}-\d{2}.*", updated_at) else ""
+
+        if lastmod:
+            urls.append(f"""  <url>
+    <loc>{loc}</loc>
     <lastmod>{lastmod}</lastmod>
+  </url>""")
+        else:
+            urls.append(f"""  <url>
+    <loc>{loc}</loc>
   </url>""")
 
     xml = """<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 %s
-</urlset>""" % "\n".join(urls)
-    return PlainTextResponse(xml, media_type="application/xml")
+</urlset>
+""" % "\n".join(urls)
+
+    return PlainTextResponse(
+        content=xml,
+        media_type="application/xml",
+        headers={
+            "Cache-Control": "public, max-age=300",
+            "X-Robots-Tag": "noindex",
+        },
+    )
 
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
