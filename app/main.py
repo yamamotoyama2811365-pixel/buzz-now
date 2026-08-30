@@ -4,7 +4,7 @@ import logging
 import re
 import sqlite3
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from pathlib import Path
 from urllib.parse import quote
