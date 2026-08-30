@@ -1,0 +1,1620 @@
+
+import os
+import logging
+import re
+import sqlite3
+import unicodedata
+from datetime import datetime, timezone
+from apscheduler.schedulers.background import BackgroundScheduler
+from pathlib import Path
+from urllib.parse import quote
+
+from fastapi import FastAPI, Request, Form, HTTPException
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+BASE = Path(__file__).resolve().parent.parent
+DB_PATH = BASE / "buzznow.db"
+SITE_URL = os.getenv("SITE_URL", "http://localhost:8000").rstrip("/")
+SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
+
+REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
+REAL_DATA_INTERVAL_MINUTES = int(os.getenv("REAL_DATA_INTERVAL_MINUTES","30"))
+
+DEMO_MODE = os.getenv("DEMO_MODE", "true").lower() == "true"
+DEMO_INTERVAL_SECONDS = int(os.getenv("DEMO_INTERVAL_SECONDS", "30"))
+
+logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logger=logging.getLogger("buzz-now")
+
+app = FastAPI(title=SITE_NAME)
+app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
+templates = Jinja2Templates(directory=BASE / "templates")
+
+
+def db():
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def slugify(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text).strip().lower()
+    text = re.sub(r"\s+", "-", text)
+    text = re.sub(r"[^\w\-ぁ-んァ-ヶ一-龠々ー]", "", text)
+    text = re.sub(r"-+", "-", text).strip("-")
+    return text or quote(text, safe="")
+
+
+def init_db():
+    with db() as c:
+        c.executescript("""
+        CREATE TABLE IF NOT EXISTS trends(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            keyword TEXT UNIQUE NOT NULL,
+            slug TEXT UNIQUE NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            why_now TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT '総合',
+            pre_buzz_score REAL NOT NULL DEFAULT 0,
+            buzz_score REAL NOT NULL DEFAULT 0,
+            acceleration REAL NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT '🌱 前兆',
+            first_detected_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            is_indexable INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS related_keywords(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trend_id INTEGER NOT NULL,
+            keyword TEXT NOT NULL,
+            UNIQUE(trend_id, keyword)
+        );
+
+        CREATE TABLE IF NOT EXISTS sources(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trend_id INTEGER NOT NULL,
+            publisher TEXT NOT NULL,
+            title TEXT NOT NULL,
+            url TEXT NOT NULL,
+            published_at TEXT DEFAULT '',
+            source_label TEXT DEFAULT '単独情報',
+            UNIQUE(trend_id, url)
+        );
+        
+        CREATE TABLE IF NOT EXISTS trend_history(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trend_id INTEGER NOT NULL,
+            pre_buzz_score REAL NOT NULL,
+            buzz_score REAL NOT NULL,
+            acceleration REAL NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS system_state(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        
+        CREATE TABLE IF NOT EXISTS traffic_history(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trend_id INTEGER NOT NULL,
+            impressions INTEGER NOT NULL DEFAULT 0,
+            clicks INTEGER NOT NULL DEFAULT 0,
+            pageviews INTEGER NOT NULL DEFAULT 0,
+            ctr REAL NOT NULL DEFAULT 0,
+            traffic_potential REAL NOT NULL DEFAULT 0,
+            recorded_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS traffic_totals(
+            trend_id INTEGER PRIMARY KEY,
+            impressions INTEGER NOT NULL DEFAULT 0,
+            clicks INTEGER NOT NULL DEFAULT 0,
+            pageviews INTEGER NOT NULL DEFAULT 0,
+            last_ctr REAL NOT NULL DEFAULT 0,
+            traffic_potential REAL NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+        
+        CREATE TABLE IF NOT EXISTS growth_state(
+            trend_id INTEGER PRIMARY KEY,
+            level INTEGER NOT NULL DEFAULT 0,
+            quality_score REAL NOT NULL DEFAULT 0,
+            decision TEXT NOT NULL DEFAULT '観察中',
+            last_reason TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS growth_log(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trend_id INTEGER NOT NULL,
+            old_level INTEGER NOT NULL,
+            new_level INTEGER NOT NULL,
+            decision TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+        
+        CREATE TABLE IF NOT EXISTS predictions(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trend_id INTEGER NOT NULL,
+            predicted_pre_buzz REAL NOT NULL,
+            predicted_buzz REAL NOT NULL,
+            predicted_acceleration REAL NOT NULL,
+            predicted_traffic_potential REAL NOT NULL,
+            predicted_pageviews INTEGER NOT NULL DEFAULT 0,
+            horizon_ticks INTEGER NOT NULL DEFAULT 6,
+            ticks_elapsed INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            evaluated_at TEXT DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS prediction_results(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prediction_id INTEGER UNIQUE NOT NULL,
+            trend_id INTEGER NOT NULL,
+            actual_buzz REAL NOT NULL,
+            actual_traffic_potential REAL NOT NULL,
+            actual_pageviews INTEGER NOT NULL,
+            buzz_gain REAL NOT NULL,
+            traffic_gain REAL NOT NULL,
+            pv_gain INTEGER NOT NULL,
+            hit INTEGER NOT NULL,
+            score REAL NOT NULL,
+            evaluated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS model_state(
+            key TEXT PRIMARY KEY,
+            value REAL NOT NULL
+        );
+        
+        CREATE TABLE IF NOT EXISTS source_items(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            keyword TEXT NOT NULL,
+            source_score REAL NOT NULL DEFAULT 0,
+            raw_metric REAL NOT NULL DEFAULT 0,
+            source_url TEXT DEFAULT '',
+            collected_at TEXT NOT NULL,
+            UNIQUE(source, external_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS collector_state(
+            source TEXT PRIMARY KEY,
+            last_status TEXT NOT NULL DEFAULT 'never',
+            last_message TEXT NOT NULL DEFAULT '',
+            last_count INTEGER NOT NULL DEFAULT 0,
+            last_run_at TEXT DEFAULT ''
+        );
+        
+        CREATE TABLE IF NOT EXISTS confidence_state(
+            trend_id INTEGER PRIMARY KEY,
+            source_count INTEGER NOT NULL DEFAULT 0,
+            confidence_score REAL NOT NULL DEFAULT 0,
+            confidence_label TEXT NOT NULL DEFAULT '単独シグナル',
+            corroborated INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+        
+        CREATE TABLE IF NOT EXISTS source_snapshots(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            keyword TEXT NOT NULL,
+            match_key TEXT NOT NULL,
+            source_score REAL NOT NULL DEFAULT 0,
+            raw_metric REAL NOT NULL DEFAULT 0,
+            captured_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_source_snapshots_key_time
+        ON source_snapshots(match_key,captured_at);
+
+        CREATE TABLE IF NOT EXISTS propagation_state(
+            trend_id INTEGER PRIMARY KEY,
+            first_source TEXT DEFAULT '',
+            first_seen_at TEXT DEFAULT '',
+            second_source TEXT DEFAULT '',
+            second_seen_at TEXT DEFAULT '',
+            propagation_minutes REAL DEFAULT NULL,
+            source_sequence TEXT DEFAULT '',
+            velocity_30m REAL NOT NULL DEFAULT 0,
+            velocity_1h REAL NOT NULL DEFAULT 0,
+            velocity_3h REAL NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS monetization_state(
+            trend_id INTEGER PRIMARY KEY,
+            monetize_score REAL NOT NULL DEFAULT 0,
+            monetize_grade TEXT NOT NULL DEFAULT 'C',
+            intent_category TEXT NOT NULL DEFAULT 'general',
+            recommended_mode TEXT NOT NULL DEFAULT 'adsense',
+            reason TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS monetization_events(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trend_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            provider TEXT NOT NULL DEFAULT '',
+            slot TEXT NOT NULL DEFAULT '',
+            value REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+
+        """)
+
+        count = c.execute("SELECT COUNT(*) AS n FROM trends").fetchone()["n"]
+        if count == 0:
+            seeds = [
+                ("AIグラス", "AI機能を搭載したスマートグラスへの関心が高まっています。",
+                 "複数のテクノロジー領域で関連語の増加が見られる想定サンプルです。",
+                 "テクノロジー", 84, 71, 0.34, "⚡ 加速中"),
+                ("透明感メイク", "SNSで広がりやすい美容系キーワードのサンプルです。",
+                 "美容・コスメ文脈で関連ワードが増え始めた想定です。",
+                 "美容", 78, 66, 0.29, "🌱 前兆"),
+                ("札幌新店", "札幌の新規オープン店舗を探す検索需要を想定したサンプルです。",
+                 "地域名と新店情報は検索意図が明確になりやすいテーマです。",
+                 "北海道", 73, 64, 0.22, "🚀 急上昇"),
+            ]
+            for s in seeds:
+                keyword, summary, why_now, category, pre, buzz, acc, status = s
+                slug = slugify(keyword)
+                ts = now_iso()
+                c.execute("""
+                    INSERT INTO trends(
+                        keyword,slug,summary,why_now,category,
+                        pre_buzz_score,buzz_score,acceleration,status,
+                        first_detected_at,updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """, (keyword, slug, summary, why_now, category, pre, buzz, acc, status, ts, ts))
+                trend_id = c.execute("SELECT id FROM trends WHERE slug=?", (slug,)).fetchone()["id"]
+                related = {
+                    "AIグラス":["AIグラスとは","スマートグラス","AIウェアラブル"],
+                    "透明感メイク":["透明感メイク 方法","透明感コスメ","ツヤ肌メイク"],
+                    "札幌新店":["札幌 新店","札幌 グルメ 新店","札幌 オープン"]
+                }[keyword]
+                for r in related:
+                    c.execute("INSERT OR IGNORE INTO related_keywords(trend_id,keyword) VALUES(?,?)",(trend_id,r))
+
+
+DEMO_KEYWORDS = [
+    ("AIピン", "テクノロジー"),
+    ("透明感リップ", "美容"),
+    ("札幌カフェ新店", "北海道"),
+    ("平成レトロ", "エンタメ"),
+    ("朝活ルーティン", "ライフスタイル"),
+    ("韓国ヘア", "美容"),
+    ("生成AI副業", "ビジネス"),
+    ("推し活バッグ", "ファッション"),
+    ("睡眠ルーティン", "ライフスタイル"),
+    ("札幌ラーメン新店", "北海道"),
+    ("ショートドラマ", "エンタメ"),
+    ("AI議事録", "ビジネス"),
+]
+
+def classify(pre, buzz, acc):
+    if acc >= 0.34 and pre >= 75:
+        return "⚡ 加速中"
+    if buzz >= 78:
+        return "🔥 爆発中"
+    if pre >= 72:
+        return "🚀 急上昇"
+    return "🌱 前兆"
+
+def ensure_demo_keywords():
+    ts = now_iso()
+    with db() as c:
+        existing = {r["keyword"] for r in c.execute("SELECT keyword FROM trends").fetchall()}
+        for keyword, category in DEMO_KEYWORDS:
+            if keyword in existing:
+                continue
+            pre = random.randint(48, 82)
+            buzz = random.randint(35, 75)
+            acc = round(random.uniform(0.05, 0.34), 2)
+            c.execute("""
+                INSERT INTO trends(
+                    keyword,slug,summary,why_now,category,
+                    pre_buzz_score,buzz_score,acceleration,status,
+                    first_detected_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                keyword, slugify(keyword),
+                f"{keyword}に関する検索・SNS上の関心が高まり始めている想定データです。",
+                "複数のシグナルが同時に伸び始めている状態を再現しています。",
+                category, pre, buzz, acc, classify(pre,buzz,acc), ts, ts
+            ))
+
+
+def calc_traffic_potential(pre_buzz, buzz, acceleration, pageviews, ctr):
+    """
+    0-100のアクセス期待値。
+    V3では仮想ロジック。本番ではSearch Console等の実績データに置き換える。
+    """
+    momentum = min(100, max(0, pre_buzz * 0.45 + buzz * 0.25 + max(0, acceleration) * 100 * 0.20))
+    traction = min(100, math.log1p(max(pageviews, 0)) / math.log(5000) * 100 if pageviews > 0 else 0)
+    ctr_score = min(100, max(0, ctr * 10))
+    return round(min(100, momentum * 0.65 + traction * 0.25 + ctr_score * 0.10), 1)
+
+
+def simulate_traffic(c, trend, ts):
+    pre = float(trend["pre_buzz_score"])
+    buzz = float(trend["buzz_score"])
+    acc = float(trend["acceleration"])
+
+    base_impressions = max(0, int((pre * 2.8 + buzz * 1.7) * random.uniform(0.7, 1.35)))
+    if acc > 0.25:
+        base_impressions = int(base_impressions * random.uniform(1.15, 1.55))
+
+    ctr = max(0.4, min(12.0, random.gauss(4.5 + min(pre, 100)/35, 1.1)))
+    clicks = int(base_impressions * (ctr / 100))
+    pageviews = max(clicks, int(clicks * random.uniform(1.05, 1.35)))
+
+    old = c.execute("SELECT * FROM traffic_totals WHERE trend_id=?", (trend["id"],)).fetchone()
+    total_impr = (old["impressions"] if old else 0) + base_impressions
+    total_clicks = (old["clicks"] if old else 0) + clicks
+    total_pv = (old["pageviews"] if old else 0) + pageviews
+    current_ctr = (total_clicks / total_impr * 100) if total_impr else 0
+    potential = calc_traffic_potential(pre, buzz, acc, total_pv, current_ctr)
+
+    c.execute("""
+        INSERT INTO traffic_history(
+            trend_id,impressions,clicks,pageviews,ctr,traffic_potential,recorded_at
+        ) VALUES(?,?,?,?,?,?,?)
+    """, (trend["id"], base_impressions, clicks, pageviews, round(ctr,2), potential, ts))
+
+    c.execute("""
+        INSERT INTO traffic_totals(
+            trend_id,impressions,clicks,pageviews,last_ctr,traffic_potential,updated_at
+        ) VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(trend_id) DO UPDATE SET
+            impressions=excluded.impressions,
+            clicks=excluded.clicks,
+            pageviews=excluded.pageviews,
+            last_ctr=excluded.last_ctr,
+            traffic_potential=excluded.traffic_potential,
+            updated_at=excluded.updated_at
+    """, (trend["id"], total_impr, total_clicks, total_pv, round(current_ctr,2), potential, ts))
+
+
+def safe_related_candidates(keyword: str):
+    """
+    V4 demo only: generates search-intent labels, not factual claims.
+    Production will replace this with actual related-query data.
+    """
+    suffixes = ["とは", "なぜ話題", "最新", "いつから", "意味", "関連", "評判"]
+    return [f"{keyword} {s}" for s in suffixes]
+
+
+def auto_grow_pages(c, ts):
+    rows = c.execute("""
+        SELECT t.*, COALESCE(x.pageviews,0) AS pageviews,
+               COALESCE(x.impressions,0) AS impressions,
+               COALESCE(x.last_ctr,0) AS ctr,
+               COALESCE(x.traffic_potential,0) AS traffic_potential
+        FROM trends t
+        LEFT JOIN traffic_totals x ON x.trend_id=t.id
+    """).fetchall()
+
+    for r in rows:
+        state = c.execute("SELECT * FROM growth_state WHERE trend_id=?", (r["id"],)).fetchone()
+        old_level = state["level"] if state else 0
+
+        tp = float(r["traffic_potential"])
+        pv = int(r["pageviews"])
+        ctr = float(r["ctr"])
+        pre = float(r["pre_buzz_score"])
+
+        # Guardrail: only strengthen pages showing both trend and traffic signals.
+        quality = min(100, tp * 0.55 + min(100, pv / 8) * 0.20 + min(100, ctr * 10) * 0.10 + pre * 0.15)
+
+        if quality >= 78 and pv >= 80:
+            level, decision = 3, "強化"
+            reason = "トレンド・PV・検索反応が強いため、関連検索意図を追加"
+        elif quality >= 62 and pv >= 30:
+            level, decision = 2, "強化"
+            reason = "アクセスが伸び始めたため、補助的な関連検索意図を追加"
+        elif quality >= 45:
+            level, decision = 1, "維持"
+            reason = "一定の反応があるためページを維持"
+        else:
+            level, decision = 0, "観察中"
+            reason = "まだ十分なアクセスシグナルがないため自動拡張しない"
+
+        # Do not auto-noindex in V4. Flag only; indexing changes remain a later guarded step.
+        c.execute("""
+            INSERT INTO growth_state(trend_id,level,quality_score,decision,last_reason,updated_at)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(trend_id) DO UPDATE SET
+              level=excluded.level,
+              quality_score=excluded.quality_score,
+              decision=excluded.decision,
+              last_reason=excluded.last_reason,
+              updated_at=excluded.updated_at
+        """, (r["id"], level, round(quality,1), decision, reason, ts))
+
+        if level > old_level:
+            candidates = safe_related_candidates(r["keyword"])
+            max_terms = 3 if level == 2 else 6 if level >= 3 else 0
+            for term in candidates[:max_terms]:
+                c.execute(
+                    "INSERT OR IGNORE INTO related_keywords(trend_id,keyword) VALUES(?,?)",
+                    (r["id"], term)
+                )
+
+        if level != old_level:
+            c.execute("""
+                INSERT INTO growth_log(trend_id,old_level,new_level,decision,reason,recorded_at)
+                VALUES(?,?,?,?,?,?)
+            """,(r["id"],old_level,level,decision,reason,ts))
+
+
+def ensure_model_state(c):
+    defaults = {
+        "weight_pre_buzz": 0.45,
+        "weight_buzz": 0.25,
+        "weight_acceleration": 0.20,
+        "weight_traction": 0.10,
+        "hit_rate": 0.0,
+        "evaluated_predictions": 0.0
+    }
+    for k,v in defaults.items():
+        c.execute("INSERT OR IGNORE INTO model_state(key,value) VALUES(?,?)",(k,v))
+
+
+def create_predictions(c, ts):
+    """
+    Demo horizon uses ticks instead of real hours.
+    With 30 sec demo ticks, 6 ticks ~= 3 minutes.
+    Production will use an actual +3h timestamp.
+    """
+    ensure_model_state(c)
+    rows=c.execute("""
+      SELECT t.id,t.pre_buzz_score,t.buzz_score,t.acceleration,
+             COALESCE(x.traffic_potential,0) AS traffic_potential,
+             COALESCE(x.pageviews,0) AS pageviews
+      FROM trends t
+      LEFT JOIN traffic_totals x ON x.trend_id=t.id
+    """).fetchall()
+
+    for r in rows:
+        pending=c.execute("""
+          SELECT id FROM predictions
+          WHERE trend_id=? AND status='pending'
+        """,(r["id"],)).fetchone()
+        if pending:
+            continue
+
+        # Only predict meaningful early signals.
+        if float(r["pre_buzz_score"]) < 55:
+            continue
+
+        c.execute("""
+          INSERT INTO predictions(
+            trend_id,predicted_pre_buzz,predicted_buzz,predicted_acceleration,
+            predicted_traffic_potential,predicted_pageviews,horizon_ticks,
+            ticks_elapsed,status,created_at
+          ) VALUES(?,?,?,?,?,?,6,0,'pending',?)
+        """,(
+            r["id"],r["pre_buzz_score"],r["buzz_score"],r["acceleration"],
+            r["traffic_potential"],r["pageviews"],ts
+        ))
+
+
+def evaluate_predictions(c, ts):
+    ensure_model_state(c)
+
+    c.execute("""
+      UPDATE predictions
+      SET ticks_elapsed=ticks_elapsed+1
+      WHERE status='pending'
+    """)
+
+    ready=c.execute("""
+      SELECT p.*, t.buzz_score AS actual_buzz,
+             COALESCE(x.traffic_potential,0) AS actual_tp,
+             COALESCE(x.pageviews,0) AS actual_pv
+      FROM predictions p
+      JOIN trends t ON t.id=p.trend_id
+      LEFT JOIN traffic_totals x ON x.trend_id=p.trend_id
+      WHERE p.status='pending' AND p.ticks_elapsed>=p.horizon_ticks
+    """).fetchall()
+
+    for p in ready:
+        buzz_gain=float(p["actual_buzz"])-float(p["predicted_buzz"])
+        traffic_gain=float(p["actual_tp"])-float(p["predicted_traffic_potential"])
+        pv_gain=int(p["actual_pv"])-int(p["predicted_pageviews"])
+
+        # Hit = the topic meaningfully grew after we called it early.
+        hit = int(
+            (buzz_gain >= 5 and traffic_gain >= 3) or
+            (traffic_gain >= 8) or
+            (pv_gain >= 60 and buzz_gain >= 2)
+        )
+
+        score=max(0,min(100,
+            50
+            + buzz_gain * 2.0
+            + traffic_gain * 2.2
+            + min(25, max(-25, pv_gain/8))
+        ))
+
+        c.execute("""
+          INSERT OR IGNORE INTO prediction_results(
+            prediction_id,trend_id,actual_buzz,actual_traffic_potential,
+            actual_pageviews,buzz_gain,traffic_gain,pv_gain,hit,score,evaluated_at
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+        """,(
+            p["id"],p["trend_id"],p["actual_buzz"],p["actual_tp"],p["actual_pv"],
+            round(buzz_gain,1),round(traffic_gain,1),pv_gain,hit,round(score,1),ts
+        ))
+        c.execute("""
+          UPDATE predictions SET status='evaluated',evaluated_at=? WHERE id=?
+        """,(ts,p["id"]))
+
+    total=c.execute("SELECT COUNT(*) AS n FROM prediction_results").fetchone()["n"]
+    hits=c.execute("SELECT COUNT(*) AS n FROM prediction_results WHERE hit=1").fetchone()["n"]
+    hit_rate=(hits/total*100) if total else 0
+
+    c.execute("""
+      INSERT INTO model_state(key,value) VALUES('hit_rate',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value
+    """,(hit_rate,))
+    c.execute("""
+      INSERT INTO model_state(key,value) VALUES('evaluated_predictions',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value
+    """,(float(total),))
+
+
+def cautiously_tune_model(c):
+    """
+    Transparent bounded adjustment. No black-box ML yet.
+    Only starts after enough evaluated demo samples.
+    """
+    total=c.execute("SELECT COUNT(*) AS n FROM prediction_results").fetchone()["n"]
+    if total < 30:
+        return
+
+    recent=c.execute("""
+      SELECT r.hit,p.predicted_pre_buzz,p.predicted_buzz,p.predicted_acceleration,
+             p.predicted_traffic_potential
+      FROM prediction_results r
+      JOIN predictions p ON p.id=r.prediction_id
+      ORDER BY r.id DESC LIMIT 100
+    """).fetchall()
+    if not recent:
+        return
+
+    hit_acc=[abs(float(r["predicted_acceleration"])) for r in recent if r["hit"]]
+    miss_acc=[abs(float(r["predicted_acceleration"])) for r in recent if not r["hit"]]
+    if hit_acc and miss_acc:
+        avg_hit=sum(hit_acc)/len(hit_acc)
+        avg_miss=sum(miss_acc)/len(miss_acc)
+        row=c.execute("SELECT value FROM model_state WHERE key='weight_acceleration'").fetchone()
+        w=float(row["value"]) if row else .20
+        if avg_hit > avg_miss:
+            w=min(.30,w+.005)
+        else:
+            w=max(.12,w-.005)
+        c.execute("""
+          INSERT INTO model_state(key,value) VALUES('weight_acceleration',?)
+          ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        """,(w,))
+
+
+GOOGLE_TRENDS_RSS = "https://trends.google.com/trending/rss?geo=JP"
+WIKIMEDIA_TOP = "https://wikimedia.org/api/rest_v1/metrics/pageviews/top/ja.wikipedia.org/all-access/{year}/{month}/{day}"
+
+def _clean_keyword(s: str) -> str:
+    return " ".join((s or "").replace("_"," ").split()).strip()
+
+def _collector_state(c, source, status, message, count, ts):
+    c.execute("""
+      INSERT INTO collector_state(source,last_status,last_message,last_count,last_run_at)
+      VALUES(?,?,?,?,?)
+      ON CONFLICT(source) DO UPDATE SET
+        last_status=excluded.last_status,
+        last_message=excluded.last_message,
+        last_count=excluded.last_count,
+        last_run_at=excluded.last_run_at
+    """,(source,status,message,count,ts))
+
+def upsert_real_trend(c, keyword, source_name, source_score, raw_metric, source_url, external_id, ts):
+    keyword=_clean_keyword(keyword)
+    if not keyword or len(keyword) > 80:
+        return False
+
+    c.execute("""
+      INSERT INTO source_items(source,external_id,keyword,source_score,raw_metric,source_url,collected_at)
+      VALUES(?,?,?,?,?,?,?)
+      ON CONFLICT(source,external_id) DO UPDATE SET
+        keyword=excluded.keyword,
+        source_score=excluded.source_score,
+        raw_metric=excluded.raw_metric,
+        source_url=excluded.source_url,
+        collected_at=excluded.collected_at
+    """,(source_name,external_id,keyword,source_score,raw_metric,source_url,ts))
+
+    c.execute("""
+      INSERT INTO source_snapshots(source,keyword,match_key,source_score,raw_metric,captured_at)
+      VALUES(?,?,?,?,?,?)
+    """,(source_name,keyword,normalize_match_key(keyword),source_score,raw_metric,ts))
+
+    row=c.execute("SELECT * FROM trends WHERE keyword=?",(keyword,)).fetchone()
+
+    # Source score is used only as an observed signal. It is not treated as a factual article claim.
+    pre=min(100, max(45, source_score))
+    buzz=min(100, max(35, source_score * 0.90))
+    acceleration=round(max(0.05, min(0.90, source_score/140)),2)
+    status=classify(pre,buzz,acceleration)
+
+    if row:
+        new_pre=max(float(row["pre_buzz_score"]), pre)
+        new_buzz=max(float(row["buzz_score"]), buzz)
+        new_acc=max(float(row["acceleration"]), acceleration)
+        c.execute("""
+          UPDATE trends
+          SET pre_buzz_score=?,buzz_score=?,acceleration=?,status=?,updated_at=?
+          WHERE id=?
+        """,(round(new_pre,1),round(new_buzz,1),round(new_acc,2),
+             classify(new_pre,new_buzz,new_acc),ts,row["id"]))
+        return True
+
+    # Use existing slug utility if available in codebase.
+    try:
+        slug=slugify(keyword)
+    except Exception:
+        slug=quote(keyword, safe="")
+
+    c.execute("""
+      INSERT INTO trends(
+        keyword,slug,summary,why_now,category,pre_buzz_score,buzz_score,
+        acceleration,status,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+    """,(
+        keyword,slug,
+        f"{keyword} に関する検索・閲覧の増加シグナルを検出しています。",
+        f"{source_name} の公開データで上昇シグナルを確認しました。詳細は元データをご確認ください。",
+        "総合",round(pre,1),round(buzz,1),round(acceleration,2),status,ts,ts
+    ))
+    return True
+
+def collect_google_trends(c, ts):
+    source="google_trends_jp"
+    try:
+        r=httpx.get(
+            GOOGLE_TRENDS_RSS,
+            timeout=12,
+            headers={"User-Agent":"BUZZ-NOW/0.7 trend-research"}
+        )
+        r.raise_for_status()
+        feed=feedparser.parse(r.content)
+        entries=feed.entries[:20]
+        count=0
+        total=max(1,len(entries))
+        for idx,e in enumerate(entries):
+            kw=_clean_keyword(getattr(e,"title",""))
+            if not kw:
+                continue
+            # RSS rank is transformed into a normalized signal.
+            score=max(52, 98 - idx * (44/max(1,total-1)))
+            ext=str(getattr(e,"id","") or getattr(e,"link","") or kw)
+            link=str(getattr(e,"link","") or GOOGLE_TRENDS_RSS)
+            if upsert_real_trend(c,kw,"Google Trends",score,total-idx,link,ext,ts):
+                count+=1
+        _collector_state(c,source,"ok","Google Trends RSS取得成功",count,ts)
+        return count
+    except Exception as e:
+        _collector_state(c,source,"error",str(e)[:220],0,ts)
+        return 0
+
+def collect_wikimedia(c, ts):
+    from datetime import datetime, timedelta, timezone
+    source="wikimedia_ja"
+    try:
+        # Wikimedia daily top data is most reliably available for the previous UTC day.
+        d=datetime.now(timezone.utc)-timedelta(days=1)
+        url=WIKIMEDIA_TOP.format(year=d.strftime("%Y"),month=d.strftime("%m"),day=d.strftime("%d"))
+        r=httpx.get(
+            url,
+            timeout=12,
+            headers={"User-Agent":"BUZZ-NOW/0.7 trend-research"}
+        )
+        r.raise_for_status()
+        payload=r.json()
+        articles=(payload.get("items") or [{}])[0].get("articles") or []
+        # Exclude obvious system/navigation pages.
+        blocked={"メインページ","特別:検索","Special:Search","Main_Page"}
+        clean=[a for a in articles if _clean_keyword(a.get("article","")) not in blocked][:30]
+        max_views=max([int(a.get("views",0) or 0) for a in clean] or [1])
+        count=0
+        for idx,a in enumerate(clean):
+            kw=_clean_keyword(a.get("article",""))
+            views=int(a.get("views",0) or 0)
+            if not kw:
+                continue
+            # Mix rank and relative views so one abnormal page does not dominate.
+            rank_signal=max(45, 88 - idx*1.2)
+            view_signal=min(100, (views/max_views)*100)
+            score=round(rank_signal*0.7 + view_signal*0.3,1)
+            page_url="https://ja.wikipedia.org/wiki/"+quote(str(a.get("article","")).replace(" ","_"))
+            ext=f"{d.strftime('%Y%m%d')}:{a.get('article','')}"
+            if upsert_real_trend(c,kw,"Wikimedia Pageviews",score,views,page_url,ext,ts):
+                count+=1
+        _collector_state(c,source,"ok","Wikimedia Pageviews取得成功",count,ts)
+        return count
+    except Exception as e:
+        _collector_state(c,source,"error",str(e)[:220],0,ts)
+        return 0
+
+
+def normalize_match_key(keyword: str) -> str:
+    s=_clean_keyword(keyword).lower()
+    for ch in [" ","　","・","-","_","/","／","(",")","（","）","[","]","【","】","!","！","?","？"]:
+        s=s.replace(ch,"")
+    return s
+
+def refresh_confidence(c, ts):
+    """
+    Cross-source corroboration.
+    Exact normalized keyword matches are intentionally conservative in V8.
+    Fuzzy/entity matching comes later to avoid false merges.
+    """
+    trends=c.execute("SELECT id,keyword,pre_buzz_score,buzz_score,acceleration FROM trends").fetchall()
+    items=c.execute("""
+      SELECT source,keyword,source_score,raw_metric,collected_at
+      FROM source_items
+      ORDER BY id DESC
+    """).fetchall()
+
+    by_key={}
+    for item in items:
+        k=normalize_match_key(item["keyword"])
+        if not k:
+            continue
+        by_key.setdefault(k,{})
+        # Keep the newest/highest signal per source.
+        old=by_key[k].get(item["source"])
+        if old is None or float(item["source_score"])>float(old["source_score"]):
+            by_key[k][item["source"]]=item
+
+    for t in trends:
+        k=normalize_match_key(t["keyword"])
+        matches=by_key.get(k,{})
+        source_count=len(matches)
+        source_scores=[float(x["source_score"]) for x in matches.values()]
+
+        if source_count >= 3:
+            label="複数ソース一致"
+            source_bonus=28
+        elif source_count == 2:
+            label="2ソース一致"
+            source_bonus=18
+        elif source_count == 1:
+            label="単独シグナル"
+            source_bonus=4
+        else:
+            label="デモ/未確認"
+            source_bonus=0
+
+        signal_avg=(sum(source_scores)/len(source_scores)) if source_scores else 0
+        acc=max(0,float(t["acceleration"]))
+        confidence=min(100,
+            signal_avg*0.55
+            + min(100,acc*120)*0.20
+            + float(t["pre_buzz_score"])*0.10
+            + source_bonus
+        )
+        corroborated=int(source_count>=2)
+
+        c.execute("""
+          INSERT INTO confidence_state(
+            trend_id,source_count,confidence_score,confidence_label,corroborated,updated_at
+          ) VALUES(?,?,?,?,?,?)
+          ON CONFLICT(trend_id) DO UPDATE SET
+            source_count=excluded.source_count,
+            confidence_score=excluded.confidence_score,
+            confidence_label=excluded.confidence_label,
+            corroborated=excluded.corroborated,
+            updated_at=excluded.updated_at
+        """,(t["id"],source_count,round(confidence,1),label,corroborated,ts))
+
+        # Cross-source agreement may strengthen an existing observed trend,
+        # but does not invent any event/factual explanation.
+        if corroborated:
+            boosted_pre=min(100,max(float(t["pre_buzz_score"]),confidence))
+            boosted_acc=min(.95,max(float(t["acceleration"]),0.28 + .08*(source_count-2)))
+            c.execute("""
+              UPDATE trends SET pre_buzz_score=?,acceleration=?,status=?,updated_at=?
+              WHERE id=?
+            """,(
+              round(boosted_pre,1),round(boosted_acc,2),
+              classify(boosted_pre,float(t["buzz_score"]),boosted_acc),ts,t["id"]
+            ))
+
+
+def _parse_iso(s):
+    from datetime import datetime
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(str(s).replace("Z","+00:00"))
+    except Exception:
+        return None
+
+def _velocity_for_window(rows, now_dt, minutes):
+    """
+    Score delta per hour using the oldest snapshot inside the requested window
+    and the latest snapshot. Positive = accelerating, negative = cooling.
+    """
+    from datetime import timedelta
+    cutoff=now_dt-timedelta(minutes=minutes)
+    usable=[r for r in rows if (_parse_iso(r["captured_at"]) or now_dt) >= cutoff]
+    if len(usable)<2:
+        return 0.0
+    usable=sorted(usable,key=lambda x:x["captured_at"])
+    a,b=usable[0],usable[-1]
+    ta,tb=_parse_iso(a["captured_at"]),_parse_iso(b["captured_at"])
+    if not ta or not tb or tb<=ta:
+        return 0.0
+    hours=max((tb-ta).total_seconds()/3600,1/60)
+    return round((float(b["source_score"])-float(a["source_score"]))/hours,2)
+
+def refresh_propagation(c, ts):
+    from datetime import datetime, timezone
+    now_dt=_parse_iso(ts) or datetime.now(timezone.utc)
+
+    trends=c.execute("SELECT id,keyword FROM trends").fetchall()
+    all_rows=c.execute("""
+      SELECT source,keyword,match_key,source_score,raw_metric,captured_at
+      FROM source_snapshots
+      ORDER BY captured_at ASC,id ASC
+    """).fetchall()
+
+    by_key={}
+    for r in all_rows:
+        by_key.setdefault(r["match_key"],[]).append(r)
+
+    for t in trends:
+        key=normalize_match_key(t["keyword"])
+        rows=by_key.get(key,[])
+        if not rows:
+            continue
+
+        # First observation for each source.
+        first_by_source={}
+        for r in rows:
+            s=r["source"]
+            if s not in first_by_source:
+                first_by_source[s]=r
+
+        ordered=sorted(first_by_source.values(),key=lambda x:x["captured_at"])
+        first=ordered[0] if ordered else None
+        second=ordered[1] if len(ordered)>1 else None
+
+        first_dt=_parse_iso(first["captured_at"]) if first else None
+        second_dt=_parse_iso(second["captured_at"]) if second else None
+        prop=None
+        if first_dt and second_dt:
+            prop=round(max(0,(second_dt-first_dt).total_seconds()/60),1)
+
+        sequence=" → ".join([x["source"] for x in ordered[:5]])
+
+        # Aggregate latest source scores into one cross-source timeline.
+        # For each timestamp use the average score observed in that collection wave.
+        waves={}
+        for r in rows:
+            waves.setdefault(r["captured_at"],[]).append(float(r["source_score"]))
+        aggregate=[
+          {"captured_at":k,"source_score":sum(v)/len(v)}
+          for k,v in waves.items()
+        ]
+
+        v30=_velocity_for_window(aggregate,now_dt,30)
+        v60=_velocity_for_window(aggregate,now_dt,60)
+        v180=_velocity_for_window(aggregate,now_dt,180)
+
+        c.execute("""
+          INSERT INTO propagation_state(
+            trend_id,first_source,first_seen_at,second_source,second_seen_at,
+            propagation_minutes,source_sequence,velocity_30m,velocity_1h,velocity_3h,updated_at
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(trend_id) DO UPDATE SET
+            first_source=excluded.first_source,
+            first_seen_at=excluded.first_seen_at,
+            second_source=excluded.second_source,
+            second_seen_at=excluded.second_seen_at,
+            propagation_minutes=excluded.propagation_minutes,
+            source_sequence=excluded.source_sequence,
+            velocity_30m=excluded.velocity_30m,
+            velocity_1h=excluded.velocity_1h,
+            velocity_3h=excluded.velocity_3h,
+            updated_at=excluded.updated_at
+        """,(
+          t["id"],
+          first["source"] if first else "",
+          first["captured_at"] if first else "",
+          second["source"] if second else "",
+          second["captured_at"] if second else "",
+          prop,sequence,v30,v60,v180,ts
+        ))
+
+    # Keep snapshot history bounded in demo/local usage.
+    c.execute("""
+      DELETE FROM source_snapshots
+      WHERE id NOT IN (
+        SELECT id FROM source_snapshots ORDER BY id DESC LIMIT 12000
+      )
+    """)
+
+
+MONETIZE_RULES = {
+    "beauty": {
+        "words":["美容","コスメ","メイク","リップ","スキンケア","脱毛","クリニック","肌","ヘア"],
+        "base":88, "mode":"affiliate"
+    },
+    "travel": {
+        "words":["ホテル","旅行","航空","温泉","宿","観光","ツアー","旅館"],
+        "base":82, "mode":"affiliate"
+    },
+    "jobs": {
+        "words":["転職","求人","アルバイト","副業","仕事","採用"],
+        "base":90, "mode":"affiliate"
+    },
+    "finance": {
+        "words":["クレジット","カード","証券","投資","保険","ローン","FX"],
+        "base":94, "mode":"affiliate"
+    },
+    "shopping": {
+        "words":["iPhone","スマホ","家電","バッグ","商品","新作","発売","ガジェット"],
+        "base":78, "mode":"affiliate"
+    },
+    "food": {
+        "words":["グルメ","ラーメン","カフェ","レストラン","焼肉","寿司","新店"],
+        "base":62, "mode":"hybrid"
+    },
+    "entertainment": {
+        "words":["芸能","ドラマ","映画","アニメ","アイドル","俳優","歌手"],
+        "base":35, "mode":"adsense"
+    },
+}
+
+def classify_monetize_intent(keyword, category=""):
+    text=(keyword+" "+(category or "")).lower()
+    best=("general",42,"adsense")
+    for name,r in MONETIZE_RULES.items():
+        hits=sum(1 for w in r["words"] if w.lower() in text)
+        if hits and r["base"] + min(8,(hits-1)*4) > best[1]:
+            best=(name,r["base"] + min(8,(hits-1)*4),r["mode"])
+    return best
+
+def refresh_monetization(c, ts):
+    rows=c.execute("""
+      SELECT t.id,t.keyword,t.category,t.pre_buzz_score,t.buzz_score,t.acceleration,
+             COALESCE(tt.traffic_potential,0) AS traffic_potential,
+             COALESCE(cs.confidence_score,0) AS confidence_score
+      FROM trends t
+      LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
+      LEFT JOIN confidence_state cs ON cs.trend_id=t.id
+    """).fetchall()
+    for r in rows:
+        intent,commercial,mode=classify_monetize_intent(r["keyword"],r["category"])
+        demand=(float(r["traffic_potential"])*0.38 +
+                float(r["pre_buzz_score"])*0.20 +
+                float(r["buzz_score"])*0.12 +
+                float(r["confidence_score"])*0.20 +
+                min(100,max(0,float(r["acceleration"])*100))*0.10)
+        score=min(100,round(commercial*0.58+demand*0.42,1))
+        grade="S" if score>=85 else "A" if score>=72 else "B" if score>=58 else "C"
+        recommended=mode
+        if mode=="affiliate" and score<58:
+            recommended="adsense"
+        elif mode=="affiliate" and score>=72:
+            recommended="affiliate"
+        elif mode=="hybrid":
+            recommended="hybrid"
+        reason=f"{intent} intent / commercial {commercial} / demand {round(demand,1)}"
+        c.execute("""
+          INSERT INTO monetization_state(
+            trend_id,monetize_score,monetize_grade,intent_category,recommended_mode,reason,updated_at
+          ) VALUES(?,?,?,?,?,?,?)
+          ON CONFLICT(trend_id) DO UPDATE SET
+            monetize_score=excluded.monetize_score,
+            monetize_grade=excluded.monetize_grade,
+            intent_category=excluded.intent_category,
+            recommended_mode=excluded.recommended_mode,
+            reason=excluded.reason,
+            updated_at=excluded.updated_at
+        """,(r["id"],score,grade,intent,recommended,reason,ts))
+
+
+def collect_real_sources():
+    ts=now_iso()
+    with db() as c:
+        g=collect_google_trends(c,ts)
+        w=collect_wikimedia(c,ts)
+        refresh_confidence(c,ts)
+        refresh_propagation(c,ts)
+        refresh_monetization(c,ts)
+        c.commit()
+    return {"google_trends":g,"wikimedia":w,"total":g+w}
+
+
+def demo_tick():
+    if not DEMO_MODE:
+        return
+    ensure_demo_keywords()
+    ts = now_iso()
+    with db() as c:
+        rows = c.execute("SELECT * FROM trends").fetchall()
+        for r in rows:
+            pre = float(r["pre_buzz_score"])
+            buzz = float(r["buzz_score"])
+            acc = float(r["acceleration"])
+
+            # random walk with mild momentum so some trends rise/fall
+            acc += random.uniform(-0.05, 0.07)
+            acc = max(-0.2, min(0.6, acc))
+
+            pre += acc * random.uniform(4.0, 9.0) + random.uniform(-2.2, 2.2)
+            buzz += acc * random.uniform(2.5, 6.0) + random.uniform(-1.6, 1.6)
+
+            pre = max(0, min(100, pre))
+            buzz = max(0, min(100, buzz))
+
+            # occasional simulated spike
+            if random.random() < 0.06:
+                pre = min(100, pre + random.uniform(8, 16))
+                buzz = min(100, buzz + random.uniform(5, 12))
+                acc = min(0.8, acc + random.uniform(0.10, 0.22))
+
+            status = classify(pre,buzz,acc)
+
+            c.execute("""
+                UPDATE trends
+                SET pre_buzz_score=?, buzz_score=?, acceleration=?, status=?, updated_at=?
+                WHERE id=?
+            """, (round(pre,1), round(buzz,1), round(acc,2), status, ts, r["id"]))
+
+            c.execute("""
+                INSERT INTO trend_history(
+                    trend_id,pre_buzz_score,buzz_score,acceleration,recorded_at
+                ) VALUES(?,?,?,?,?)
+            """, (r["id"], round(pre,1), round(buzz,1), round(acc,2), ts))
+
+            fresh = dict(r)
+            fresh["pre_buzz_score"] = round(pre,1)
+            fresh["buzz_score"] = round(buzz,1)
+            fresh["acceleration"] = round(acc,2)
+            simulate_traffic(c, fresh, ts)
+
+        auto_grow_pages(c, ts)
+        evaluate_predictions(c, ts)
+        create_predictions(c, ts)
+        cautiously_tune_model(c)
+
+        c.execute("""
+            INSERT INTO system_state(key,value) VALUES('last_demo_tick',?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        """,(ts,))
+
+        # keep demo DB small
+        c.execute("""
+            DELETE FROM trend_history
+            WHERE id NOT IN (
+                SELECT id FROM trend_history ORDER BY id DESC LIMIT 3000
+            )
+        """)
+
+
+
+scheduler = BackgroundScheduler()
+
+@app.on_event("startup")
+def startup():
+    init_db()
+
+    if DEMO_MODE:
+        ensure_demo_keywords()
+        demo_tick()
+        scheduler.add_job(
+            demo_tick,
+            "interval",
+            seconds=DEMO_INTERVAL_SECONDS,
+            id="demo_tick",
+            replace_existing=True,
+            max_instances=1
+        )
+
+    if REAL_DATA_MODE:
+        # Run once at startup, then continue periodically.
+        collect_real_sources()
+        scheduler.add_job(
+            collect_real_sources,
+            "interval",
+            minutes=REAL_DATA_INTERVAL_MINUTES,
+            id="real_source_collector",
+            replace_existing=True,
+            max_instances=1
+        )
+
+    if not scheduler.running:
+        scheduler.start()
+
+
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request):
+    with db() as c:
+        rows = c.execute("""
+            SELECT * FROM trends
+            ORDER BY pre_buzz_score DESC, acceleration DESC, buzz_score DESC
+            LIMIT 50
+        """).fetchall()
+    return templates.TemplateResponse("index.html", {
+        "request": request,
+        "trends": rows,
+        "site_name": SITE_NAME,
+    })
+
+
+@app.get("/trend/{slug}", response_class=HTMLResponse)
+def trend_detail(slug: str, request: Request):
+    with db() as c:
+        trend = c.execute("SELECT * FROM trends WHERE slug=?", (slug,)).fetchone()
+        if not trend:
+            raise HTTPException(404, "Trend not found")
+
+        related = c.execute(
+            "SELECT keyword FROM related_keywords WHERE trend_id=? ORDER BY id",
+            (trend["id"],)
+        ).fetchall()
+
+        sources = c.execute(
+            "SELECT * FROM sources WHERE trend_id=? ORDER BY published_at DESC, id DESC",
+            (trend["id"],)
+        ).fetchall()
+
+    title = f"{trend['keyword']}とは？なぜ今話題？｜{SITE_NAME}"
+    description = (
+        f"{trend['keyword']}がなぜ注目されているのかを、"
+        f"Pre-Buzz Score・Buzz Score・関連キーワード・情報源から整理。"
+    )
+    canonical = f"{SITE_URL}/trend/{trend['slug']}"
+
+    return templates.TemplateResponse("trend.html", {
+        "request": request,
+        "trend": trend,
+        "related": related,
+        "sources": sources,
+        "site_name": SITE_NAME,
+        "title": title,
+        "description": description,
+        "canonical": canonical,
+    })
+
+
+@app.get("/api/system-status")
+def system_status():
+    with db() as c:
+        row = c.execute("SELECT value FROM system_state WHERE key='last_demo_tick'").fetchone()
+    return {
+        "demo_mode": DEMO_MODE,
+        "interval_seconds": DEMO_INTERVAL_SECONDS if DEMO_MODE else None,
+        "last_update": row["value"] if row else None
+    }
+
+
+@app.get("/api/trends/{slug}/history")
+def trend_history(slug: str, limit: int = 30):
+    limit = max(1, min(limit, 100))
+    with db() as c:
+        trend = c.execute("SELECT id,keyword FROM trends WHERE slug=?", (slug,)).fetchone()
+        if not trend:
+            raise HTTPException(404, "Trend not found")
+        rows = c.execute("""
+            SELECT pre_buzz_score,buzz_score,acceleration,recorded_at
+            FROM trend_history
+            WHERE trend_id=?
+            ORDER BY id DESC
+            LIMIT ?
+        """,(trend["id"],limit)).fetchall()
+    items = [dict(r) for r in reversed(rows)]
+    return {"keyword": trend["keyword"], "items": items}
+
+
+
+@app.get("/api/traffic-ranking")
+def traffic_ranking(limit: int = 50):
+    limit=max(1,min(limit,100))
+    with db() as c:
+        rows=c.execute("""
+            SELECT
+              t.keyword,t.slug,t.category,t.status,
+              t.pre_buzz_score,t.buzz_score,t.acceleration,
+              COALESCE(x.impressions,0) AS impressions,
+              COALESCE(x.clicks,0) AS clicks,
+              COALESCE(x.pageviews,0) AS pageviews,
+              COALESCE(x.last_ctr,0) AS ctr,
+              COALESCE(x.traffic_potential,0) AS traffic_potential,
+              COALESCE(cs.source_count,0) AS source_count,
+              COALESCE(cs.confidence_score,0) AS confidence_score,
+              COALESCE(cs.confidence_label,'デモ/未確認') AS confidence_label,
+              COALESCE(cs.corroborated,0) AS corroborated,
+              COALESCE(ps.first_source,'') AS first_source,
+              COALESCE(ps.source_sequence,'') AS source_sequence,
+              ps.propagation_minutes AS propagation_minutes,
+              COALESCE(ps.velocity_30m,0) AS velocity_30m,
+              COALESCE(ps.velocity_1h,0) AS velocity_1h,
+              COALESCE(ps.velocity_3h,0) AS velocity_3h
+            FROM trends t
+            LEFT JOIN traffic_totals x ON x.trend_id=t.id
+            LEFT JOIN confidence_state cs ON cs.trend_id=t.id
+            LEFT JOIN propagation_state ps ON ps.trend_id=t.id
+            ORDER BY confidence_score DESC, traffic_potential DESC, pageviews DESC
+            LIMIT ?
+        """,(limit,)).fetchall()
+    return {"items":[dict(r) for r in rows]}
+
+
+@app.get("/api/trends/{slug}/traffic")
+def trend_traffic(slug: str, limit: int = 24):
+    limit=max(1,min(limit,100))
+    with db() as c:
+        trend=c.execute("SELECT id,keyword FROM trends WHERE slug=?",(slug,)).fetchone()
+        if not trend:
+            raise HTTPException(404,"Trend not found")
+        total=c.execute("SELECT * FROM traffic_totals WHERE trend_id=?",(trend["id"],)).fetchone()
+        hist=c.execute("""
+            SELECT impressions,clicks,pageviews,ctr,traffic_potential,recorded_at
+            FROM traffic_history
+            WHERE trend_id=?
+            ORDER BY id DESC LIMIT ?
+        """,(trend["id"],limit)).fetchall()
+    return {
+        "keyword":trend["keyword"],
+        "total":dict(total) if total else None,
+        "history":[dict(r) for r in reversed(hist)]
+    }
+
+
+
+@app.get("/api/growth-ranking")
+def growth_ranking(limit: int = 50):
+    limit=max(1,min(limit,100))
+    with db() as c:
+        rows=c.execute("""
+          SELECT t.keyword,t.slug,t.category,t.status,
+                 COALESCE(g.level,0) AS growth_level,
+                 COALESCE(g.quality_score,0) AS quality_score,
+                 COALESCE(g.decision,'観察中') AS decision,
+                 COALESCE(g.last_reason,'') AS reason,
+                 COALESCE(x.pageviews,0) AS pageviews,
+                 COALESCE(x.traffic_potential,0) AS traffic_potential
+          FROM trends t
+          LEFT JOIN growth_state g ON g.trend_id=t.id
+          LEFT JOIN traffic_totals x ON x.trend_id=t.id
+          ORDER BY g.quality_score DESC, x.traffic_potential DESC
+          LIMIT ?
+        """,(limit,)).fetchall()
+    return {"items":[dict(r) for r in rows]}
+
+
+@app.get("/api/trends/{slug}/growth")
+def trend_growth(slug: str):
+    with db() as c:
+        t=c.execute("SELECT id,keyword FROM trends WHERE slug=?",(slug,)).fetchone()
+        if not t:
+            raise HTTPException(404,"Trend not found")
+        state=c.execute("SELECT * FROM growth_state WHERE trend_id=?",(t["id"],)).fetchone()
+        logs=c.execute("""
+          SELECT old_level,new_level,decision,reason,recorded_at
+          FROM growth_log WHERE trend_id=?
+          ORDER BY id DESC LIMIT 10
+        """,(t["id"],)).fetchall()
+    return {
+      "keyword":t["keyword"],
+      "state":dict(state) if state else None,
+      "logs":[dict(r) for r in logs]
+    }
+
+
+
+@app.get("/api/learning-status")
+def learning_status():
+    with db() as c:
+        ensure_model_state(c)
+        state={r["key"]:r["value"] for r in c.execute("SELECT key,value FROM model_state").fetchall()}
+        pending=c.execute("SELECT COUNT(*) AS n FROM predictions WHERE status='pending'").fetchone()["n"]
+        recent=c.execute("""
+          SELECT t.keyword,r.hit,r.score,r.buzz_gain,r.traffic_gain,r.pv_gain,r.evaluated_at
+          FROM prediction_results r
+          JOIN trends t ON t.id=r.trend_id
+          ORDER BY r.id DESC LIMIT 12
+        """).fetchall()
+    return {"model":state,"pending":pending,"recent":[dict(r) for r in recent]}
+
+
+@app.get("/api/trends/{slug}/predictions")
+def trend_predictions(slug: str):
+    with db() as c:
+        t=c.execute("SELECT id,keyword FROM trends WHERE slug=?",(slug,)).fetchone()
+        if not t:
+            raise HTTPException(404,"Trend not found")
+        rows=c.execute("""
+          SELECT p.id,p.predicted_pre_buzz,p.predicted_buzz,p.predicted_acceleration,
+                 p.predicted_traffic_potential,p.predicted_pageviews,p.status,
+                 p.created_at,p.evaluated_at,
+                 r.actual_buzz,r.actual_traffic_potential,r.actual_pageviews,
+                 r.buzz_gain,r.traffic_gain,r.pv_gain,r.hit,r.score
+          FROM predictions p
+          LEFT JOIN prediction_results r ON r.prediction_id=p.id
+          WHERE p.trend_id=?
+          ORDER BY p.id DESC LIMIT 10
+        """,(t["id"],)).fetchall()
+    return {"keyword":t["keyword"],"items":[dict(r) for r in rows]}
+
+
+
+@app.post("/api/collect-now")
+def collect_now():
+    return {"ok":True,"result":collect_real_sources()}
+
+@app.get("/api/collectors")
+def collectors():
+    with db() as c:
+        rows=c.execute("""
+          SELECT source,last_status,last_message,last_count,last_run_at
+          FROM collector_state ORDER BY source
+        """).fetchall()
+        recent=c.execute("""
+          SELECT source,keyword,source_score,raw_metric,source_url,collected_at
+          FROM source_items ORDER BY id DESC LIMIT 30
+        """).fetchall()
+    return {
+      "real_data_mode":REAL_DATA_MODE,
+      "interval_minutes":REAL_DATA_INTERVAL_MINUTES,
+      "collectors":[dict(r) for r in rows],
+      "recent":[dict(r) for r in recent]
+    }
+
+
+
+@app.get("/api/trends/{slug}/confidence")
+def trend_confidence(slug: str):
+    with db() as c:
+        t=c.execute("SELECT id,keyword FROM trends WHERE slug=?",(slug,)).fetchone()
+        if not t:
+            raise HTTPException(404,"Trend not found")
+        state=c.execute("SELECT * FROM confidence_state WHERE trend_id=?",(t["id"],)).fetchone()
+        key=normalize_match_key(t["keyword"])
+        items=c.execute("""
+          SELECT source,keyword,source_score,raw_metric,source_url,collected_at
+          FROM source_items ORDER BY id DESC
+        """).fetchall()
+        matched=[dict(x) for x in items if normalize_match_key(x["keyword"])==key]
+    return {
+      "keyword":t["keyword"],
+      "state":dict(state) if state else None,
+      "sources":matched[:20]
+    }
+
+
+
+@app.get("/api/trends/{slug}/propagation")
+def trend_propagation(slug: str):
+    with db() as c:
+        t=c.execute("SELECT id,keyword FROM trends WHERE slug=?",(slug,)).fetchone()
+        if not t:
+            raise HTTPException(404,"Trend not found")
+        state=c.execute("SELECT * FROM propagation_state WHERE trend_id=?",(t["id"],)).fetchone()
+        key=normalize_match_key(t["keyword"])
+        rows=c.execute("""
+          SELECT source,source_score,raw_metric,captured_at
+          FROM source_snapshots
+          WHERE match_key=?
+          ORDER BY captured_at ASC,id ASC
+          LIMIT 300
+        """,(key,)).fetchall()
+    return {
+      "keyword":t["keyword"],
+      "state":dict(state) if state else None,
+      "timeline":[dict(x) for x in rows]
+    }
+
+
+
+@app.get("/api/velocity-ranking")
+def velocity_ranking(limit: int = 50):
+    limit=max(1,min(limit,100))
+    with db() as c:
+        rows=c.execute("""
+          SELECT
+            t.keyword,t.slug,t.category,t.status,
+            t.pre_buzz_score,t.buzz_score,t.acceleration,
+            COALESCE(cs.confidence_score,0) AS confidence_score,
+            COALESCE(cs.confidence_label,'デモ/未確認') AS confidence_label,
+            COALESCE(cs.source_count,0) AS source_count,
+            COALESCE(ps.first_source,'') AS first_source,
+            COALESCE(ps.source_sequence,'') AS source_sequence,
+            ps.propagation_minutes AS propagation_minutes,
+            COALESCE(ps.velocity_30m,0) AS velocity_30m,
+            COALESCE(ps.velocity_1h,0) AS velocity_1h,
+            COALESCE(ps.velocity_3h,0) AS velocity_3h
+          FROM trends t
+          LEFT JOIN confidence_state cs ON cs.trend_id=t.id
+          LEFT JOIN propagation_state ps ON ps.trend_id=t.id
+          ORDER BY velocity_30m DESC, velocity_1h DESC, confidence_score DESC
+          LIMIT ?
+        """,(limit,)).fetchall()
+    return {"items":[dict(x) for x in rows]}
+
+
+
+@app.get("/api/monetize-ranking")
+def monetize_ranking(limit: int = 50):
+    limit=max(1,min(limit,100))
+    with db() as c:
+        rows=c.execute("""
+          SELECT t.keyword,t.slug,t.category,t.status,
+                 COALESCE(ms.monetize_score,0) AS monetize_score,
+                 COALESCE(ms.monetize_grade,'C') AS monetize_grade,
+                 COALESCE(ms.intent_category,'general') AS intent_category,
+                 COALESCE(ms.recommended_mode,'adsense') AS recommended_mode,
+                 COALESCE(tt.traffic_potential,0) AS traffic_potential,
+                 COALESCE(cs.confidence_score,0) AS confidence_score
+          FROM trends t
+          LEFT JOIN monetization_state ms ON ms.trend_id=t.id
+          LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
+          LEFT JOIN confidence_state cs ON cs.trend_id=t.id
+          ORDER BY monetize_score DESC,traffic_potential DESC
+          LIMIT ?
+        """,(limit,)).fetchall()
+    return {"items":[dict(x) for x in rows]}
+
+@app.get("/api/trends/{slug}/monetization")
+def trend_monetization(slug: str):
+    with db() as c:
+        t=c.execute("SELECT id,keyword FROM trends WHERE slug=?",(slug,)).fetchone()
+        if not t:
+            raise HTTPException(404,"Trend not found")
+        s=c.execute("SELECT * FROM monetization_state WHERE trend_id=?",(t["id"],)).fetchone()
+    return {
+      "keyword":t["keyword"],
+      "state":dict(s) if s else None,
+      "adsense_enabled":ADSENSE_ENABLED,
+      "affiliate_enabled":AFFILIATE_ENABLED,
+      "affiliate_provider":AFFILIATE_PROVIDER,
+      "pr_label":PR_LABEL
+    }
+
+
+
+@app.get("/health")
+def health():
+    return {"ok": True, "service": SITE_NAME, "version": APP_VERSION, "environment": ENVIRONMENT}
+
+@app.get("/ready")
+def ready():
+    try:
+        with db() as c:
+            c.execute("SELECT 1").fetchone()
+        return {"ready": True, "database": "ok", "real_data_mode": REAL_DATA_MODE, "demo_mode": DEMO_MODE}
+    except Exception:
+        logger.exception("Readiness check failed")
+        raise HTTPException(status_code=503, detail="database unavailable")
+
+@app.get("/api/runtime")
+def runtime_info():
+    return {
+        "site": SITE_NAME, "site_url": SITE_URL, "version": APP_VERSION,
+        "environment": ENVIRONMENT, "demo_mode": DEMO_MODE,
+        "real_data_mode": REAL_DATA_MODE,
+        "real_data_interval_minutes": REAL_DATA_INTERVAL_MINUTES,
+        "adsense_enabled": ADSENSE_ENABLED, "affiliate_enabled": AFFILIATE_ENABLED
+    }
+
+
+@app.get("/sitemap.xml", response_class=PlainTextResponse)
+def sitemap():
+    with db() as c:
+        rows = c.execute("""
+            SELECT slug,updated_at FROM trends
+            WHERE is_indexable=1
+            ORDER BY updated_at DESC
+        """).fetchall()
+
+    urls = [f"""  <url>
+    <loc>{SITE_URL}/</loc>
+  </url>"""]
+
+    for r in rows:
+        lastmod = r["updated_at"][:10]
+        urls.append(f"""  <url>
+    <loc>{SITE_URL}/trend/{r['slug']}</loc>
+    <lastmod>{lastmod}</lastmod>
+  </url>""")
+
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+%s
+</urlset>""" % "\n".join(urls)
+    return PlainTextResponse(xml, media_type="application/xml")
+
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+def robots():
+    return f"""User-agent: *
+Allow: /
+Sitemap: {SITE_URL}/sitemap.xml
+"""
+
+
+@app.get("/api/trends")
+def api_trends(limit: int = 50):
+    limit = max(1, min(limit, 100))
+    with db() as c:
+        rows = c.execute("""
+            SELECT keyword,slug,category,pre_buzz_score,buzz_score,acceleration,status,updated_at
+            FROM trends
+            ORDER BY pre_buzz_score DESC, acceleration DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+    return {"items":[dict(r) for r in rows]}
+
+
+@app.post("/api/trends")
+def create_or_update_trend(
+    keyword: str = Form(...),
+    summary: str = Form(""),
+    why_now: str = Form(""),
+    category: str = Form("総合"),
+    pre_buzz_score: float = Form(0),
+    buzz_score: float = Form(0),
+    acceleration: float = Form(0),
+    status: str = Form("🌱 前兆"),
+):
+    """
+    V1の入口。
+    将来はここをトレンド収集エンジンから自動で呼ぶ。
+    """
+    slug = slugify(keyword)
+    ts = now_iso()
+    with db() as c:
+        existing = c.execute("SELECT id FROM trends WHERE keyword=?", (keyword,)).fetchone()
+        if existing:
+            c.execute("""
+                UPDATE trends SET
+                    slug=?,summary=?,why_now=?,category=?,
+                    pre_buzz_score=?,buzz_score=?,acceleration=?,
+                    status=?,updated_at=?
+                WHERE id=?
+            """, (
+                slug, summary, why_now, category,
+                pre_buzz_score, buzz_score, acceleration,
+                status, ts, existing["id"]
+            ))
+        else:
+            c.execute("""
+                INSERT INTO trends(
+                    keyword,slug,summary,why_now,category,
+                    pre_buzz_score,buzz_score,acceleration,status,
+                    first_detected_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                keyword, slug, summary, why_now, category,
+                pre_buzz_score, buzz_score, acceleration,
+                status, ts, ts
+            ))
+    return RedirectResponse(url=f"/trend/{slug}", status_code=303)

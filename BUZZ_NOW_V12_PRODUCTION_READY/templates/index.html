@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>BUZZ NOW｜いま話題。次にバズる。</title>
+<meta name="description" content="いま話題のキーワードと、次にバズりそうなキーワードをリアルタイムに可視化。Pre-Buzz、Buzz、加速度、Traffic Potentialで次の検索需要を先読みします。">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app-shell">
+  <header class="app-header">
+    <button class="icon-btn menu-btn" aria-label="メニュー"><span></span><span></span><span></span></button>
+    <a href="/" class="brand-lockup">
+      <div class="brand-name">BUZZ NOW<span class="bolt">⚡</span></div>
+      <div class="brand-tagline">いま話題。次にバズる。</div>
+    </a>
+    <div class="status-dot-wrap">
+      <span class="status-dot"></span>
+      <span id="liveState" class="status-label">LIVE</span>
+    </div>
+  </header>
+
+  <nav class="top-tabs" aria-label="ランキング切替">
+    <button class="top-tab active" data-mode="top">TOP</button>
+    <button class="top-tab" data-mode="all">総合TOP50</button>
+    <button class="top-tab" data-mode="pre">バズりそう <span class="new-badge">NEW</span></button>
+    <button class="top-tab" data-mode="boom">爆発中 🔥</button>
+    <button class="top-tab" data-mode="category">カテゴリ</button>
+  </nav>
+
+  <main class="content">
+    <section class="search-section">
+      <label class="search-box">
+        <span class="search-icon">⌕</span>
+        <input id="keywordSearch" type="search" placeholder="キーワードで検索（例：AI、札幌、ドラマ）">
+      </label>
+    </section>
+
+    <section class="summary-grid">
+      <article class="summary-card">
+        <div class="summary-label">いま話題のキーワード <span class="info">i</span></div>
+        <div class="summary-value"><span id="topicCount">-</span><small>件</small></div>
+        <div class="summary-change">24時間で <strong id="topicDelta">+0件</strong></div>
+        <div class="sparkline spark-green"></div>
+      </article>
+      <article class="summary-card">
+        <div class="summary-label">爆発中のキーワード <span class="info">i</span></div>
+        <div class="summary-value"><span id="boomCount">-</span><small>件</small></div>
+        <div class="summary-change">24時間で <strong id="boomDelta">+0件</strong></div>
+        <div class="sparkline spark-red"></div>
+      </article>
+      <article class="summary-card">
+        <div class="summary-label">本日の総PV（予測） <span class="info">i</span></div>
+        <div class="summary-value"><span id="totalPv">-</span><small>PV</small></div>
+        <div class="summary-change">予測成長 <strong id="pvDelta">+0%</strong></div>
+        <div class="sparkline spark-purple"></div>
+      </article>
+    </section>
+
+    <section id="preBuzzHero" class="prebuzz-hero">
+      <div class="prebuzz-icon">⚡</div>
+      <div class="prebuzz-copy">
+        <strong>次に来るかも？ Pre-Buzz増加中！</strong>
+        <span id="preBuzzMessage">急上昇の兆しを検出中...</span>
+      </div>
+      <a id="preBuzzLink" class="primary-cta" href="/">今すぐチェック <span>›</span></a>
+    </section>
+
+    <section class="ranking-section">
+      <div class="section-title-row">
+        <h1>👑 総合ランキング TOP50</h1>
+        <button id="showAllBtn" class="text-link">もっと見る <span>›</span></button>
+      </div>
+
+      <div class="category-scroll" id="categoryTabs">
+        <button class="chip active" data-category="すべて">すべて</button>
+        <button class="chip" data-category="ニュース">ニュース・時事</button>
+        <button class="chip" data-category="エンタメ">エンタメ</button>
+        <button class="chip" data-category="スポーツ">スポーツ</button>
+        <button class="chip" data-category="ビジネス">ビジネス</button>
+        <button class="chip" data-category="美容">美容</button>
+        <button class="chip" data-category="北海道">北海道</button>
+      </div>
+
+      <div id="trendGrid" class="ranking-list">
+        <div class="loading-card">ランキング読み込み中...</div>
+      </div>
+    </section>
+
+
+
+    <section class="money-section">
+      <div class="section-title-row">
+        <div>
+          <span class="eyebrow">MONETIZE ENGINE</span>
+          <h2>アクセス × 収益ポテンシャル</h2>
+        </div>
+        <span class="auto-badge">AUTO</span>
+      </div>
+      <div id="monetizeRanking" class="money-ranking">
+        <div class="loading-card">Monetize Scoreを計算中...</div>
+      </div>
+    </section>
+
+    <section class="velocity-section">
+      <div class="section-title-row">
+        <div>
+          <span class="eyebrow">BUZZ VELOCITY</span>
+          <h2>いま加速しているワード</h2>
+        </div>
+        <span class="velocity-live"><i></i> LIVE</span>
+      </div>
+      <div class="velocity-tabs">
+        <button class="vtab active" data-window="30">30分</button>
+        <button class="vtab" data-window="60">1時間</button>
+        <button class="vtab" data-window="180">3時間</button>
+      </div>
+      <div id="velocityRanking" class="velocity-list">
+        <div class="loading-card">Velocityを蓄積中...</div>
+      </div>
+      <p class="source-note">Velocityは、BUZZ NOWが取得したSource Scoreの変化量を1時間換算した値です。実データが蓄積するほど精度が上がります。</p>
+    </section>
+
+    <section class="quick-grid">
+      <button class="quick-card quick-fire" data-filter="boom">
+        <span class="quick-icon">🔥</span>
+        <div><strong>爆発中のキーワード</strong><b id="quickBoom">-</b><small>いま一気に伸びています</small></div>
+        <span class="quick-arrow">›</span>
+      </button>
+      <button class="quick-card quick-pre" data-filter="pre">
+        <span class="quick-icon">↗</span>
+        <div><strong>バズりそう</strong><b id="quickPre">-</b><small>“次に来るかも？”</small></div>
+        <span class="quick-arrow">›</span>
+      </button>
+      <button class="quick-card quick-rise" data-filter="rise">
+        <span class="quick-icon">◷</span>
+        <div><strong>急上昇ワード</strong><b id="quickRise">-</b><small>直近の伸びが大きい</small></div>
+        <span class="quick-arrow">›</span>
+      </button>
+    </section>
+
+
+    <section class="source-section">
+      <div class="learning-head">
+        <div>
+          <span class="eyebrow">REAL DATA SOURCES</span>
+          <h2>実データ取得状況</h2>
+        </div>
+        <button id="collectNow" class="source-refresh">今すぐ取得</button>
+      </div>
+      <div id="collectorStatus" class="collector-grid">
+        <div class="collector-card">取得状況を確認中...</div>
+      </div>
+      <p class="source-note">Google Trendsは検索トレンド、Wikimediaは閲覧トレンドとして別々のシグナルを保持しています。</p>
+    </section>
+
+    <section class="learning-section">
+      <div class="learning-head">
+        <div>
+          <span class="eyebrow">PREDICTION LEARNING</span>
+          <h2>予測の答え合わせ</h2>
+        </div>
+        <span class="ai-pill">AUTO LEARNING</span>
+      </div>
+      <div class="learning-metrics">
+        <div><span>HIT RATE</span><strong id="hitRate">-</strong></div>
+        <div><span>EVALUATED</span><strong id="evaluated">-</strong></div>
+        <div><span>PENDING</span><strong id="pending">-</strong></div>
+      </div>
+      <div id="learningRecent" class="learning-list">まだ答え合わせ前です。</div>
+    </section>
+
+    <details class="dev-panel">
+      <summary>DEMO / 開発用キーワード追加</summary>
+      <form method="post" action="/api/trends">
+        <input name="keyword" placeholder="例：新しい話題ワード" required>
+        <textarea name="summary" placeholder="このキーワードは何？"></textarea>
+        <textarea name="why_now" placeholder="なぜ今話題？"></textarea>
+        <input name="category" value="総合">
+        <div class="form-grid">
+          <input name="pre_buzz_score" type="number" step="0.1" value="70">
+          <input name="buzz_score" type="number" step="0.1" value="60">
+          <input name="acceleration" type="number" step="0.01" value="0.2">
+        </div>
+        <input name="status" value="🌱 前兆">
+        <button class="submit-btn" type="submit">SEOページを生成</button>
+      </form>
+    </details>
+  </main>
+
+  <nav class="bottom-nav">
+    <button class="bottom-item active" data-bottom="home"><span>⌂</span><b>ホーム</b></button>
+    <button class="bottom-item" data-bottom="ranking"><span>♛</span><b>ランキング</b></button>
+    <button class="bottom-item buzz-button" data-bottom="pre"><span>⚡</span><b>バズりそう</b></button>
+    <button class="bottom-item" data-bottom="search"><span>⌕</span><b>検索</b></button>
+    <button class="bottom-item" data-bottom="learning"><span>◎</span><b>学習</b></button>
+  </nav>
+</div>
+
+<script>
+let ALL_TRENDS = [];
+let currentMode = 'top';
+let currentCategory = 'すべて';
+let expanded = false;
+
+function esc(s){
+  return String(s ?? '').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+}
+function nfmt(n){ return new Intl.NumberFormat('ja-JP').format(Math.round(Number(n)||0)); }
+function num(v){ return Number(v)||0; }
+
+function statusClass(status){
+  const s=String(status||'');
+  if(s.includes('爆発')) return 'status-boom';
+  if(s.includes('加速')) return 'status-accel';
+  if(s.includes('急上昇')) return 'status-rise';
+  if(s.includes('下降')) return 'status-down';
+  return 'status-seed';
+}
+function rankMedal(i){
+  if(i===0) return '<span class="medal gold">1</span>';
+  if(i===1) return '<span class="medal silver">2</span>';
+  if(i===2) return '<span class="medal bronze">3</span>';
+  return '<span class="rank-circle">'+(i+1)+'</span>';
+}
+function sparkSVG(seed){
+  const base = 18 + (seed % 9);
+  const pts=[0,10,20,30,40,50,60,70,80,90,100].map((x,j)=>{
+    const y=Math.max(5,32-((j*7+seed*3)%25)-(j>6?6:0));
+    return `${x},${y}`;
+  }).join(' ');
+  return `<svg viewBox="0 0 100 36" aria-hidden="true"><polyline points="${pts}"/></svg>`;
+}
+
+function filterTrends(){
+  let data=[...ALL_TRENDS];
+  const q=document.getElementById('keywordSearch').value.trim().toLowerCase();
+
+  if(currentMode==='pre') data=data.filter(x=>num(x.pre_buzz_score)>=65);
+  if(currentMode==='boom') data=data.filter(x=>String(x.status).includes('爆発') || num(x.buzz_score)>=78);
+  if(currentMode==='rise') data=data.filter(x=>num(x.acceleration)>=0.25);
+  if(currentCategory!=='すべて'){
+    data=data.filter(x=>{
+      const c=String(x.category||'');
+      if(currentCategory==='ニュース') return c.includes('ニュース')||c.includes('時事')||c==='総合';
+      return c.includes(currentCategory);
+    });
+  }
+  if(q) data=data.filter(x=>`${x.keyword} ${x.category} ${x.status}`.toLowerCase().includes(q));
+
+  if(currentMode==='pre') data.sort((a,b)=>num(b.pre_buzz_score)-num(a.pre_buzz_score));
+  else if(currentMode==='rise') data.sort((a,b)=>num(b.acceleration)-num(a.acceleration));
+  else if(currentMode==='boom') data.sort((a,b)=>num(b.buzz_score)-num(a.buzz_score));
+  else data.sort((a,b)=>num(b.traffic_potential)-num(a.traffic_potential));
+
+  return data;
+}
+
+function renderRanking(){
+  const data=filterTrends();
+  const limit=expanded ? 50 : 10;
+  const g=document.getElementById('trendGrid');
+  if(!data.length){
+    g.innerHTML='<div class="empty-state">該当するキーワードがありません。</div>';
+    return;
+  }
+
+  g.innerHTML=data.slice(0,limit).map((x,i)=>{
+    const pre=Math.round(num(x.pre_buzz_score));
+    const buzz=Math.round(num(x.buzz_score));
+    const acc=num(x.acceleration);
+    const traffic=Math.round(num(x.traffic_potential));
+    return `
+      <a class="ranking-row" href="/trend/${encodeURIComponent(x.slug)}">
+        <div class="rank-slot">${rankMedal(i)}</div>
+        <div class="keyword-block">
+          <strong>${esc(x.keyword)}</strong>
+          <span class="status-badge ${statusClass(x.status)}">${esc(x.status)}</span>
+          <small>${esc(x.category || '総合')} ・ PV ${nfmt(x.pageviews)}</small>
+          <span class="confidence-badge ${num(x.corroborated)?'confirmed':'single'}">${esc(x.confidence_label||'未確認')} ${Math.round(num(x.confidence_score))}</span>
+          ${x.first_source?`<span class="origin-line">発火: ${esc(x.first_source)}${x.propagation_minutes!==null&&x.propagation_minutes!==undefined?` → ${Math.round(num(x.propagation_minutes))}分で波及`:''}</span>`:''}
+        </div>
+        <div class="metric-cell"><span>Pre-Buzz</span><b class="pre-num">${pre}<i>↗</i></b></div>
+        <div class="metric-cell"><span>Buzz</span><b class="buzz-num">${buzz}<i>↗</i></b></div>
+        <div class="metric-cell"><span>加速度</span><b class="acc-num">${acc>=0?'+':''}${acc.toFixed(2)}<i>↗</i></b></div>
+        <div class="traffic-cell">
+          <span>Traffic Potential</span>
+          <div class="traffic-line"><b>${traffic}</b>${sparkSVG(i+traffic)}</div>
+          <small>${traffic>=85?'爆発寸前':traffic>=70?'加速中':traffic>=55?'上昇中':'観察中'}</small>
+        </div>
+      </a>`;
+  }).join('');
+
+  document.getElementById('showAllBtn').textContent = expanded ? '閉じる ×' : 'もっと見る ›';
+}
+
+function renderSummary(){
+  const boom=ALL_TRENDS.filter(x=>String(x.status).includes('爆発')||num(x.buzz_score)>=78);
+  const pre=ALL_TRENDS.filter(x=>num(x.pre_buzz_score)>=65);
+  const rise=ALL_TRENDS.filter(x=>num(x.acceleration)>=0.25);
+  const totalPv=ALL_TRENDS.reduce((s,x)=>s+num(x.pageviews),0);
+
+  document.getElementById('topicCount').textContent=nfmt(ALL_TRENDS.length);
+  document.getElementById('boomCount').textContent=nfmt(boom.length);
+  document.getElementById('totalPv').textContent=nfmt(totalPv);
+  document.getElementById('topicDelta').textContent='+'+nfmt(Math.max(1,rise.length))+'件';
+  document.getElementById('boomDelta').textContent='+'+nfmt(Math.max(0,Math.round(boom.length/3)))+'件';
+  const avgTp=ALL_TRENDS.length?ALL_TRENDS.reduce((s,x)=>s+num(x.traffic_potential),0)/ALL_TRENDS.length:0;
+  document.getElementById('pvDelta').textContent='+'+Math.max(0,(avgTp/5)).toFixed(1)+'%';
+
+  document.getElementById('quickBoom').textContent=nfmt(boom.length)+' 件';
+  document.getElementById('quickPre').textContent=nfmt(pre.length)+' 件';
+  document.getElementById('quickRise').textContent=nfmt(rise.length)+' 件';
+
+  const hottest=[...ALL_TRENDS].sort((a,b)=>(num(b.pre_buzz_score)+num(b.acceleration)*70)-(num(a.pre_buzz_score)+num(a.acceleration)*70))[0];
+  if(hottest){
+    document.getElementById('preBuzzMessage').textContent=`「${hottest.keyword}」が急上昇の兆し！`;
+    document.getElementById('preBuzzLink').href='/trend/'+encodeURIComponent(hottest.slug);
+  }
+}
+
+async function loadRanking(){
+  try{
+    const d=await (await fetch('/api/traffic-ranking?limit=50')).json();
+    ALL_TRENDS=d.items||[];
+    renderSummary();
+    renderRanking();
+  }catch(e){
+    document.getElementById('trendGrid').innerHTML='<div class="empty-state">ランキングを取得できませんでした。</div>';
+  }
+}
+
+
+
+
+async function loadMonetize(){
+  try{
+    const d=await (await fetch('/api/monetize-ranking?limit=6')).json();
+    const el=document.getElementById('monetizeRanking');
+    const items=d.items||[];
+    if(!items.length){el.innerHTML='<div class="empty-state">収益データを準備中...</div>';return;}
+    el.innerHTML=items.map((x,i)=>`<a class="money-row" href="/trend/${encodeURIComponent(x.slug)}">
+      <div class="money-rank">${i+1}</div>
+      <div class="money-key"><strong>${esc(x.keyword)}</strong><small>${esc(x.intent_category)} ・ ${esc(x.recommended_mode)}</small></div>
+      <div class="money-traffic"><span>TRAFFIC</span><b>${Math.round(num(x.traffic_potential))}</b></div>
+      <div class="money-score"><span>MONETIZE</span><b>${Math.round(num(x.monetize_score))}</b></div>
+      <div class="money-letter">${esc(x.monetize_grade)}</div>
+    </a>`).join('');
+  }catch(e){}
+}
+
+let VELOCITY_ITEMS=[];
+let velocityWindow=30;
+
+function velocityValue(x){
+  return velocityWindow===30?num(x.velocity_30m):velocityWindow===60?num(x.velocity_1h):num(x.velocity_3h);
+}
+function renderVelocity(){
+  const el=document.getElementById('velocityRanking');
+  const data=[...VELOCITY_ITEMS].sort((a,b)=>velocityValue(b)-velocityValue(a)).slice(0,8);
+  if(!data.length){
+    el.innerHTML='<div class="empty-state">実データを2回以上取得するとVelocityが表示されます。</div>';
+    return;
+  }
+  el.innerHTML=data.map((x,i)=>{
+    const v=velocityValue(x);
+    const cls=v>0?'velocity-up':v<0?'velocity-down':'velocity-flat';
+    const pct=Math.min(100,Math.max(3,Math.abs(v)*2));
+    return `<a class="velocity-row" href="/trend/${encodeURIComponent(x.slug)}">
+      <div class="velocity-rank">${i+1}</div>
+      <div class="velocity-keyword">
+        <strong>${esc(x.keyword)}</strong>
+        <small>${esc(x.first_source||'シグナル蓄積中')} ${x.source_count?`・${x.source_count} source`:''}</small>
+      </div>
+      <div class="velocity-bar"><i class="${cls}" style="width:${pct}%"></i></div>
+      <div class="velocity-number ${cls}">${v>=0?'+':''}${v.toFixed(1)}<small>/h</small></div>
+      <div class="velocity-confidence"><span>CONF.</span><b>${Math.round(num(x.confidence_score))}</b></div>
+    </a>`;
+  }).join('');
+}
+async function loadVelocity(){
+  try{
+    const d=await (await fetch('/api/velocity-ranking?limit=50')).json();
+    VELOCITY_ITEMS=d.items||[];
+    renderVelocity();
+  }catch(e){}
+}
+document.querySelectorAll('.vtab').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('.vtab').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+  velocityWindow=Number(b.dataset.window);
+  renderVelocity();
+}));
+
+async function loadCollectors(){
+  try{
+    const d=await (await fetch('/api/collectors')).json();
+    const el=document.getElementById('collectorStatus');
+    const labels={google_trends_jp:'Google Trends JP',wikimedia_ja:'Wikimedia JA'};
+    el.innerHTML=d.collectors.length?d.collectors.map(x=>`
+      <div class="collector-card">
+        <span>${labels[x.source]||esc(x.source)}</span>
+        <strong class="${x.last_status==='ok'?'collector-ok':'collector-error'}">${x.last_status==='ok'?'CONNECTED':'CHECK'}</strong>
+        <small>${x.last_count}件 / ${x.last_run_at?new Date(x.last_run_at).toLocaleString():'未実行'}</small>
+      </div>`).join(''):'まだ実データ取得を実行していません。';
+  }catch(e){}
+}
+
+async function loadLearning(){
+  try{
+    const d=await (await fetch('/api/learning-status')).json();
+    document.getElementById('hitRate').textContent=Number(d.model.hit_rate||0).toFixed(1)+'%';
+    document.getElementById('evaluated').textContent=Math.round(d.model.evaluated_predictions||0);
+    document.getElementById('pending').textContent=d.pending;
+    const el=document.getElementById('learningRecent');
+    el.innerHTML=d.recent.length?d.recent.map(x=>`
+      <div class="learning-row">
+        <strong>${esc(x.keyword)}</strong>
+        <span class="${x.hit?'hit':'miss'}">${x.hit?'HIT':'MISS'}</span>
+        <small>Buzz ${x.buzz_gain>=0?'+':''}${x.buzz_gain}</small>
+        <small>Traffic ${x.traffic_gain>=0?'+':''}${x.traffic_gain}</small>
+      </div>`).join(''):'まだ答え合わせ前です。';
+  }catch(e){}
+}
+
+async function refreshStatus(){
+  try{
+    const s=await (await fetch('/api/system-status')).json();
+    const el=document.getElementById('liveState');
+    el.textContent=s.demo_mode?`DEMO ${s.interval_seconds}s`:'LIVE';
+  }catch(e){}
+}
+
+document.querySelectorAll('.top-tab').forEach(btn=>btn.addEventListener('click',()=>{
+  document.querySelectorAll('.top-tab').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  currentMode=btn.dataset.mode;
+  if(currentMode==='category'){
+    document.getElementById('categoryTabs').scrollIntoView({behavior:'smooth',block:'center'});
+    currentMode='top';
+  }
+  renderRanking();
+}));
+
+document.querySelectorAll('.chip').forEach(btn=>btn.addEventListener('click',()=>{
+  document.querySelectorAll('.chip').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  currentCategory=btn.dataset.category;
+  renderRanking();
+}));
+
+document.querySelectorAll('.quick-card').forEach(btn=>btn.addEventListener('click',()=>{
+  currentMode=btn.dataset.filter;
+  document.querySelector('.ranking-section').scrollIntoView({behavior:'smooth'});
+  renderRanking();
+}));
+
+document.querySelectorAll('.bottom-item').forEach(btn=>btn.addEventListener('click',()=>{
+  document.querySelectorAll('.bottom-item').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  const t=btn.dataset.bottom;
+  if(t==='home') window.scrollTo({top:0,behavior:'smooth'});
+  if(t==='ranking') document.querySelector('.ranking-section').scrollIntoView({behavior:'smooth'});
+  if(t==='pre'){ currentMode='pre'; document.querySelector('.ranking-section').scrollIntoView({behavior:'smooth'}); renderRanking(); }
+  if(t==='search'){ document.querySelector('.search-section').scrollIntoView({behavior:'smooth'}); setTimeout(()=>document.getElementById('keywordSearch').focus(),350); }
+  if(t==='learning') document.querySelector('.learning-section').scrollIntoView({behavior:'smooth'});
+}));
+
+document.getElementById('keywordSearch').addEventListener('input',renderRanking);
+document.getElementById('showAllBtn').addEventListener('click',()=>{expanded=!expanded;renderRanking();});
+
+
+document.getElementById('collectNow').addEventListener('click',async()=>{
+  const b=document.getElementById('collectNow');
+  b.disabled=true;b.textContent='取得中...';
+  try{
+    await fetch('/api/collect-now',{method:'POST'});
+    await loadCollectors();
+    await loadRanking();
+  }finally{
+    b.disabled=false;b.textContent='今すぐ取得';
+  }
+});
+
+loadRanking();loadMonetize();loadVelocity();loadLearning();loadCollectors();refreshStatus();
+setInterval(()=>{loadRanking();loadMonetize();loadVelocity();loadLearning();loadCollectors();refreshStatus()},30000);
+</script>
+</body>
+</html>
