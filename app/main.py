@@ -2003,3 +2003,8 @@ def create_or_update_trend(
                 status, ts, ts
             ))
     return RedirectResponse(url=f"/trend/{slug}", status_code=303)
+
+
+@app.get("/google9854439bbecd0905.html", response_class=PlainTextResponse)
+def google_site_verification():
+    return "google-site-verification: google9854439bbecd0905.html"
