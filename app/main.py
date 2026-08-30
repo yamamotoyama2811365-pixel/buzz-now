@@ -689,7 +689,7 @@ def upsert_real_trend(c, keyword, source_name, source_score, raw_metric, source_
     c.execute("""
       INSERT INTO trends(
         keyword,slug,summary,why_now,category,pre_buzz_score,buzz_score,
-        acceleration,status,created_at,updated_at
+        acceleration,status,first_detected_at,updated_at
       ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
     """,(
         keyword,slug,
