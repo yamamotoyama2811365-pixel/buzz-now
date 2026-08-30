@@ -19,6 +19,11 @@ DB_PATH = BASE / "buzznow.db"
 SITE_URL = os.getenv("SITE_URL", "http://localhost:8000").rstrip("/")
 SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
+# Production runtime settings
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+APP_VERSION = os.getenv("APP_VERSION", "12.0.0")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
 REAL_DATA_INTERVAL_MINUTES = int(os.getenv("REAL_DATA_INTERVAL_MINUTES","30"))
 
