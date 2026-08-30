@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+jinja2
+python-multipart
+apscheduler==3.10.4
+httpx==0.27.2
+feedparser==6.0.11
