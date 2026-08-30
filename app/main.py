@@ -261,6 +261,32 @@ def init_db():
             created_at TEXT NOT NULL
         );
 
+
+        CREATE TABLE IF NOT EXISTS v9_signal_history(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            keyword TEXT NOT NULL,
+            match_key TEXT NOT NULL,
+            source_score REAL NOT NULL DEFAULT 0,
+            raw_metric REAL NOT NULL DEFAULT 0,
+            captured_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_v9_signal_history_lookup
+        ON v9_signal_history(source, match_key, captured_at);
+
+        CREATE TABLE IF NOT EXISTS v9_velocity_state(
+            trend_id INTEGER PRIMARY KEY,
+            velocity_30m REAL NOT NULL DEFAULT 0,
+            velocity_1h REAL NOT NULL DEFAULT 0,
+            velocity_3h REAL NOT NULL DEFAULT 0,
+            velocity_score REAL NOT NULL DEFAULT 0,
+            velocity_label TEXT NOT NULL DEFAULT '観測開始',
+            first_source TEXT NOT NULL DEFAULT '',
+            first_seen_at TEXT NOT NULL DEFAULT '',
+            source_sequence TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
         """)
 
         count = c.execute("SELECT COUNT(*) AS n FROM trends").fetchone()["n"]
@@ -1151,6 +1177,144 @@ def refresh_monetization(c, ts):
         """,(r["id"],score,grade,intent,recommended,reason,ts))
 
 
+
+def _v9_parse_dt(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _v9_delta_score(rows, minutes):
+    """Return score change versus the closest snapshot at least `minutes` old."""
+    if not rows:
+        return 0.0
+    latest = rows[-1]
+    latest_dt = _v9_parse_dt(latest["captured_at"])
+    if not latest_dt:
+        return 0.0
+    target = latest_dt - timedelta(minutes=minutes)
+    candidates = [r for r in rows[:-1] if (_v9_parse_dt(r["captured_at"]) or latest_dt) <= target]
+    if not candidates:
+        return 0.0
+    base = candidates[-1]
+    return round(float(latest["source_score"] or 0) - float(base["source_score"] or 0), 2)
+
+
+def refresh_v9_velocity(c, ts):
+    """
+    V9: preserve real-source history and calculate 30m/1h/3h signal velocity.
+    This measures signal movement, not causal media propagation.
+    """
+    trends = c.execute("SELECT id, keyword, acceleration FROM trends").fetchall()
+    for trend in trends:
+        key = normalize_match_key(trend["keyword"])
+        rows = c.execute("""
+            SELECT source, source_score, raw_metric, captured_at
+            FROM v9_signal_history
+            WHERE match_key=?
+            ORDER BY captured_at ASC
+        """, (key,)).fetchall()
+
+        if not rows:
+            continue
+
+        v30 = _v9_delta_score(rows, 30)
+        v60 = _v9_delta_score(rows, 60)
+        v180 = _v9_delta_score(rows, 180)
+
+        # Weighted short-term velocity. Positive movement is emphasized.
+        velocity_score = round(max(0.0, min(
+            100.0,
+            50.0 + v30 * 1.8 + v60 * 1.0 + v180 * 0.45
+        )), 1)
+
+        if v30 >= 12 or v60 >= 18:
+            label = "急加速"
+        elif v30 >= 5 or v60 >= 8:
+            label = "加速中"
+        elif v30 > 0 or v60 > 0 or v180 > 0:
+            label = "上昇中"
+        elif v30 < -5 or v60 < -8:
+            label = "減速中"
+        else:
+            label = "観測中"
+
+        first_by_source = {}
+        for r in rows:
+            s = r["source"]
+            if s not in first_by_source:
+                first_by_source[s] = r["captured_at"]
+
+        ordered = sorted(first_by_source.items(), key=lambda x: x[1])
+        first_source = ordered[0][0] if ordered else ""
+        first_seen_at = ordered[0][1] if ordered else ""
+        source_sequence = " → ".join(s for s, _ in ordered)
+
+        c.execute("""
+            INSERT INTO v9_velocity_state(
+                trend_id, velocity_30m, velocity_1h, velocity_3h,
+                velocity_score, velocity_label, first_source,
+                first_seen_at, source_sequence, updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(trend_id) DO UPDATE SET
+                velocity_30m=excluded.velocity_30m,
+                velocity_1h=excluded.velocity_1h,
+                velocity_3h=excluded.velocity_3h,
+                velocity_score=excluded.velocity_score,
+                velocity_label=excluded.velocity_label,
+                first_source=excluded.first_source,
+                first_seen_at=excluded.first_seen_at,
+                source_sequence=excluded.source_sequence,
+                updated_at=excluded.updated_at
+        """, (
+            trend["id"], v30, v60, v180, velocity_score, label,
+            first_source, first_seen_at, source_sequence, ts
+        ))
+
+        # Feed real velocity back into the trend acceleration carefully.
+        if label in ("急加速", "加速中"):
+            new_acc = min(1.0, max(float(trend["acceleration"] or 0), velocity_score / 100.0))
+            c.execute("UPDATE trends SET acceleration=?, updated_at=? WHERE id=?",
+                      (round(new_acc, 3), ts, trend["id"]))
+
+
+def snapshot_v9_sources(c, ts):
+    """Copy the latest source signals into an append-only V9 history table."""
+    latest = c.execute("""
+        SELECT source, keyword, source_score, raw_metric
+        FROM source_items
+    """).fetchall()
+
+    # Avoid duplicate rows for the same source/keyword within the same minute.
+    minute_key = str(ts)[:16]
+    for r in latest:
+        key = normalize_match_key(r["keyword"])
+        exists = c.execute("""
+            SELECT 1 FROM v9_signal_history
+            WHERE source=? AND match_key=? AND substr(captured_at,1,16)=?
+            LIMIT 1
+        """, (r["source"], key, minute_key)).fetchone()
+        if not exists:
+            c.execute("""
+                INSERT INTO v9_signal_history(
+                    source, keyword, match_key, source_score, raw_metric, captured_at
+                ) VALUES(?,?,?,?,?,?)
+            """, (
+                r["source"], r["keyword"], key,
+                float(r["source_score"] or 0),
+                float(r["raw_metric"] or 0),
+                ts
+            ))
+
+    # Keep 90 days only.
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    c.execute("DELETE FROM v9_signal_history WHERE captured_at < ?", (cutoff,))
+
+
+
 def collect_real_sources():
     ts=now_iso()
     with db() as c:
@@ -1159,6 +1323,8 @@ def collect_real_sources():
         refresh_confidence(c,ts)
         refresh_propagation(c,ts)
         refresh_monetization(c,ts)
+        snapshot_v9_sources(c, ts)
+        refresh_v9_velocity(c, ts)
         c.commit()
     return {"google_trends":g,"wikimedia":w,"total":g+w}
 
@@ -1503,6 +1669,56 @@ def collector_debug():
       "real_data_mode": REAL_DATA_MODE,
       "states": [dict(x) for x in states]
     }
+
+
+@app.get("/api/v9/velocity-ranking")
+def api_v9_velocity_ranking(limit: int = 50):
+    limit = max(1, min(int(limit), 100))
+    with db() as c:
+        rows = c.execute("""
+            SELECT
+                t.keyword, t.slug, t.category, t.pre_buzz_score, t.buzz_score,
+                t.acceleration, t.status,
+                COALESCE(v.velocity_30m,0) AS velocity_30m,
+                COALESCE(v.velocity_1h,0) AS velocity_1h,
+                COALESCE(v.velocity_3h,0) AS velocity_3h,
+                COALESCE(v.velocity_score,0) AS velocity_score,
+                COALESCE(v.velocity_label,'観測開始') AS velocity_label,
+                COALESCE(v.first_source,'') AS first_source,
+                COALESCE(v.first_seen_at,'') AS first_seen_at,
+                COALESCE(v.source_sequence,'') AS source_sequence
+            FROM trends t
+            LEFT JOIN v9_velocity_state v ON v.trend_id=t.id
+            ORDER BY v.velocity_score DESC, t.pre_buzz_score DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.get("/api/trends/{slug}/v9-history")
+def api_trend_v9_history(slug: str, limit: int = 200):
+    limit = max(1, min(int(limit), 500))
+    with db() as c:
+        trend = c.execute("SELECT id, keyword, slug FROM trends WHERE slug=?", (slug,)).fetchone()
+        if not trend:
+            raise HTTPException(status_code=404, detail="trend not found")
+        key = normalize_match_key(trend["keyword"])
+        history = c.execute("""
+            SELECT source, keyword, source_score, raw_metric, captured_at
+            FROM v9_signal_history
+            WHERE match_key=?
+            ORDER BY captured_at DESC
+            LIMIT ?
+        """, (key, limit)).fetchall()
+        velocity = c.execute("""
+            SELECT * FROM v9_velocity_state WHERE trend_id=?
+        """, (trend["id"],)).fetchone()
+    return {
+        "keyword": trend["keyword"],
+        "velocity": dict(velocity) if velocity else None,
+        "history": [dict(r) for r in history]
+    }
+
 
 @app.get("/api/collectors")
 def collectors():
