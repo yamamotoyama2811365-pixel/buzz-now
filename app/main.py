@@ -1671,6 +1671,42 @@ def collector_debug():
     }
 
 
+
+@app.get("/api/v9/dashboard")
+def api_v9_dashboard(limit: int = 50):
+    limit = max(1, min(int(limit), 100))
+    with db() as c:
+        rows = c.execute("""
+            SELECT
+                t.keyword, t.slug, t.category, t.pre_buzz_score, t.buzz_score,
+                t.acceleration, t.status,
+                COALESCE(v.velocity_30m,0) AS velocity_30m,
+                COALESCE(v.velocity_1h,0) AS velocity_1h,
+                COALESCE(v.velocity_3h,0) AS velocity_3h,
+                COALESCE(v.velocity_score,0) AS velocity_score,
+                COALESCE(v.velocity_label,'観測開始') AS velocity_label,
+                COALESCE(v.first_source,'') AS first_source,
+                COALESCE(v.source_sequence,'') AS source_sequence,
+                COALESCE(cf.confidence_score,0) AS confidence_score,
+                COALESCE(cf.source_count,0) AS source_count
+            FROM trends t
+            LEFT JOIN v9_velocity_state v ON v.trend_id=t.id
+            LEFT JOIN confidence_state cf ON cf.trend_id=t.id
+            ORDER BY
+                CASE COALESCE(v.velocity_label,'')
+                    WHEN '急加速' THEN 4
+                    WHEN '加速中' THEN 3
+                    WHEN '上昇中' THEN 2
+                    WHEN '観測中' THEN 1
+                    ELSE 0
+                END DESC,
+                COALESCE(v.velocity_score,0) DESC,
+                t.pre_buzz_score DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+    return {"items": [dict(r) for r in rows]}
+
+
 @app.get("/api/v9/velocity-ranking")
 def api_v9_velocity_ranking(limit: int = 50):
     limit = max(1, min(int(limit), 100))
