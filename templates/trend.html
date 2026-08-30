@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ title }}</title>
+<meta name="description" content="{{ description }}">
+<link rel="canonical" href="{{ canonical }}">
+<meta property="og:title" content="{{ title }}">
+<meta property="og:description" content="{{ description }}">
+<meta property="og:type" content="article">
+<meta property="og:url" content="{{ canonical }}">
+<meta name="robots" content="{% if trend['is_indexable'] %}index,follow{% else %}noindex,follow{% endif %}">
+<link rel="stylesheet" href="/static/style.css">
+<script type="application/ld+json">
+{
+  "@context":"https://schema.org",
+  "@type":"WebPage",
+  "name":{{ title|tojson }},
+  "description":{{ description|tojson }},
+  "url":{{ canonical|tojson }},
+  "dateModified":{{ trend['updated_at']|tojson }},
+  "isPartOf":{"@type":"WebSite","name":"BUZZ NOW","url":{{ request.base_url|string|tojson }}}
+}
+</script>
+</head>
+<body>
+<div class="wrap page">
+  <header class="top">
+    <a class="brand" href="/">● BUZZ NOW</a>
+    <div class="live">{{ trend['status'] }}</div>
+  </header>
+
+  <article class="detail">
+    <div class="kicker">{{ trend['category'] }} / TREND</div>
+    <h1>{{ trend['keyword'] }}とは？<br>なぜ今話題？</h1>
+    <p class="desc">{{ trend['summary'] }}</p>
+
+    <div class="metrics">
+      <div class="metric"><span>PRE-BUZZ</span><b>{{ trend['pre_buzz_score']|round|int }}</b></div>
+      <div class="metric"><span>BUZZ SCORE</span><b>{{ trend['buzz_score']|round|int }}</b></div>
+      <div class="metric"><span>ACCELERATION</span><b>{{ trend['acceleration'] }}</b></div>
+    </div>
+
+
+
+
+
+
+
+    <section class="section">
+      <div class="kicker">BUZZ PROPAGATION</div>
+      <h2>バズの発火・波及</h2>
+      <div class="card">
+        <div class="prop-grid">
+          <div><span class="mini">FIRST SIGNAL</span><strong id="propFirst">-</strong></div>
+          <div><span class="mini">PROPAGATION</span><strong id="propMinutes">-</strong></div>
+          <div><span class="mini">30 MIN</span><strong id="velocity30">-</strong></div>
+          <div><span class="mini">1 HOUR</span><strong id="velocity60">-</strong></div>
+          <div><span class="mini">3 HOURS</span><strong id="velocity180">-</strong></div>
+        </div>
+        <div id="propSequence" class="prop-sequence">波及データを蓄積中...</div>
+      </div>
+    </section>
+
+
+    <section class="section monetization-zone">
+      <div class="monetize-head">
+        <div>
+          <div class="kicker">MONETIZATION</div>
+          <h2>このトレンドの収益ポテンシャル</h2>
+        </div>
+        <div id="monetizeGrade" class="money-grade">-</div>
+      </div>
+      <div class="money-grid">
+        <div><span>MONETIZE SCORE</span><strong id="monetizeScore">-</strong></div>
+        <div><span>INTENT</span><strong id="monetizeIntent">-</strong></div>
+        <div><span>BEST MODE</span><strong id="monetizeMode">-</strong></div>
+      </div>
+      <div id="prDisclosure" class="pr-disclosure" style="display:none">{{ pr_label if pr_label else 'PR・広告を含みます' }}</div>
+    </section>
+
+    <section class="section ad-zone">
+      <div class="ad-label">ADVERTISEMENT</div>
+      <div id="smartAdSlot" class="smart-ad-slot">
+        <div class="ad-placeholder">
+          <b>SMART MONETIZE SLOT</b>
+          <span>本番ではキーワードに合わせて AdSense / 成果報酬 / Hybrid を自動選択</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="kicker">SOURCE CONFIDENCE</div>
+      <h2>この上昇シグナルの信頼度</h2>
+      <div class="card">
+        <div style="display:grid;grid-template-columns:120px 1fr;gap:12px">
+          <span class="mini">CONFIDENCE</span><strong id="confidenceScore">-</strong>
+          <span class="mini">SOURCES</span><strong id="confidenceSources">-</strong>
+          <span class="mini">STATUS</span><strong id="confidenceLabel">-</strong>
+        </div>
+        <div id="confidenceSourceList" style="margin-top:16px"></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="kicker">PREDICTION CHECK</div>
+      <h2>この予測は当たった？</h2>
+      <div class="card" id="predictionCheck">予測を記録中...</div>
+    </section>
+
+    <section class="section">
+      <div class="kicker">AUTO GROW</div>
+      <h2>このページを自動で育てる？</h2>
+      <div class="card">
+        <div style="display:grid;grid-template-columns:110px 1fr;gap:12px">
+          <span class="mini">GROW LEVEL</span><strong id="growLevel">-</strong>
+          <span class="mini">DECISION</span><strong id="growDecision">-</strong>
+          <span class="mini">QUALITY</span><strong id="growQuality">-</strong>
+          <span class="mini">WHY</span><span id="growReason">-</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="kicker">TRAFFIC POTENTIAL</div>
+      <h2>このキーワードはアクセスを稼ぎそう？</h2>
+      <div class="metrics">
+        <div class="metric"><span>TRAFFIC POTENTIAL</span><b id="tp">-</b></div>
+        <div class="metric"><span>PAGEVIEWS</span><b id="pv">-</b></div>
+        <div class="metric"><span>CTR</span><b id="ctr">-</b></div>
+      </div>
+      <div class="card">
+        <div id="trafficHistory">交通データ読み込み中...</div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="kicker">LIVE HISTORY</div>
+      <h2>直近のスコア推移</h2>
+      <div class="card">
+        <div id="history">読み込み中...</div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="kicker">WHY NOW?</div>
+      <h2>なぜ今、注目されている？</h2>
+      <div class="card">{{ trend['why_now'] }}</div>
+    </section>
+
+    <section class="section">
+      <div class="kicker">RELATED SEARCHES</div>
+      <h2>関連キーワード</h2>
+      <div class="tags">
+        {% for r in related %}
+          <span class="tag">{{ r['keyword'] }}</span>
+        {% else %}
+          <span class="tag">関連キーワード収集中</span>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="kicker">SOURCES</div>
+      <h2>関連する情報源</h2>
+      <div class="card">
+      {% for s in sources %}
+        <div class="source">
+          <div class="pub">{{ s['publisher'] }} ・ {{ s['source_label'] }}</div>
+          <strong>{{ s['title'] }}</strong><br>
+          <a href="{{ s['url'] }}" target="_blank" rel="noopener noreferrer">元情報を見る →</a>
+        </div>
+      {% else %}
+        <div class="notice">現在、掲載可能な情報源を確認中です。BUZZ NOWでは記事本文の転載を行わず、元情報へのリンクを中心に表示します。</div>
+      {% endfor %}
+      </div>
+    </section>
+
+    <p class="notice">
+      最終更新：{{ trend['updated_at'] }}<br>
+      BUZZ NOWはトレンドの注目度を整理するサービスです。掲載内容は情報源の紹介・要約を中心とし、事実関係の最終確認は元情報をご確認ください。
+    </p>
+  </article>
+</div>
+<script>
+(async()=>{
+  try{
+    const d=await (await fetch('/api/trends/{{ trend["slug"] }}/history?limit=12')).json();
+    const el=document.getElementById('history');
+    if(!d.items.length){el.textContent='まだ履歴がありません';return;}
+    el.innerHTML=d.items.map(x=>`
+      <div style="display:grid;grid-template-columns:1fr 80px 80px 80px;gap:8px;padding:8px 0;border-bottom:1px solid #252935;font-size:13px">
+        <span>${new Date(x.recorded_at).toLocaleTimeString()}</span>
+        <span>Pre ${x.pre_buzz_score}</span>
+        <span>Buzz ${x.buzz_score}</span>
+        <span>Acc ${x.acceleration}</span>
+      </div>`).join('');
+  }catch(e){}
+})();
+
+  try{
+    const md=await (await fetch('/api/trends/{{ trend["slug"] }}/monetization')).json();
+    if(md.state){
+      const m=md.state;
+      document.getElementById('monetizeGrade').textContent=m.monetize_grade||'C';
+      document.getElementById('monetizeScore').textContent=Math.round(Number(m.monetize_score||0))+'/100';
+      document.getElementById('monetizeIntent').textContent=(m.intent_category||'general').toUpperCase();
+      document.getElementById('monetizeMode').textContent=(m.recommended_mode||'adsense').toUpperCase();
+      if((m.recommended_mode==='affiliate'||m.recommended_mode==='hybrid') && md.affiliate_enabled){
+        document.getElementById('prDisclosure').style.display='block';
+      }
+      const slot=document.getElementById('smartAdSlot');
+      if(!md.adsense_enabled && !md.affiliate_enabled){
+        slot.querySelector('span').textContent='広告接続前：公開後、承認された広告サービスの設定を環境変数から有効化できます。';
+      }else{
+        slot.querySelector('b').textContent=(m.recommended_mode||'adsense').toUpperCase()+' SLOT';
+      }
+    }
+  }catch(e){}
+
+try{
+    const pd2=await (await fetch('/api/trends/{{ trend["slug"] }}/propagation')).json();
+    if(pd2.state){
+      const s=pd2.state;
+      document.getElementById('propFirst').textContent=s.first_source||'-';
+      document.getElementById('propMinutes').textContent=s.propagation_minutes===null?'単独':Math.round(s.propagation_minutes)+'分';
+      const fmt=v=>(Number(v)>=0?'+':'')+Number(v||0).toFixed(1)+'/h';
+      document.getElementById('velocity30').textContent=fmt(s.velocity_30m);
+      document.getElementById('velocity60').textContent=fmt(s.velocity_1h);
+      document.getElementById('velocity180').textContent=fmt(s.velocity_3h);
+      document.getElementById('propSequence').textContent=s.source_sequence||'波及データを蓄積中...';
+    }
+  }catch(e){}
+  try{
+    const cd=await (await fetch('/api/trends/{{ trend["slug"] }}/confidence')).json();
+    if(cd.state){
+      document.getElementById('confidenceScore').textContent=Math.round(cd.state.confidence_score)+'/100';
+      document.getElementById('confidenceSources').textContent=cd.state.source_count+' source';
+      document.getElementById('confidenceLabel').textContent=cd.state.confidence_label;
+    }
+    const ce=document.getElementById('confidenceSourceList');
+    ce.innerHTML=cd.sources.length?cd.sources.map(s=>`
+      <div class="source">
+        <div class="pub">${s.source} ・ signal ${Math.round(s.source_score)}</div>
+        <div>${s.source_url?`<a href="${s.source_url}" rel="nofollow noopener" target="_blank">元データを確認 ↗</a>`:''}</div>
+      </div>`).join(''):'実データソースとの一致はまだありません。';
+  }catch(e){}
+  try{
+    const pd=await (await fetch('/api/trends/{{ trend["slug"] }}/predictions')).json();
+    const pe=document.getElementById('predictionCheck');
+    pe.innerHTML=pd.items.length?pd.items.map(x=>`
+      <div style="padding:9px 0;border-bottom:1px solid #252935">
+        <strong>${x.status==='pending'?'判定待ち':(x.hit?'HIT':'MISS')}</strong>
+        <span class="mini"> / 予測時 Pre ${x.predicted_pre_buzz}・Buzz ${x.predicted_buzz}・Traffic ${x.predicted_traffic_potential}</span>
+        ${x.status==='evaluated'?`<div class="mini">結果：Buzz ${x.buzz_gain>=0?'+':''}${x.buzz_gain} / Traffic ${x.traffic_gain>=0?'+':''}${x.traffic_gain} / PV +${x.pv_gain}</div>`:''}
+      </div>`).join(''):'まだ予測がありません';
+  }catch(e){}
+  try{
+    const gd=await (await fetch('/api/trends/{{ trend["slug"] }}/growth')).json();
+    if(gd.state){
+      document.getElementById('growLevel').textContent='LEVEL '+gd.state.level;
+      document.getElementById('growDecision').textContent=gd.state.decision;
+      document.getElementById('growQuality').textContent=Math.round(gd.state.quality_score);
+      document.getElementById('growReason').textContent=gd.state.last_reason;
+    }
+  }catch(e){}
+  try{
+    const td=await (await fetch('/api/trends/{{ trend["slug"] }}/traffic?limit=12')).json();
+    if(td.total){
+      document.getElementById('tp').textContent=Math.round(td.total.traffic_potential);
+      document.getElementById('pv').textContent=td.total.pageviews;
+      document.getElementById('ctr').textContent=Number(td.total.last_ctr).toFixed(1)+'%';
+    }
+    const th=document.getElementById('trafficHistory');
+    th.innerHTML=td.history.length?td.history.map(x=>`
+      <div style="display:grid;grid-template-columns:1fr 90px 90px 90px;gap:8px;padding:8px 0;border-bottom:1px solid #252935;font-size:13px">
+        <span>${new Date(x.recorded_at).toLocaleTimeString()}</span>
+        <span>PV ${x.pageviews}</span>
+        <span>CTR ${Number(x.ctr).toFixed(1)}%</span>
+        <span>TP ${Math.round(x.traffic_potential)}</span>
+      </div>`).join(''):'まだトラフィック履歴がありません';
+  }catch(e){}
+})();
+setInterval(()=>location.reload(),30000);
+</script>
+
+{% if affiliate_enabled and affiliate_script_url %}
+<script src="{{ affiliate_script_url }}" async></script>
+{% endif %}
+{% if adsense_enabled and adsense_client %}
+<script async crossorigin="anonymous"
+  src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={{ adsense_client }}"></script>
+{% endif %}
+</body>
+</html>
