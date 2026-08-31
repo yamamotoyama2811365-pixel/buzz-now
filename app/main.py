@@ -76,6 +76,15 @@ class PostgresConnection:
             if statement:
                 self.execute(statement)
 
+    def commit(self):
+        self._con.commit()
+
+    def rollback(self):
+        self._con.rollback()
+
+    def close(self):
+        self._con.close()
+
     def __enter__(self):
         return self
 
