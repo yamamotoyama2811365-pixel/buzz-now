@@ -42,7 +42,56 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 
 
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
+
+def _pg_sql(sql: str) -> str:
+    """Translate the small SQLite SQL subset used by BUZZ NOW to PostgreSQL."""
+    sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
+    sql = re.sub(r"INSERT\s+OR\s+IGNORE\s+INTO", "INSERT INTO", sql, flags=re.I)
+    if re.search(r"^\s*INSERT\s+INTO", sql, flags=re.I) and "OR IGNORE" not in sql.upper():
+        # Only statements that were originally INSERT OR IGNORE are marked below.
+        pass
+    return sql.replace("?", "%s")
+
+
+class PostgresConnection:
+    def __init__(self, url: str):
+        import psycopg
+        from psycopg.rows import dict_row
+        self._con = psycopg.connect(url, row_factory=dict_row)
+
+    def execute(self, sql, params=()):
+        original = sql
+        sql = _pg_sql(sql)
+        if re.search(r"INSERT\s+OR\s+IGNORE\s+INTO", original, flags=re.I):
+            sql = re.sub(r"INSERT\s+INTO", "INSERT INTO", sql, count=1, flags=re.I)
+            sql = sql.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+        return self._con.execute(sql, params)
+
+    def executescript(self, script):
+        # init_db contains simple CREATE TABLE / CREATE INDEX statements only.
+        for statement in script.split(";"):
+            statement = statement.strip()
+            if statement:
+                self.execute(statement)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self._con.commit()
+        else:
+            self._con.rollback()
+        self._con.close()
+        return False
+
+
 def db():
+    # Render production: durable PostgreSQL. Local development: SQLite fallback.
+    if DATABASE_URL:
+        return PostgresConnection(DATABASE_URL)
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     return con
