@@ -1498,7 +1498,7 @@ def home(request: Request):
             ORDER BY pre_buzz_score DESC, acceleration DESC, buzz_score DESC
             LIMIT 50
         """).fetchall()
-    return templates.TemplateResponse("index.html", {
+    return templates.TemplateResponse(request, "index.html", {
         "request": request,
         "trends": rows,
         "site_name": SITE_NAME,
@@ -1529,7 +1529,7 @@ def trend_detail(slug: str, request: Request):
     )
     canonical = f"{SITE_URL}/trend/{trend['slug']}"
 
-    return templates.TemplateResponse("trend.html", {
+    return templates.TemplateResponse(request, "trend.html", {
         "request": request,
         "trend": trend,
         "related": related,
