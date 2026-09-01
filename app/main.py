@@ -1817,7 +1817,10 @@ def api_v9_velocity_ranking(limit: int = 50):
                 COALESCE(v.source_sequence,'') AS source_sequence
             FROM trends t
             LEFT JOIN v9_velocity_state v ON v.trend_id=t.id
-            ORDER BY v.velocity_score DESC, t.pre_buzz_score DESC
+            ORDER BY
+                CASE WHEN v.trend_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+                COALESCE(v.velocity_score,0) DESC,
+                t.pre_buzz_score DESC
             LIMIT ?
         """, (limit,)).fetchall()
     return {"items": [dict(r) for r in rows]}
