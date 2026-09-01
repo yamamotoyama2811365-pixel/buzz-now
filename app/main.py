@@ -1246,26 +1246,59 @@ def _v9_parse_dt(value):
         return None
 
 
-def _v9_delta_score(rows, minutes):
-    """Return score change versus the closest snapshot at least `minutes` old."""
+def _v10_metric_change(rows, minutes):
+    """Return raw-metric percentage change versus the closest snapshot at least `minutes` old.
+
+    Changes are calculated per source so metrics from different providers are never mixed.
+    If raw_metric is unavailable for a source, source_score is used as a conservative fallback.
+    """
     if not rows:
         return 0.0
-    latest = rows[-1]
-    latest_dt = _v9_parse_dt(latest["captured_at"])
-    if not latest_dt:
+
+    by_source = {}
+    for r in rows:
+        by_source.setdefault(r["source"], []).append(r)
+
+    changes = []
+    for source_rows in by_source.values():
+        source_rows = sorted(source_rows, key=lambda r: str(r["captured_at"]))
+        latest = source_rows[-1]
+        latest_dt = _v9_parse_dt(latest["captured_at"])
+        if not latest_dt:
+            continue
+
+        target = latest_dt - timedelta(minutes=minutes)
+        candidates = [
+            r for r in source_rows[:-1]
+            if (_v9_parse_dt(r["captured_at"]) or latest_dt) <= target
+        ]
+        if not candidates:
+            continue
+
+        base = candidates[-1]
+        latest_raw = latest["raw_metric"]
+        base_raw = base["raw_metric"]
+
+        if latest_raw is not None and base_raw is not None and float(base_raw) != 0:
+            change = ((float(latest_raw) - float(base_raw)) / abs(float(base_raw))) * 100.0
+        else:
+            # Conservative fallback for sources without a usable raw metric.
+            change = float(latest["source_score"] or 0) - float(base["source_score"] or 0)
+
+        # Prevent a malformed/outlier provider value from dominating the whole ranking.
+        changes.append(max(-300.0, min(300.0, change)))
+
+    if not changes:
         return 0.0
-    target = latest_dt - timedelta(minutes=minutes)
-    candidates = [r for r in rows[:-1] if (_v9_parse_dt(r["captured_at"]) or latest_dt) <= target]
-    if not candidates:
-        return 0.0
-    base = candidates[-1]
-    return round(float(latest["source_score"] or 0) - float(base["source_score"] or 0), 2)
+
+    # Multiple providers are kept source-local, then combined evenly.
+    return round(sum(changes) / len(changes), 2)
 
 
 def refresh_v9_velocity(c, ts):
     """
-    V9: preserve real-source history and calculate 30m/1h/3h signal velocity.
-    This measures signal movement, not causal media propagation.
+    V10 REAL VELOCITY: preserve real-source history and calculate 30m/1h/3h
+    movement from each provider's raw_metric. Provider metrics are never mixed directly.
     """
     trends = c.execute("SELECT id, keyword, acceleration FROM trends").fetchall()
     for trend in trends:
@@ -1280,37 +1313,37 @@ def refresh_v9_velocity(c, ts):
         if not rows:
             continue
 
-        v30 = _v9_delta_score(rows, 30)
-        v60 = _v9_delta_score(rows, 60)
-        v180 = _v9_delta_score(rows, 180)
+        v30 = _v10_metric_change(rows, 30)
+        v60 = _v10_metric_change(rows, 60)
+        v180 = _v10_metric_change(rows, 180)
 
-        # Weighted short-term velocity. Positive movement is emphasized.
+        # Percentage-based velocity. Short-term movement receives the strongest weight.
         velocity_score = round(max(0.0, min(
             100.0,
-            50.0 + v30 * 1.8 + v60 * 1.0 + v180 * 0.45
+            50.0 + v30 * 0.25 + v60 * 0.15 + v180 * 0.05
         )), 1)
 
-        if v30 >= 12 or v60 >= 18:
+        if v30 >= 50 or v60 >= 80:
             label = "急加速"
-        elif v30 >= 5 or v60 >= 8:
+        elif v30 >= 20 or v60 >= 35:
             label = "加速中"
-        elif v30 > 0 or v60 > 0 or v180 > 0:
+        elif v30 >= 5 or v60 >= 10 or v180 >= 15:
             label = "上昇中"
-        elif v30 < -5 or v60 < -8:
+        elif v30 <= -20 or v60 <= -35:
             label = "減速中"
         else:
             label = "観測中"
 
         first_by_source = {}
         for r in rows:
-            s = r["source"]
-            if s not in first_by_source:
-                first_by_source[s] = r["captured_at"]
+            source = r["source"]
+            if source not in first_by_source:
+                first_by_source[source] = r["captured_at"]
 
         ordered = sorted(first_by_source.items(), key=lambda x: x[1])
         first_source = ordered[0][0] if ordered else ""
         first_seen_at = ordered[0][1] if ordered else ""
-        source_sequence = " → ".join(s for s, _ in ordered)
+        source_sequence = " → ".join(source for source, _ in ordered)
 
         c.execute("""
             INSERT INTO v9_velocity_state(
