@@ -807,6 +807,31 @@ def _short_preview(response):
         return ""
 
 
+def _google_trends_traffic(entry):
+    """Extract Google Trends RSS approximate traffic as a numeric bucket when available."""
+    candidates = [
+        getattr(entry, "ht_approx_traffic", None),
+        getattr(entry, "approx_traffic", None),
+    ]
+    try:
+        for item in getattr(entry, "tags", []) or []:
+            if isinstance(item, dict) and "traffic" in str(item.get("term", "")).lower():
+                candidates.append(item.get("label"))
+    except Exception:
+        pass
+    import re
+    for value in candidates:
+        if value is None:
+            continue
+        text = str(value).replace(",", "").strip().upper()
+        m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*([KMB]?)", text)
+        if not m:
+            continue
+        number = float(m.group(1))
+        mult = {"": 1.0, "K": 1_000.0, "M": 1_000_000.0, "B": 1_000_000_000.0}.get(m.group(2), 1.0)
+        return number * mult
+    return None
+
 def collect_google_trends(c, ts):
     source = "google_trends_jp"
     endpoints = [
@@ -849,7 +874,11 @@ def collect_google_trends(c, ts):
                 score = max(52, 98 - idx * (44 / max(1, total - 1)))
                 ext = str(getattr(e, "id", "") or getattr(e, "link", "") or kw)
                 link = str(getattr(e, "link", "") or url)
-                if upsert_real_trend(c, kw, "Google Trends", score, total - idx, link, ext, ts):
+                traffic = _google_trends_traffic(e)
+                # Prefer Google's approximate traffic bucket. If unavailable, use inverse rank
+                # only as a weak fallback; V11 also scores appearance/newness/propagation.
+                raw_metric = traffic if traffic is not None else float(total - idx)
+                if upsert_real_trend(c, kw, "Google Trends", score, raw_metric, link, ext, ts):
                     count += 1
 
             if count > 0:
@@ -1246,60 +1275,59 @@ def _v9_parse_dt(value):
         return None
 
 
-def _v10_metric_change(rows, minutes):
-    """Return raw-metric percentage change versus the closest snapshot at least `minutes` old.
+def _v11_window_signal(rows, minutes, now_dt):
+    """Composite movement points for a window.
 
-    Changes are calculated per source so metrics from different providers are never mixed.
-    If raw_metric is unavailable for a source, source_score is used as a conservative fallback.
+    Uses provider-local metric/rank movement plus appearance recency. This avoids pretending
+    that daily Wikimedia totals are a 30-minute counter while still capturing a newly emerging
+    signal. Returned value is a signal-point delta, not a literal percentage.
     """
     if not rows:
         return 0.0
-
     by_source = {}
     for r in rows:
         by_source.setdefault(r["source"], []).append(r)
 
-    changes = []
+    source_signals = []
     for source_rows in by_source.values():
         source_rows = sorted(source_rows, key=lambda r: str(r["captured_at"]))
         latest = source_rows[-1]
         latest_dt = _v9_parse_dt(latest["captured_at"])
+        first_dt = _v9_parse_dt(source_rows[0]["captured_at"])
         if not latest_dt:
             continue
 
         target = latest_dt - timedelta(minutes=minutes)
-        candidates = [
-            r for r in source_rows[:-1]
-            if (_v9_parse_dt(r["captured_at"]) or latest_dt) <= target
-        ]
-        if not candidates:
-            continue
+        candidates = [r for r in source_rows[:-1] if (_v9_parse_dt(r["captured_at"]) or latest_dt) <= target]
+        signal = 0.0
 
-        base = candidates[-1]
-        latest_raw = latest["raw_metric"]
-        base_raw = base["raw_metric"]
+        if candidates:
+            base = candidates[-1]
+            latest_raw, base_raw = latest["raw_metric"], base["raw_metric"]
+            if latest_raw is not None and base_raw is not None and float(base_raw) != 0 and float(latest_raw) != float(base_raw):
+                pct = ((float(latest_raw) - float(base_raw)) / abs(float(base_raw))) * 100.0
+                signal += max(-60.0, min(60.0, pct * 0.35))
 
-        if latest_raw is not None and base_raw is not None and float(base_raw) != 0:
-            change = ((float(latest_raw) - float(base_raw)) / abs(float(base_raw))) * 100.0
-        else:
-            # Conservative fallback for sources without a usable raw metric.
-            change = float(latest["source_score"] or 0) - float(base["source_score"] or 0)
+            # source_score is rank-derived for Google Trends and therefore useful as a weak
+            # movement signal even when traffic remains in the same bucket.
+            score_delta = float(latest["source_score"] or 0) - float(base["source_score"] or 0)
+            signal += max(-25.0, min(25.0, score_delta * 1.25))
+        elif first_dt:
+            age_minutes = max(0.0, (now_dt - first_dt).total_seconds() / 60.0)
+            if age_minutes <= minutes:
+                # A newly appearing signal is itself meaningful for pre-buzz detection.
+                signal += 18.0 if minutes <= 30 else (12.0 if minutes <= 60 else 7.0)
 
-        # Prevent a malformed/outlier provider value from dominating the whole ranking.
-        changes.append(max(-300.0, min(300.0, change)))
+        source_signals.append(signal)
 
-    if not changes:
+    if not source_signals:
         return 0.0
-
-    # Multiple providers are kept source-local, then combined evenly.
-    return round(sum(changes) / len(changes), 2)
+    return round(sum(source_signals) / len(source_signals), 2)
 
 
 def refresh_v9_velocity(c, ts):
-    """
-    V10 REAL VELOCITY: preserve real-source history and calculate 30m/1h/3h
-    movement from each provider's raw_metric. Provider metrics are never mixed directly.
-    """
+    """V11 REAL VELOCITY: movement + new appearance + cross-source propagation."""
+    now_dt = _v9_parse_dt(ts) or datetime.now(timezone.utc)
     trends = c.execute("SELECT id, keyword, acceleration FROM trends").fetchall()
     for trend in trends:
         key = normalize_match_key(trend["keyword"])
@@ -1309,41 +1337,39 @@ def refresh_v9_velocity(c, ts):
             WHERE match_key=?
             ORDER BY captured_at ASC
         """, (key,)).fetchall()
-
         if not rows:
             continue
 
-        v30 = _v10_metric_change(rows, 30)
-        v60 = _v10_metric_change(rows, 60)
-        v180 = _v10_metric_change(rows, 180)
-
-        # Percentage-based velocity. Short-term movement receives the strongest weight.
-        velocity_score = round(max(0.0, min(
-            100.0,
-            50.0 + v30 * 0.25 + v60 * 0.15 + v180 * 0.05
-        )), 1)
-
-        if v30 >= 50 or v60 >= 80:
-            label = "急加速"
-        elif v30 >= 20 or v60 >= 35:
-            label = "加速中"
-        elif v30 >= 5 or v60 >= 10 or v180 >= 15:
-            label = "上昇中"
-        elif v30 <= -20 or v60 <= -35:
-            label = "減速中"
-        else:
-            label = "観測中"
+        v30 = _v11_window_signal(rows, 30, now_dt)
+        v60 = _v11_window_signal(rows, 60, now_dt)
+        v180 = _v11_window_signal(rows, 180, now_dt)
 
         first_by_source = {}
         for r in rows:
             source = r["source"]
             if source not in first_by_source:
                 first_by_source[source] = r["captured_at"]
-
         ordered = sorted(first_by_source.items(), key=lambda x: x[1])
         first_source = ordered[0][0] if ordered else ""
         first_seen_at = ordered[0][1] if ordered else ""
         source_sequence = " → ".join(source for source, _ in ordered)
+
+        # Propagation bonus: independent providers seeing the same normalized keyword.
+        propagation_bonus = min(18.0, max(0, len(ordered) - 1) * 9.0)
+        velocity_score = round(max(0.0, min(100.0,
+            50.0 + v30 * 0.65 + v60 * 0.25 + v180 * 0.10 + propagation_bonus
+        )), 1)
+
+        if velocity_score >= 78 or v30 >= 35:
+            label = "急加速"
+        elif velocity_score >= 66 or v30 >= 20:
+            label = "加速中"
+        elif velocity_score >= 56 or v30 >= 7 or propagation_bonus > 0:
+            label = "上昇中"
+        elif velocity_score <= 38 or v30 <= -15:
+            label = "減速中"
+        else:
+            label = "観測中"
 
         c.execute("""
             INSERT INTO v9_velocity_state(
@@ -1361,12 +1387,9 @@ def refresh_v9_velocity(c, ts):
                 first_seen_at=excluded.first_seen_at,
                 source_sequence=excluded.source_sequence,
                 updated_at=excluded.updated_at
-        """, (
-            trend["id"], v30, v60, v180, velocity_score, label,
-            first_source, first_seen_at, source_sequence, ts
-        ))
+        """, (trend["id"], v30, v60, v180, velocity_score, label,
+              first_source, first_seen_at, source_sequence, ts))
 
-        # Feed real velocity back into the trend acceleration carefully.
         if label in ("急加速", "加速中"):
             new_acc = min(1.0, max(float(trend["acceleration"] or 0), velocity_score / 100.0))
             c.execute("UPDATE trends SET acceleration=?, updated_at=? WHERE id=?",
@@ -1378,7 +1401,8 @@ def snapshot_v9_sources(c, ts):
     latest = c.execute("""
         SELECT source, keyword, source_score, raw_metric
         FROM source_items
-    """).fetchall()
+        WHERE collected_at=?
+    """, (ts,)).fetchall()
 
     # Avoid duplicate rows for the same source/keyword within the same minute.
     minute_key = str(ts)[:16]
