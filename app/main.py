@@ -1436,6 +1436,96 @@ def snapshot_v9_sources(c, ts):
 
 
 
+
+def refresh_real_traffic_forecast(c, ts):
+    """V13: REAL SIGNAL based Traffic Potential + predicted daily PV.
+
+    This is not measured site traffic. It is a deterministic forecast derived from
+    the signals BUZZ NOW actually collects (trend scores, REAL VELOCITY,
+    confidence and source spread). No random numbers are used.
+    """
+    rows = c.execute("""
+        SELECT
+            t.id,
+            COALESCE(t.pre_buzz_score,0) AS pre_buzz_score,
+            COALESCE(t.buzz_score,0) AS buzz_score,
+            COALESCE(t.acceleration,0) AS acceleration,
+            COALESCE(v.velocity_score,0) AS velocity_score,
+            COALESCE(v.velocity_30m,0) AS velocity_30m,
+            COALESCE(v.velocity_1h,0) AS velocity_1h,
+            COALESCE(v.velocity_3h,0) AS velocity_3h,
+            COALESCE(cs.source_count,0) AS source_count,
+            COALESCE(cs.confidence_score,0) AS confidence_score,
+            COALESCE(cs.corroborated,0) AS corroborated
+        FROM trends t
+        LEFT JOIN v9_velocity_state v ON v.trend_id=t.id
+        LEFT JOIN confidence_state cs ON cs.trend_id=t.id
+    """).fetchall()
+
+    for r in rows:
+        pre = max(0.0, min(100.0, float(r["pre_buzz_score"] or 0)))
+        buzz = max(0.0, min(100.0, float(r["buzz_score"] or 0)))
+        vel = max(0.0, min(100.0, float(r["velocity_score"] or 0)))
+        conf = max(0.0, min(100.0, float(r["confidence_score"] or 0)))
+        acc = max(-1.0, min(1.0, float(r["acceleration"] or 0)))
+        v30 = float(r["velocity_30m"] or 0)
+        v60 = float(r["velocity_1h"] or 0)
+        v180 = float(r["velocity_3h"] or 0)
+        sources = max(0, int(r["source_count"] or 0))
+        corroborated = 1 if r["corroborated"] else 0
+
+        # Search-demand potential from real collected signals. 50 on velocity is
+        # the neutral observation baseline, so only movement above/below it adds
+        # or subtracts meaningfully.
+        velocity_component = max(0.0, min(100.0, 50.0 +
+            v30 * 0.65 + v60 * 0.25 + v180 * 0.10))
+        source_bonus = min(12.0, sources * 4.0) + (6.0 if corroborated else 0.0)
+        acceleration_component = max(0.0, min(100.0, 50.0 + acc * 70.0))
+
+        potential = (
+            pre * 0.28 +
+            buzz * 0.18 +
+            vel * 0.24 +
+            velocity_component * 0.12 +
+            conf * 0.10 +
+            acceleration_component * 0.08 +
+            source_bonus
+        )
+        potential = round(max(0.0, min(100.0, potential)), 1)
+
+        # Predicted daily exposure/PV. This is intentionally deterministic and
+        # only represents opportunity, not measured Google Analytics traffic.
+        movement = max(0.35, min(2.20, 1.0 + v30 / 70.0 + v60 / 180.0))
+        confidence_factor = 0.55 + (conf / 100.0) * 0.45
+        source_factor = 1.0 + min(0.35, max(0, sources - 1) * 0.12)
+        predicted_pv = int(max(0, round((potential ** 2) * 0.72 * movement * confidence_factor * source_factor)))
+
+        # Compatibility fields: impressions/clicks are also forecasts here.
+        predicted_impressions = int(round(predicted_pv * 9.0))
+        predicted_ctr = round(max(0.8, min(12.0, 2.2 + potential / 24.0)), 2)
+        predicted_clicks = int(round(predicted_impressions * predicted_ctr / 100.0))
+
+        c.execute("""
+            INSERT INTO traffic_history(
+                trend_id,impressions,clicks,pageviews,ctr,traffic_potential,recorded_at
+            ) VALUES(?,?,?,?,?,?,?)
+        """, (r["id"], predicted_impressions, predicted_clicks,
+              predicted_pv, predicted_ctr, potential, ts))
+
+        c.execute("""
+            INSERT INTO traffic_totals(
+                trend_id,impressions,clicks,pageviews,last_ctr,traffic_potential,updated_at
+            ) VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(trend_id) DO UPDATE SET
+                impressions=excluded.impressions,
+                clicks=excluded.clicks,
+                pageviews=excluded.pageviews,
+                last_ctr=excluded.last_ctr,
+                traffic_potential=excluded.traffic_potential,
+                updated_at=excluded.updated_at
+        """, (r["id"], predicted_impressions, predicted_clicks,
+              predicted_pv, predicted_ctr, potential, ts))
+
 def collect_real_sources():
     ts=now_iso()
     with db() as c:
@@ -1446,6 +1536,8 @@ def collect_real_sources():
         refresh_monetization(c,ts)
         snapshot_v9_sources(c, ts)
         refresh_v9_velocity(c, ts)
+        # V13: refresh Traffic Potential and today's predicted PV from real signals.
+        refresh_real_traffic_forecast(c, ts)
         c.commit()
     return {"google_trends":g,"wikimedia":w,"total":g+w}
 
@@ -1660,7 +1752,7 @@ def traffic_ranking(limit: int = 50):
             LEFT JOIN traffic_totals x ON x.trend_id=t.id
             LEFT JOIN confidence_state cs ON cs.trend_id=t.id
             LEFT JOIN propagation_state ps ON ps.trend_id=t.id
-            ORDER BY confidence_score DESC, traffic_potential DESC, pageviews DESC
+            ORDER BY traffic_potential DESC, confidence_score DESC, pageviews DESC
             LIMIT ?
         """,(limit,)).fetchall()
     return {"items":[dict(r) for r in rows]}
