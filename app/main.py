@@ -1126,6 +1126,50 @@ def _fetch_gdelt_articles_for_keyword(keyword, maxrecords=8):
 
 
 
+
+# V23: Bing News RSS fallback for Render environments where Google News can return HTTP 429.
+BING_NEWS_RSS_SEARCH = "https://www.bing.com/news/search"
+
+def _fetch_bing_news_rss_for_keyword(keyword, maxrecords=8):
+    """Fetch Bing News RSS metadata only; article bodies are never copied."""
+    kw=_clean_keyword(keyword)
+    if not kw:
+        return [], "empty keyword"
+    params={"q": kw, "format":"RSS", "mkt":"ja-JP", "setlang":"ja"}
+    try:
+        r=httpx.get(BING_NEWS_RSS_SEARCH, params=params, timeout=12, follow_redirects=True, headers=_collector_headers("rss"))
+        if r.status_code != 200:
+            return [], f"HTTP {r.status_code}: {_short_preview(r)}"
+        feed=feedparser.parse(r.content)
+        out=[]; seen=set()
+        for e in list(feed.entries)[:maxrecords*3]:
+            title=" ".join(str(getattr(e,"title","") or "").split()).strip()
+            url=str(getattr(e,"link","") or "").strip()
+            if not title or not url.startswith(("http://","https://")):
+                continue
+            key=normalize_match_key(title)
+            if key in seen:
+                continue
+            seen.add(key)
+            publisher="Bing News 掲載メディア"
+            src=getattr(e,"source",None)
+            if src:
+                try:
+                    publisher=str(src.get("title") or src.get("href") or publisher) if isinstance(src,dict) else str(getattr(src,"title",publisher))
+                except Exception:
+                    pass
+            if " - " in title:
+                maybe=title.rsplit(" - ",1)[-1].strip()
+                if maybe and len(maybe)<100:
+                    publisher=maybe
+            published=str(getattr(e,"published","") or getattr(e,"updated","") or "")
+            out.append({"publisher":publisher,"title":title,"url":url,"published_at":published,"source_label":"Bing News 関連記事"})
+            if len(out)>=maxrecords:
+                break
+        return out, f"ok {len(out)} entries"
+    except Exception as e:
+        return [], f"{type(e).__name__}: {e}"
+
 # V21: resilient WHY NOW discovery via Google News RSS metadata fallback.
 GOOGLE_NEWS_RSS_SEARCH = "https://news.google.com/rss/search"
 
@@ -1236,7 +1280,17 @@ def _enrich_keyword_news(c, keyword, ts, force=False):
         return 0
 
     total=0
-    # 1) GDELT first when enabled.
+    # 1) Bing News RSS first. Render can receive HTTP 429 from Google News,
+    # so V23 does not depend on Google News for the primary fallback.
+    try:
+        bnews,msg=_fetch_bing_news_rss_for_keyword(keyword,8)
+        _record_news_diagnostic(c,trend["id"],"bing_news",msg,ts)
+        if bnews:
+            total += _store_article_sources(c,keyword,bnews,ts)
+    except Exception as e:
+        _record_news_diagnostic(c,trend["id"],"bing_news",f"error {type(e).__name__}: {e}",ts)
+
+    # 2) GDELT as an independent supplementary source.
     if GDELT_NEWS_ENABLED:
         try:
             articles=_fetch_gdelt_articles_for_keyword(keyword,8)
@@ -1246,14 +1300,16 @@ def _enrich_keyword_news(c, keyword, ts, force=False):
         except Exception as e:
             _record_news_diagnostic(c,trend["id"],"gdelt",f"error {type(e).__name__}: {e}",ts)
 
-    # 2) Google News RSS metadata fallback. This is especially useful for Japanese proper nouns.
-    try:
-        gnews,msg=_fetch_google_news_rss_for_keyword(keyword,8)
-        _record_news_diagnostic(c,trend["id"],"google_news",msg,ts)
-        if gnews:
-            total += _store_article_sources(c,keyword,gnews,ts)
-    except Exception as e:
-        _record_news_diagnostic(c,trend["id"],"google_news",f"error {type(e).__name__}: {e}",ts)
+    # 3) Google News remains a last fallback only. A 429 is recorded but does
+    # not prevent Bing/GDELT results from populating WHY NOW.
+    if total == 0:
+        try:
+            gnews,msg=_fetch_google_news_rss_for_keyword(keyword,8)
+            _record_news_diagnostic(c,trend["id"],"google_news",msg,ts)
+            if gnews:
+                total += _store_article_sources(c,keyword,gnews,ts)
+        except Exception as e:
+            _record_news_diagnostic(c,trend["id"],"google_news",f"error {type(e).__name__}: {e}",ts)
 
     # Build related-search helpers only from a keyword + collected source titles.
     _derive_related_from_sources(c,trend["id"],keyword)
