@@ -7,8 +7,9 @@ import unicodedata
 from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from xml.sax.saxutils import escape as xml_escape
+import xml.etree.ElementTree as ET
 
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
@@ -24,11 +25,17 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "15.0.0")
+APP_VERSION = os.getenv("APP_VERSION", "19.0.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
 REAL_DATA_INTERVAL_MINUTES = int(os.getenv("REAL_DATA_INTERVAL_MINUTES","30"))
+
+# V19: article discovery / WHY NOW enrichment
+NEWS_ENRICHMENT_ENABLED = os.getenv("NEWS_ENRICHMENT_ENABLED", "true").lower() == "true"
+GDELT_NEWS_ENABLED = os.getenv("GDELT_NEWS_ENABLED", "true").lower() == "true"
+GDELT_NEWS_LIMIT = max(0, min(15, int(os.getenv("GDELT_NEWS_LIMIT", "8"))))
+GDELT_DOC_API = "https://api.gdeltproject.org/api/v2/doc/doc"
 
 DEMO_MODE = os.getenv("DEMO_MODE", "true").lower() == "true"
 DEMO_INTERVAL_SECONDS = int(os.getenv("DEMO_INTERVAL_SECONDS", "30"))
@@ -877,6 +884,226 @@ def _google_trends_traffic(entry):
         return number * mult
     return None
 
+
+def _xml_local_name(tag):
+    return str(tag).split("}")[-1].split(":")[-1]
+
+
+def _xml_child_text(node, wanted):
+    wanted = wanted.lower()
+    for child in list(node):
+        if _xml_local_name(child.tag).lower() == wanted:
+            return (child.text or "").strip()
+    return ""
+
+
+def _extract_google_trends_related_news(xml_bytes):
+    """Extract article metadata embedded in Google Trends Trending Now RSS.
+
+    No article bodies are copied. We only keep publisher/title/url metadata that
+    Google Trends already associates with the trend item.
+    """
+    out = {}
+    try:
+        root = ET.fromstring(xml_bytes)
+    except Exception:
+        return out
+
+    for item in root.iter():
+        if _xml_local_name(item.tag).lower() != "item":
+            continue
+        keyword = _clean_keyword(_xml_child_text(item, "title"))
+        if not keyword:
+            continue
+        articles = []
+        for child in list(item):
+            if _xml_local_name(child.tag).lower() != "news_item":
+                continue
+            title = _xml_child_text(child, "news_item_title")
+            url = _xml_child_text(child, "news_item_url")
+            publisher = _xml_child_text(child, "news_item_source")
+            if not title or not url:
+                continue
+            articles.append({
+                "publisher": publisher or "関連メディア",
+                "title": " ".join(title.split())[:220],
+                "url": url[:1200],
+                "published_at": "",
+                "source_label": "Google Trends 関連記事",
+            })
+        if articles:
+            out[keyword] = articles[:8]
+    return out
+
+
+def _find_trend_row(c, keyword):
+    keyword = _clean_keyword(keyword)
+    if not keyword:
+        return None
+    try:
+        slug = slugify(keyword)
+    except Exception:
+        slug = quote(keyword, safe="")
+    return c.execute(
+        "SELECT * FROM trends WHERE keyword=? OR slug=? ORDER BY CASE WHEN keyword=? THEN 0 ELSE 1 END LIMIT 1",
+        (keyword, slug, keyword),
+    ).fetchone()
+
+
+def _safe_publisher_from_url(url):
+    try:
+        host = (urlparse(url).hostname or "").lower().replace("www.", "")
+        return host[:120] or "関連メディア"
+    except Exception:
+        return "関連メディア"
+
+
+def _store_article_sources(c, keyword, articles, ts):
+    trend = _find_trend_row(c, keyword)
+    if not trend:
+        return 0
+    inserted = 0
+    for a in articles or []:
+        url = str(a.get("url") or "").strip()
+        title = " ".join(str(a.get("title") or "").split()).strip()
+        if not url.startswith(("http://", "https://")) or not title:
+            continue
+        publisher = " ".join(str(a.get("publisher") or "").split()).strip() or _safe_publisher_from_url(url)
+        published_at = str(a.get("published_at") or "").strip()
+        label = str(a.get("source_label") or "関連報道").strip()[:80]
+        before = c.execute("SELECT id FROM sources WHERE trend_id=? AND url=?", (trend["id"], url)).fetchone()
+        c.execute("""
+          INSERT INTO sources(trend_id,publisher,title,url,published_at,source_label)
+          VALUES(?,?,?,?,?,?)
+          ON CONFLICT(trend_id,url) DO UPDATE SET
+            publisher=excluded.publisher,
+            title=excluded.title,
+            published_at=CASE WHEN excluded.published_at<>'' THEN excluded.published_at ELSE sources.published_at END,
+            source_label=excluded.source_label
+        """, (trend["id"], publisher[:160], title[:260], url[:1400], published_at[:80], label))
+        if not before:
+            inserted += 1
+    _refresh_why_now_from_sources(c, trend["id"], keyword, ts)
+    return inserted
+
+
+def _refresh_why_now_from_sources(c, trend_id, keyword, ts):
+    rows = c.execute("""
+      SELECT publisher,title,url,published_at,source_label
+      FROM sources
+      WHERE trend_id=?
+      ORDER BY CASE WHEN published_at='' THEN 1 ELSE 0 END, published_at DESC, id DESC
+      LIMIT 10
+    """, (trend_id,)).fetchall()
+    if not rows:
+        return
+
+    # Deduplicate by title and count independent publishers. We deliberately use
+    # cautious language: coverage timing can correlate with search growth but does
+    # not prove causation.
+    unique = []
+    seen = set()
+    publishers = set()
+    for r in rows:
+        title = " ".join(str(r["title"] or "").split()).strip()
+        if not title:
+            continue
+        key = normalize_match_key(title)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(title)
+        pub = " ".join(str(r["publisher"] or "").split()).strip()
+        if pub:
+            publishers.add(pub)
+
+    if not unique:
+        return
+    shown = [t[:70] + ("…" if len(t) > 70 else "") for t in unique[:3]]
+    if len(shown) == 1:
+        topics = f"「{shown[0]}」という関連情報が確認されています。"
+    else:
+        topics = "、".join(f"「{x}」" for x in shown) + "などの関連情報が確認されています。"
+
+    if len(publishers) >= 2:
+        coverage = f"直近の公開情報では、{len(publishers)}媒体以上から関連する記事・発表を確認。"
+    else:
+        coverage = "直近の公開情報で、関連する記事・発表を確認しています。"
+
+    why = (
+        f"{keyword}について、{coverage}{topics} "
+        "BUZZ NOWでも検索・閲覧シグナルの上昇を検知しており、これらの情報公開と近いタイミングで注目が高まっている可能性があります。"
+    )
+    c.execute("UPDATE trends SET why_now=?, summary=?, updated_at=? WHERE id=?", (
+        why[:1200],
+        f"{keyword}の最新トレンドを、検索・閲覧シグナルと関連する公開情報から整理しています。"[:400],
+        ts,
+        trend_id,
+    ))
+
+
+def collect_gdelt_news(c, ts, limit=None):
+    """Enrich the strongest live trends with recent article metadata from GDELT.
+
+    GDELT is queried only for a small number of high-signal keywords each cycle,
+    keeping runtime/load bounded. Article bodies are never downloaded or stored.
+    """
+    if not NEWS_ENRICHMENT_ENABLED or not GDELT_NEWS_ENABLED:
+        return 0
+    limit = GDELT_NEWS_LIMIT if limit is None else max(0, min(15, int(limit)))
+    if limit <= 0:
+        return 0
+
+    trends = c.execute("""
+      SELECT id,keyword,pre_buzz_score,buzz_score,updated_at
+      FROM trends
+      WHERE is_indexable=1 AND pre_buzz_score>=55
+      ORDER BY pre_buzz_score DESC, acceleration DESC, buzz_score DESC
+      LIMIT ?
+    """, (limit,)).fetchall()
+
+    total = 0
+    for trend in trends:
+        keyword = _clean_keyword(trend["keyword"])
+        if not keyword or len(keyword) > 60:
+            continue
+        # Exact phrase + Japanese source language, recent 24h only.
+        qkw = keyword.replace('"', " ").strip()
+        params = {
+            "query": f'"{qkw}" sourcelang:japanese',
+            "mode": "artlist",
+            "maxrecords": "8",
+            "timespan": "24h",
+            "sort": "datedesc",
+            "format": "json",
+        }
+        try:
+            r = httpx.get(GDELT_DOC_API, params=params, timeout=12, follow_redirects=True,
+                          headers=_collector_headers("json"))
+            if r.status_code != 200:
+                logger.warning("GDELT HTTP %s keyword=%s preview=%s", r.status_code, keyword, _short_preview(r))
+                continue
+            payload = r.json()
+            articles = []
+            for a in (payload.get("articles") or [])[:8]:
+                url = str(a.get("url") or "").strip()
+                title = " ".join(str(a.get("title") or "").split()).strip()
+                if not url or not title:
+                    continue
+                publisher = str(a.get("domain") or "").strip() or _safe_publisher_from_url(url)
+                seen = str(a.get("seendate") or "").strip()
+                articles.append({
+                    "publisher": publisher,
+                    "title": title,
+                    "url": url,
+                    "published_at": seen,
+                    "source_label": "関連報道",
+                })
+            total += _store_article_sources(c, keyword, articles, ts)
+        except Exception as e:
+            logger.warning("GDELT collector failed keyword=%s: %s", keyword, e)
+    return total
+
 def collect_google_trends(c, ts):
     source = "google_trends_jp"
     endpoints = [
@@ -901,6 +1128,7 @@ def collect_google_trends(c, ts):
 
             feed = feedparser.parse(r.content)
             entries = list(feed.entries[:30])
+            related_news = _extract_google_trends_related_news(r.content) if NEWS_ENRICHMENT_ENABLED else {}
 
             if not entries:
                 content_type = r.headers.get("content-type", "")
@@ -925,6 +1153,8 @@ def collect_google_trends(c, ts):
                 raw_metric = traffic if traffic is not None else float(total - idx)
                 if upsert_real_trend(c, kw, "Google Trends", score, raw_metric, link, ext, ts):
                     count += 1
+                    if related_news.get(kw):
+                        _store_article_sources(c, kw, related_news[kw], ts)
 
             if count > 0:
                 msg = f"Google Trends RSS取得成功 / {count}件 / {url}"
@@ -1571,6 +1801,7 @@ def collect_real_sources():
     with db() as c:
         g=collect_google_trends(c,ts)
         w=collect_wikimedia(c,ts)
+        news_count=collect_gdelt_news(c,ts)
         refresh_confidence(c,ts)
         refresh_propagation(c,ts)
         refresh_monetization(c,ts)
@@ -1584,7 +1815,7 @@ def collect_real_sources():
         create_predictions(c, ts)
         cautiously_tune_model(c)
         c.commit()
-    return {"google_trends":g,"wikimedia":w,"total":g+w}
+    return {"google_trends":g,"wikimedia":w,"news":news_count,"total":g+w}
 
 
 def demo_tick():
@@ -1717,15 +1948,18 @@ def trend_detail(slug: str, request: Request):
         ).fetchall()
 
         sources = c.execute(
-            "SELECT * FROM sources WHERE trend_id=? ORDER BY published_at DESC, id DESC",
+            "SELECT * FROM sources WHERE trend_id=? ORDER BY CASE WHEN published_at='' THEN 1 ELSE 0 END, published_at DESC, id DESC LIMIT 10",
             (trend["id"],)
         ).fetchall()
 
     title = f"{trend['keyword']}とは？なぜ今話題？｜{SITE_NAME}"
-    description = (
-        f"{trend['keyword']}がなぜ注目されているのかを、"
-        f"Pre-Buzz Score・Buzz Score・関連キーワード・情報源から整理。"
-    )
+    why_text = " ".join(str(trend["why_now"] or "").split())
+    description = (why_text[:145] + "…") if len(why_text) > 145 else why_text
+    if not description:
+        description = (
+            f"{trend['keyword']}がなぜ注目されているのかを、"
+            f"Pre-Buzz Score・Buzz Score・関連キーワード・情報源から整理。"
+        )
     canonical = f"{SITE_URL}/trend/{trend['slug']}"
 
     return templates.TemplateResponse(request, "trend.html", {
