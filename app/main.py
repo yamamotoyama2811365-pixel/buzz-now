@@ -25,7 +25,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "19.0.0")
+APP_VERSION = os.getenv("APP_VERSION", "20.0.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -1042,12 +1042,132 @@ def _refresh_why_now_from_sources(c, trend_id, keyword, ts):
     ))
 
 
-def collect_gdelt_news(c, ts, limit=None):
-    """Enrich the strongest live trends with recent article metadata from GDELT.
+def _gdelt_query_variants(keyword):
+    """Build conservative GDELT queries from exact -> slightly broader.
 
-    GDELT is queried only for a small number of high-signal keywords each cycle,
-    keeping runtime/load bounded. Article bodies are never downloaded or stored.
+    We only use returned article metadata (title/domain/url/date), never article bodies.
     """
+    kw = _clean_keyword(keyword)
+    if not kw:
+        return []
+    safe = kw.replace('"', ' ').strip()
+    compact = re.sub(r"\s+", "", safe)
+    variants = [f'"{safe}" sourcelang:japanese']
+    if compact and compact != safe:
+        variants.append(f'"{compact}" sourcelang:japanese')
+    # Last fallback keeps every keyword token but relaxes the phrase constraint.
+    variants.append(f'{safe} sourcelang:japanese')
+    # Some Japanese publishers are not consistently tagged with language metadata.
+    variants.append(f'"{safe}"')
+    out=[]
+    seen=set()
+    for q in variants:
+        q=" ".join(q.split())
+        if q and q not in seen:
+            seen.add(q)
+            out.append(q)
+    return out
+
+
+def _fetch_gdelt_articles_for_keyword(keyword, maxrecords=8):
+    """Fetch recent related article metadata for one keyword from GDELT."""
+    maxrecords=max(1,min(12,int(maxrecords)))
+    collected=[]
+    seen_urls=set()
+    seen_titles=set()
+    for query in _gdelt_query_variants(keyword):
+        params={
+            "query": query,
+            "mode": "artlist",
+            "maxrecords": str(maxrecords),
+            "timespan": "48h",
+            "sort": "datedesc",
+            "format": "json",
+        }
+        try:
+            r=httpx.get(
+                GDELT_DOC_API,
+                params=params,
+                timeout=12,
+                follow_redirects=True,
+                headers=_collector_headers("json"),
+            )
+            if r.status_code != 200:
+                logger.warning("GDELT HTTP %s keyword=%s query=%s preview=%s", r.status_code, keyword, query, _short_preview(r))
+                continue
+            payload=r.json()
+            for a in (payload.get("articles") or []):
+                url=str(a.get("url") or "").strip()
+                title=" ".join(str(a.get("title") or "").split()).strip()
+                if not url.startswith(("http://","https://")) or not title:
+                    continue
+                tkey=normalize_match_key(title)
+                if url in seen_urls or tkey in seen_titles:
+                    continue
+                seen_urls.add(url)
+                seen_titles.add(tkey)
+                publisher=str(a.get("domain") or "").strip() or _safe_publisher_from_url(url)
+                collected.append({
+                    "publisher": publisher,
+                    "title": title,
+                    "url": url,
+                    "published_at": str(a.get("seendate") or "").strip(),
+                    "source_label": "関連報道",
+                })
+                if len(collected) >= maxrecords:
+                    break
+            # If the exact/compact query already finds enough useful results, stop.
+            if len(collected) >= min(3,maxrecords):
+                break
+        except Exception as e:
+            logger.warning("GDELT collector failed keyword=%s query=%s: %s", keyword, query, e)
+    return collected[:maxrecords]
+
+
+def _mark_news_checked(c, trend_id, ts):
+    key=f"news_checked:{trend_id}"
+    c.execute("""
+      INSERT INTO system_state(key,value) VALUES(?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value
+    """,(key,ts))
+
+
+def _news_check_is_due(c, trend_id, hours=2):
+    row=c.execute("SELECT value FROM system_state WHERE key=?",(f"news_checked:{trend_id}",)).fetchone()
+    if not row:
+        return True
+    try:
+        last=datetime.fromisoformat(str(row["value"]).replace("Z","+00:00"))
+        if last.tzinfo is None:
+            last=last.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc)-last >= timedelta(hours=hours)
+    except Exception:
+        return True
+
+
+def _enrich_keyword_news(c, keyword, ts, force=False):
+    """Targeted WHY NOW enrichment for a single trend.
+
+    This is used both by the scheduled collector and, when a detail page has no
+    sources yet, by a throttled on-demand refresh. It prevents a high-value SEO
+    page from staying permanently on the generic fallback just because the trend
+    was outside the scheduled enrichment batch at a particular cycle.
+    """
+    if not NEWS_ENRICHMENT_ENABLED or not GDELT_NEWS_ENABLED:
+        return 0
+    trend=_find_trend_row(c,keyword)
+    if not trend:
+        return 0
+    if not force and not _news_check_is_due(c,trend["id"]):
+        return 0
+    articles=_fetch_gdelt_articles_for_keyword(keyword,8)
+    inserted=_store_article_sources(c,keyword,articles,ts) if articles else 0
+    _mark_news_checked(c,trend["id"],ts)
+    return inserted
+
+
+def collect_gdelt_news(c, ts, limit=None):
+    """Enrich the strongest live trends with recent article metadata from GDELT."""
     if not NEWS_ENRICHMENT_ENABLED or not GDELT_NEWS_ENABLED:
         return 0
     limit = GDELT_NEWS_LIMIT if limit is None else max(0, min(15, int(limit)))
@@ -1062,46 +1182,12 @@ def collect_gdelt_news(c, ts, limit=None):
       LIMIT ?
     """, (limit,)).fetchall()
 
-    total = 0
+    total=0
     for trend in trends:
-        keyword = _clean_keyword(trend["keyword"])
-        if not keyword or len(keyword) > 60:
+        keyword=_clean_keyword(trend["keyword"])
+        if not keyword or len(keyword)>60:
             continue
-        # Exact phrase + Japanese source language, recent 24h only.
-        qkw = keyword.replace('"', " ").strip()
-        params = {
-            "query": f'"{qkw}" sourcelang:japanese',
-            "mode": "artlist",
-            "maxrecords": "8",
-            "timespan": "24h",
-            "sort": "datedesc",
-            "format": "json",
-        }
-        try:
-            r = httpx.get(GDELT_DOC_API, params=params, timeout=12, follow_redirects=True,
-                          headers=_collector_headers("json"))
-            if r.status_code != 200:
-                logger.warning("GDELT HTTP %s keyword=%s preview=%s", r.status_code, keyword, _short_preview(r))
-                continue
-            payload = r.json()
-            articles = []
-            for a in (payload.get("articles") or [])[:8]:
-                url = str(a.get("url") or "").strip()
-                title = " ".join(str(a.get("title") or "").split()).strip()
-                if not url or not title:
-                    continue
-                publisher = str(a.get("domain") or "").strip() or _safe_publisher_from_url(url)
-                seen = str(a.get("seendate") or "").strip()
-                articles.append({
-                    "publisher": publisher,
-                    "title": title,
-                    "url": url,
-                    "published_at": seen,
-                    "source_label": "関連報道",
-                })
-            total += _store_article_sources(c, keyword, articles, ts)
-        except Exception as e:
-            logger.warning("GDELT collector failed keyword=%s: %s", keyword, e)
+        total += _enrich_keyword_news(c, keyword, ts)
     return total
 
 def collect_google_trends(c, ts):
@@ -1952,6 +2038,21 @@ def trend_detail(slug: str, request: Request):
             (trend["id"],)
         ).fetchall()
 
+        # V20: if this SEO detail page still has no supporting articles, perform a
+        # throttled targeted refresh for this exact keyword. This avoids waiting for
+        # the keyword to appear in the small scheduled GDELT batch.
+        if NEWS_ENRICHMENT_ENABLED and not sources and _news_check_is_due(c, trend["id"]):
+            try:
+                _enrich_keyword_news(c, trend["keyword"], now_iso(), force=True)
+                c.commit()
+                trend = c.execute("SELECT * FROM trends WHERE id=?", (trend["id"],)).fetchone()
+                sources = c.execute(
+                    "SELECT * FROM sources WHERE trend_id=? ORDER BY CASE WHEN published_at='' THEN 1 ELSE 0 END, published_at DESC, id DESC LIMIT 10",
+                    (trend["id"],)
+                ).fetchall()
+            except Exception as e:
+                logger.warning("detail news enrichment failed slug=%s: %s", slug, e)
+
     title = f"{trend['keyword']}とは？なぜ今話題？｜{SITE_NAME}"
     why_text = " ".join(str(trend["why_now"] or "").split())
     description = (why_text[:145] + "…") if len(why_text) > 145 else why_text
@@ -2298,7 +2399,8 @@ def trend_propagation(slug: str):
         t=c.execute("SELECT id,keyword FROM trends WHERE slug=?",(slug,)).fetchone()
         if not t:
             raise HTTPException(404,"Trend not found")
-        state=c.execute("SELECT * FROM propagation_state WHERE trend_id=?",(t["id"],)).fetchone()
+        v=c.execute("SELECT * FROM v9_velocity_state WHERE trend_id=?",(t["id"],)).fetchone()
+        p=c.execute("SELECT propagation_minutes FROM propagation_state WHERE trend_id=?",(t["id"],)).fetchone()
         key=normalize_match_key(t["keyword"])
         rows=c.execute("""
           SELECT source,source_score,raw_metric,captured_at
@@ -2307,12 +2409,15 @@ def trend_propagation(slug: str):
           ORDER BY captured_at ASC,id ASC
           LIMIT 300
         """,(key,)).fetchall()
+
+        state=dict(v) if v else None
+        if state is not None:
+            state["propagation_minutes"] = p["propagation_minutes"] if p else None
     return {
       "keyword":t["keyword"],
-      "state":dict(state) if state else None,
+      "state":state,
       "timeline":[dict(x) for x in rows]
     }
-
 
 
 @app.get("/api/velocity-ranking")
