@@ -745,13 +745,24 @@ def upsert_real_trend(c, keyword, source_name, source_score, raw_metric, source_
       VALUES(?,?,?,?,?,?)
     """,(source_name,keyword,normalize_match_key(keyword),source_score,raw_metric,ts))
 
-    row=c.execute("SELECT * FROM trends WHERE keyword=?",(keyword,)).fetchone()
-
     # Source score is used only as an observed signal. It is not treated as a factual article claim.
     pre=min(100, max(45, source_score))
     buzz=min(100, max(35, source_score * 0.90))
     acceleration=round(max(0.05, min(0.90, source_score/140)),2)
     status=classify(pre,buzz,acceleration)
+
+    # IMPORTANT: different surface forms can normalize to the same slug
+    # (e.g. punctuation differences). PostgreSQL correctly rejects duplicate
+    # values on trends.slug, so resolve both keyword and slug BEFORE INSERT.
+    try:
+        slug=slugify(keyword)
+    except Exception:
+        slug=quote(keyword, safe="")
+
+    row=c.execute(
+        "SELECT * FROM trends WHERE keyword=? OR slug=? ORDER BY CASE WHEN keyword=? THEN 0 ELSE 1 END LIMIT 1",
+        (keyword, slug, keyword)
+    ).fetchone()
 
     if row:
         new_pre=max(float(row["pre_buzz_score"]), pre)
@@ -764,12 +775,6 @@ def upsert_real_trend(c, keyword, source_name, source_score, raw_metric, source_
         """,(round(new_pre,1),round(new_buzz,1),round(new_acc,2),
              classify(new_pre,new_buzz,new_acc),ts,row["id"]))
         return True
-
-    # Use existing slug utility if available in codebase.
-    try:
-        slug=slugify(keyword)
-    except Exception:
-        slug=quote(keyword, safe="")
 
     c.execute("""
       INSERT INTO trends(
@@ -2122,19 +2127,26 @@ def create_or_update_trend(
     slug = slugify(keyword)
     ts = now_iso()
     with db() as c:
-        existing = c.execute("SELECT id FROM trends WHERE keyword=?", (keyword,)).fetchone()
+        existing = c.execute(
+            "SELECT id,keyword,slug FROM trends WHERE keyword=? OR slug=? ORDER BY CASE WHEN keyword=? THEN 0 ELSE 1 END LIMIT 1",
+            (keyword, slug, keyword)
+        ).fetchone()
         if existing:
+            # Keep the canonical slug already stored when another spelling
+            # normalizes to the same slug. This avoids UNIQUE(slug) failures.
+            canonical_slug = existing["slug"]
             c.execute("""
                 UPDATE trends SET
-                    slug=?,summary=?,why_now=?,category=?,
+                    summary=?,why_now=?,category=?,
                     pre_buzz_score=?,buzz_score=?,acceleration=?,
                     status=?,updated_at=?
                 WHERE id=?
             """, (
-                slug, summary, why_now, category,
+                summary, why_now, category,
                 pre_buzz_score, buzz_score, acceleration,
                 status, ts, existing["id"]
             ))
+            slug = canonical_slug
         else:
             c.execute("""
                 INSERT INTO trends(
