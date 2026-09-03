@@ -24,7 +24,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "12.0.0")
+APP_VERSION = os.getenv("APP_VERSION", "15.0.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -567,31 +567,69 @@ def ensure_model_state(c):
 
 
 def create_predictions(c, ts):
-    """
-    Demo horizon uses ticks instead of real hours.
-    With 30 sec demo ticks, 6 ticks ~= 3 minutes.
-    Production will use an actual +3h timestamp.
+    """V15: create a real +3 hour forecast from the signals available now.
+
+    The stored predicted_* values are TARGET values for three hours later, not
+    copies of the current state.  We intentionally keep the existing table
+    schema so V15 can be deployed without a database migration.
     """
     ensure_model_state(c)
     rows=c.execute("""
       SELECT t.id,t.pre_buzz_score,t.buzz_score,t.acceleration,
              COALESCE(x.traffic_potential,0) AS traffic_potential,
-             COALESCE(x.pageviews,0) AS pageviews
+             COALESCE(x.pageviews,0) AS pageviews,
+             COALESCE(v.velocity_30m,0) AS velocity_30m,
+             COALESCE(v.velocity_1h,0) AS velocity_1h,
+             COALESCE(v.velocity_3h,0) AS velocity_3h,
+             COALESCE(v.velocity_score,0) AS velocity_score,
+             COALESCE(cs.confidence_score,0) AS confidence_score,
+             COALESCE(cs.source_count,0) AS source_count
       FROM trends t
       LEFT JOIN traffic_totals x ON x.trend_id=t.id
+      LEFT JOIN v9_velocity_state v ON v.trend_id=t.id
+      LEFT JOIN confidence_state cs ON cs.trend_id=t.id
     """).fetchall()
 
     for r in rows:
         pending=c.execute("""
-          SELECT id FROM predictions
-          WHERE trend_id=? AND status='pending'
+          SELECT id FROM predictions WHERE trend_id=? AND status='pending'
         """,(r["id"],)).fetchone()
         if pending:
             continue
 
-        # Only predict meaningful early signals.
-        if float(r["pre_buzz_score"]) < 55:
+        pre=float(r["pre_buzz_score"] or 0)
+        buzz=float(r["buzz_score"] or 0)
+        acc=float(r["acceleration"] or 0)
+        tp=float(r["traffic_potential"] or 0)
+        pv=int(r["pageviews"] or 0)
+        v30=float(r["velocity_30m"] or 0)
+        v60=float(r["velocity_1h"] or 0)
+        v180=float(r["velocity_3h"] or 0)
+        vel=float(r["velocity_score"] or 0)
+        conf=float(r["confidence_score"] or 0)
+        sources=int(r["source_count"] or 0)
+
+        # Only make a forecast when BUZZ NOW has a meaningful early signal.
+        if pre < 55 or conf < 20:
             continue
+
+        # Weighted recent momentum. Positive and negative movement are both
+        # preserved. This is a forecast signal, not measured search volume.
+        momentum = v30*0.50 + v60*0.30 + v180*0.20
+        confidence_factor = 0.45 + min(1.0, conf/100.0)*0.55
+        source_factor = 1.0 + min(0.20, max(0, sources-1)*0.08)
+
+        predicted_pre=max(0.0,min(100.0, pre + momentum*0.22*confidence_factor))
+        predicted_buzz=max(0.0,min(100.0, buzz + momentum*0.18*confidence_factor))
+        predicted_acc=max(-1.0,min(1.0, acc + momentum/180.0))
+        predicted_tp=max(0.0,min(100.0,
+            tp + momentum*0.20*confidence_factor + max(0.0, vel-50.0)*0.05
+        ))
+
+        # Forecast the V13 opportunity-PV three hours ahead.  This remains a
+        # forecast, not Google Analytics/Search Console measured traffic.
+        growth=max(0.45,min(2.40, 1.0 + momentum/80.0))
+        predicted_pv=int(max(0, round(pv * growth * source_factor)))
 
         c.execute("""
           INSERT INTO predictions(
@@ -600,47 +638,52 @@ def create_predictions(c, ts):
             ticks_elapsed,status,created_at
           ) VALUES(?,?,?,?,?,?,6,0,'pending',?)
         """,(
-            r["id"],r["pre_buzz_score"],r["buzz_score"],r["acceleration"],
-            r["traffic_potential"],r["pageviews"],ts
+            r["id"],round(predicted_pre,1),round(predicted_buzz,1),round(predicted_acc,2),
+            round(predicted_tp,1),predicted_pv,ts
         ))
 
 
 def evaluate_predictions(c, ts):
+    """V15: compare a forecast with REAL collected state after >= 3 hours."""
     ensure_model_state(c)
+    now=datetime.fromisoformat(ts.replace('Z','+00:00'))
 
-    c.execute("""
-      UPDATE predictions
-      SET ticks_elapsed=ticks_elapsed+1
-      WHERE status='pending'
-    """)
-
-    ready=c.execute("""
+    pending=c.execute("""
       SELECT p.*, t.buzz_score AS actual_buzz,
              COALESCE(x.traffic_potential,0) AS actual_tp,
              COALESCE(x.pageviews,0) AS actual_pv
       FROM predictions p
       JOIN trends t ON t.id=p.trend_id
       LEFT JOIN traffic_totals x ON x.trend_id=p.trend_id
-      WHERE p.status='pending' AND p.ticks_elapsed>=p.horizon_ticks
+      WHERE p.status='pending'
     """).fetchall()
 
-    for p in ready:
-        buzz_gain=float(p["actual_buzz"])-float(p["predicted_buzz"])
-        traffic_gain=float(p["actual_tp"])-float(p["predicted_traffic_potential"])
-        pv_gain=int(p["actual_pv"])-int(p["predicted_pageviews"])
+    for p in pending:
+        try:
+            created=datetime.fromisoformat(str(p["created_at"]).replace('Z','+00:00'))
+            if created.tzinfo is None:
+                created=created.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        if (now-created).total_seconds() < 3*3600:
+            continue
 
-        # Hit = the topic meaningfully grew after we called it early.
-        hit = int(
-            (buzz_gain >= 5 and traffic_gain >= 3) or
-            (traffic_gain >= 8) or
-            (pv_gain >= 60 and buzz_gain >= 2)
-        )
+        # Here "gain" is prediction error (actual - forecast).  Keeping the
+        # legacy column names preserves the current API/UI without migration.
+        buzz_error=float(p["actual_buzz"])-float(p["predicted_buzz"])
+        traffic_error=float(p["actual_tp"])-float(p["predicted_traffic_potential"])
+        pv_error=int(p["actual_pv"])-int(p["predicted_pageviews"])
 
-        score=max(0,min(100,
-            50
-            + buzz_gain * 2.0
-            + traffic_gain * 2.2
-            + min(25, max(-25, pv_gain/8))
+        buzz_abs=abs(buzz_error)
+        traffic_abs=abs(traffic_error)
+        pv_base=max(250, int(p["predicted_pageviews"] or 0))
+        pv_pct_abs=abs(pv_error)/pv_base*100.0
+
+        # HIT means the three-hour forecast landed inside practical tolerances.
+        # It is deliberately stricter than the old "did it rise?" rule.
+        hit=int(buzz_abs <= 8.0 and traffic_abs <= 10.0 and pv_pct_abs <= 35.0)
+        score=max(0.0,min(100.0,
+            100.0 - buzz_abs*3.0 - traffic_abs*2.2 - min(45.0,pv_pct_abs*0.65)
         ))
 
         c.execute("""
@@ -650,16 +693,14 @@ def evaluate_predictions(c, ts):
           ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
         """,(
             p["id"],p["trend_id"],p["actual_buzz"],p["actual_tp"],p["actual_pv"],
-            round(buzz_gain,1),round(traffic_gain,1),pv_gain,hit,round(score,1),ts
+            round(buzz_error,1),round(traffic_error,1),pv_error,hit,round(score,1),ts
         ))
-        c.execute("""
-          UPDATE predictions SET status='evaluated',evaluated_at=? WHERE id=?
-        """,(ts,p["id"]))
+        c.execute("""UPDATE predictions SET status='evaluated',evaluated_at=? WHERE id=?""",
+                  (ts,p["id"]))
 
     total=c.execute("SELECT COUNT(*) AS n FROM prediction_results").fetchone()["n"]
     hits=c.execute("SELECT COUNT(*) AS n FROM prediction_results WHERE hit=1").fetchone()["n"]
-    hit_rate=(hits/total*100) if total else 0
-
+    hit_rate=(hits/total*100.0) if total else 0.0
     c.execute("""
       INSERT INTO model_state(key,value) VALUES('hit_rate',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value
@@ -668,7 +709,6 @@ def evaluate_predictions(c, ts):
       INSERT INTO model_state(key,value) VALUES('evaluated_predictions',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value
     """,(float(total),))
-
 
 def cautiously_tune_model(c):
     """
@@ -1538,6 +1578,11 @@ def collect_real_sources():
         refresh_v9_velocity(c, ts)
         # V13: refresh Traffic Potential and today's predicted PV from real signals.
         refresh_real_traffic_forecast(c, ts)
+        # V15: answer-check forecasts against the newly collected state, then
+        # create fresh +3h forecasts. This now runs in REAL_DATA_MODE too.
+        evaluate_predictions(c, ts)
+        create_predictions(c, ts)
+        cautiously_tune_model(c)
         c.commit()
     return {"google_trends":g,"wikimedia":w,"total":g+w}
 
