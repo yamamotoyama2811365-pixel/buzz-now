@@ -2135,7 +2135,7 @@ def trend_detail(slug: str, request: Request):
         # V20: if this SEO detail page still has no supporting articles, perform a
         # throttled targeted refresh for this exact keyword. This avoids waiting for
         # the keyword to appear in the small scheduled GDELT batch.
-        if NEWS_ENRICHMENT_ENABLED and not sources and _news_check_is_due(c, trend["id"]):
+        if NEWS_ENRICHMENT_ENABLED and not sources and _news_check_is_due(c, trend["id"], hours=1/6):
             try:
                 _enrich_keyword_news(c, trend["keyword"], now_iso(), force=True)
                 c.commit()
@@ -2175,11 +2175,23 @@ def trend_detail(slug: str, request: Request):
 
 
 @app.get("/api/trends/{slug}/news-diagnostic")
-def trend_news_diagnostic(slug: str):
+def trend_news_diagnostic(slug: str, force: int = 0):
     with db() as c:
         trend=c.execute("SELECT id,keyword,why_now FROM trends WHERE slug=?",(slug,)).fetchone()
         if not trend:
             raise HTTPException(404,"Trend not found")
+
+        # V22: force=1 performs an immediate provider check so diagnostics never
+        # stay blank merely because an older version wrote news_checked first.
+        if force:
+            try:
+                _enrich_keyword_news(c, trend["keyword"], now_iso(), force=True)
+                c.commit()
+            except Exception as e:
+                _record_news_diagnostic(c, trend["id"], "force", f"error {type(e).__name__}: {e}", now_iso())
+                c.commit()
+
+        trend=c.execute("SELECT id,keyword,why_now FROM trends WHERE id=?",(trend["id"],)).fetchone()
         sources=c.execute("SELECT publisher,title,url,published_at,source_label FROM sources WHERE trend_id=? ORDER BY id DESC LIMIT 10",(trend["id"],)).fetchall()
         related=c.execute("SELECT keyword FROM related_keywords WHERE trend_id=? ORDER BY id DESC LIMIT 12",(trend["id"],)).fetchall()
         states=c.execute("SELECT key,value FROM system_state WHERE key LIKE ? ORDER BY key",(f"news_diag:{trend['id']}:%",)).fetchall()
