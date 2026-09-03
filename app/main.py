@@ -958,12 +958,116 @@ def _safe_publisher_from_url(url):
         return "関連メディア"
 
 
+
+def _parse_news_datetime(value):
+    """Parse common RSS/GDELT date formats into an aware UTC datetime."""
+    if not value:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _keyword_tokens_for_news(keyword):
+    """Conservative keyword tokenization for relevance checks."""
+    kw = _clean_keyword(keyword)
+    raw = [x for x in re.split(r"[\\s　・/／|｜]+", kw) if x]
+    stop = {"の","と","で","に","を","は","が","へ","から","まで","最新","ニュース","速報"}
+    tokens = [normalize_match_key(x) for x in raw if normalize_match_key(x) and x not in stop]
+    return tokens or ([normalize_match_key(kw)] if normalize_match_key(kw) else [])
+
+
+def _article_relevance(keyword, article, now_dt=None):
+    """Return (accepted, score, reason) for one article metadata item."""
+    now_dt = now_dt or datetime.now(timezone.utc)
+    title = " ".join(str(article.get("title") or "").split()).strip()
+    if not title:
+        return False, 0, "title_empty"
+    title_key = normalize_match_key(title)
+    tokens = _keyword_tokens_for_news(keyword)
+    if not tokens:
+        return False, 0, "keyword_empty"
+    matched = [t for t in tokens if t and t in title_key]
+    if len(matched) != len(tokens):
+        return False, round(100 * len(matched) / max(1, len(tokens)), 1), "keyword_mismatch"
+    label = str(article.get("source_label") or "")
+    published = _parse_news_datetime(article.get("published_at"))
+    freshness = 0
+    if published:
+        age_hours = max(0.0, (now_dt - published).total_seconds() / 3600.0)
+        if age_hours <= 72:
+            freshness = 25
+        elif age_hours <= 168:
+            freshness = 10
+        else:
+            return False, 75, "older_than_7d"
+    elif "Google Trends" in label:
+        freshness = 15
+    phrase = normalize_match_key(_clean_keyword(keyword))
+    phrase_bonus = 20 if phrase and phrase in title_key else 0
+    score = min(100.0, 70.0 + freshness + phrase_bonus)
+    return True, round(score, 1), "accepted"
+
+
+def _filter_relevant_articles(keyword, articles, maxrecords=8):
+    accepted = []
+    rejected = []
+    seen_titles = set()
+    now_dt = datetime.now(timezone.utc)
+    for a in articles or []:
+        ok, score, reason = _article_relevance(keyword, a, now_dt)
+        title = " ".join(str(a.get("title") or "").split()).strip()
+        key = normalize_match_key(title)
+        if key and key in seen_titles:
+            continue
+        if ok:
+            seen_titles.add(key)
+            item = dict(a)
+            item["relevance_score"] = score
+            accepted.append(item)
+        else:
+            rejected.append({"title": title[:120], "reason": reason, "score": score})
+    accepted.sort(key=lambda a: (float(a.get("relevance_score") or 0), _parse_news_datetime(a.get("published_at")) or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
+    return accepted[:maxrecords], rejected
+
+
+def _clear_auto_news_for_trend(c, trend_id, keyword):
+    """Remove weak auto-news rows created by older versions before rebuilding."""
+    c.execute("""
+      DELETE FROM sources
+      WHERE trend_id=?
+        AND (
+          source_label LIKE 'Bing News%'
+          OR source_label LIKE 'Google News%'
+          OR source_label='関連報道'
+          OR source_label='Google Trends 関連記事'
+        )
+    """, (trend_id,))
+    c.execute("DELETE FROM related_keywords WHERE trend_id=? AND keyword LIKE ?", (trend_id, f"{_clean_keyword(keyword)} %"))
+
+
 def _store_article_sources(c, keyword, articles, ts):
     trend = _find_trend_row(c, keyword)
     if not trend:
         return 0
+    relevant, rejected = _filter_relevant_articles(keyword, articles, 8)
     inserted = 0
-    for a in articles or []:
+    for a in relevant:
         url = str(a.get("url") or "").strip()
         title = " ".join(str(a.get("title") or "").split()).strip()
         if not url.startswith(("http://", "https://")) or not title:
@@ -985,7 +1089,6 @@ def _store_article_sources(c, keyword, articles, ts):
             inserted += 1
     _refresh_why_now_from_sources(c, trend["id"], keyword, ts)
     return inserted
-
 
 def _refresh_why_now_from_sources(c, trend_id, keyword, ts):
     rows = c.execute("""
@@ -1127,7 +1230,7 @@ def _fetch_gdelt_articles_for_keyword(keyword, maxrecords=8):
 
 
 
-# V23: Bing News RSS fallback for Render environments where Google News can return HTTP 429.
+# V24: Bing News RSS fallback + strict relevance filtering for Render environments where Google News can return HTTP 429.
 BING_NEWS_RSS_SEARCH = "https://www.bing.com/news/search"
 
 def _fetch_bing_news_rss_for_keyword(keyword, maxrecords=8):
@@ -1270,7 +1373,7 @@ def _news_check_is_due(c, trend_id, hours=2):
 
 
 def _enrich_keyword_news(c, keyword, ts, force=False):
-    """V21: exact-keyword enrichment with provider fallback and diagnostics."""
+    """V24: high-precision news enrichment with relevance diagnostics."""
     if not NEWS_ENRICHMENT_ENABLED:
         return 0
     trend=_find_trend_row(c,keyword)
@@ -1278,41 +1381,42 @@ def _enrich_keyword_news(c, keyword, ts, force=False):
         return 0
     if not force and not _news_check_is_due(c,trend["id"]):
         return 0
-
+    _clear_auto_news_for_trend(c, trend["id"], keyword)
     total=0
-    # 1) Bing News RSS first. Render can receive HTTP 429 from Google News,
-    # so V23 does not depend on Google News for the primary fallback.
     try:
-        bnews,msg=_fetch_bing_news_rss_for_keyword(keyword,8)
-        _record_news_diagnostic(c,trend["id"],"bing_news",msg,ts)
-        if bnews:
-            total += _store_article_sources(c,keyword,bnews,ts)
+        bnews,msg=_fetch_bing_news_rss_for_keyword(keyword,12)
+        accepted,rejected=_filter_relevant_articles(keyword,bnews,8)
+        diag=f"{msg} | accepted={len(accepted)} rejected={len(rejected)}"
+        if rejected:
+            diag += " | reject_examples=" + ",".join(f"{x['reason']}:{x['title'][:32]}" for x in rejected[:3])
+        _record_news_diagnostic(c,trend["id"],"bing_news",diag,ts)
+        if accepted:
+            total += _store_article_sources(c,keyword,accepted,ts)
     except Exception as e:
         _record_news_diagnostic(c,trend["id"],"bing_news",f"error {type(e).__name__}: {e}",ts)
-
-    # 2) GDELT as an independent supplementary source.
     if GDELT_NEWS_ENABLED:
         try:
-            articles=_fetch_gdelt_articles_for_keyword(keyword,8)
-            _record_news_diagnostic(c,trend["id"],"gdelt",f"articles={len(articles)}",ts)
-            if articles:
-                total += _store_article_sources(c,keyword,articles,ts)
+            articles=_fetch_gdelt_articles_for_keyword(keyword,12)
+            accepted,rejected=_filter_relevant_articles(keyword,articles,8)
+            _record_news_diagnostic(c,trend["id"],"gdelt",f"raw={len(articles)} accepted={len(accepted)} rejected={len(rejected)}",ts)
+            if accepted:
+                total += _store_article_sources(c,keyword,accepted,ts)
         except Exception as e:
             _record_news_diagnostic(c,trend["id"],"gdelt",f"error {type(e).__name__}: {e}",ts)
-
-    # 3) Google News remains a last fallback only. A 429 is recorded but does
-    # not prevent Bing/GDELT results from populating WHY NOW.
     if total == 0:
         try:
-            gnews,msg=_fetch_google_news_rss_for_keyword(keyword,8)
-            _record_news_diagnostic(c,trend["id"],"google_news",msg,ts)
-            if gnews:
-                total += _store_article_sources(c,keyword,gnews,ts)
+            gnews,msg=_fetch_google_news_rss_for_keyword(keyword,12)
+            accepted,rejected=_filter_relevant_articles(keyword,gnews,8)
+            _record_news_diagnostic(c,trend["id"],"google_news",f"{msg} | accepted={len(accepted)} rejected={len(rejected)}",ts)
+            if accepted:
+                total += _store_article_sources(c,keyword,accepted,ts)
         except Exception as e:
             _record_news_diagnostic(c,trend["id"],"google_news",f"error {type(e).__name__}: {e}",ts)
-
-    # Build related-search helpers only from a keyword + collected source titles.
-    _derive_related_from_sources(c,trend["id"],keyword)
+    if total > 0:
+        _derive_related_from_sources(c,trend["id"],keyword)
+    else:
+        fallback=(f"{keyword}はBUZZ NOWの公開データ分析で上昇シグナルを検知しています。" "現在、注目上昇の理由として十分に関連性の高い最新記事は確認できていません。" "新しい公式発表・報道を継続して確認しています。")
+        c.execute("UPDATE trends SET why_now=?, updated_at=? WHERE id=?",(fallback,ts,trend["id"]))
     _mark_news_checked(c,trend["id"],ts)
     return total
 
