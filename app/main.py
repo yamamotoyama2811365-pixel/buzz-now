@@ -2038,6 +2038,12 @@ def trend_propagation(slug: str):
 
 @app.get("/api/velocity-ranking")
 def velocity_ranking(limit: int = 50):
+    """V14: dashboard velocity endpoint backed by REAL V9/V11 velocity state.
+
+    The old endpoint read propagation_state, while the active composite engine writes
+    30m/1h/3h movement into v9_velocity_state. That mismatch made the BUZZ VELOCITY
+    panel look frozen at +0.0/h even when the real velocity engine had non-zero data.
+    """
     limit=max(1,min(limit,100))
     with db() as c:
         rows=c.execute("""
@@ -2047,16 +2053,24 @@ def velocity_ranking(limit: int = 50):
             COALESCE(cs.confidence_score,0) AS confidence_score,
             COALESCE(cs.confidence_label,'デモ/未確認') AS confidence_label,
             COALESCE(cs.source_count,0) AS source_count,
-            COALESCE(ps.first_source,'') AS first_source,
-            COALESCE(ps.source_sequence,'') AS source_sequence,
-            ps.propagation_minutes AS propagation_minutes,
-            COALESCE(ps.velocity_30m,0) AS velocity_30m,
-            COALESCE(ps.velocity_1h,0) AS velocity_1h,
-            COALESCE(ps.velocity_3h,0) AS velocity_3h
+            COALESCE(v.first_source,'') AS first_source,
+            COALESCE(v.source_sequence,'') AS source_sequence,
+            p.propagation_minutes AS propagation_minutes,
+            COALESCE(v.velocity_30m,0) AS velocity_30m,
+            COALESCE(v.velocity_1h,0) AS velocity_1h,
+            COALESCE(v.velocity_3h,0) AS velocity_3h,
+            COALESCE(v.velocity_score,0) AS velocity_score,
+            COALESCE(v.velocity_label,'観測開始') AS velocity_label
           FROM trends t
           LEFT JOIN confidence_state cs ON cs.trend_id=t.id
-          LEFT JOIN propagation_state ps ON ps.trend_id=t.id
-          ORDER BY velocity_30m DESC, velocity_1h DESC, confidence_score DESC
+          LEFT JOIN v9_velocity_state v ON v.trend_id=t.id
+          LEFT JOIN propagation_state p ON p.trend_id=t.id
+          ORDER BY
+            COALESCE(v.velocity_30m,0) DESC,
+            COALESCE(v.velocity_1h,0) DESC,
+            COALESCE(v.velocity_3h,0) DESC,
+            COALESCE(v.velocity_score,0) DESC,
+            confidence_score DESC
           LIMIT ?
         """,(limit,)).fetchall()
     return {"items":[dict(x) for x in rows]}
