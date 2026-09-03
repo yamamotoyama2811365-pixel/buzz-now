@@ -25,7 +25,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "20.0.0")
+APP_VERSION = os.getenv("APP_VERSION", "21.0.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -1124,6 +1124,86 @@ def _fetch_gdelt_articles_for_keyword(keyword, maxrecords=8):
     return collected[:maxrecords]
 
 
+
+
+# V21: resilient WHY NOW discovery via Google News RSS metadata fallback.
+GOOGLE_NEWS_RSS_SEARCH = "https://news.google.com/rss/search"
+
+def _fetch_google_news_rss_for_keyword(keyword, maxrecords=8):
+    """Fetch recent Google News RSS result metadata. No article bodies are copied."""
+    kw=_clean_keyword(keyword)
+    if not kw:
+        return [], "empty keyword"
+    params={"q": kw, "hl":"ja", "gl":"JP", "ceid":"JP:ja"}
+    try:
+        r=httpx.get(GOOGLE_NEWS_RSS_SEARCH, params=params, timeout=12, follow_redirects=True, headers=_collector_headers("rss"))
+        if r.status_code != 200:
+            return [], f"HTTP {r.status_code}: {_short_preview(r)}"
+        feed=feedparser.parse(r.content)
+        out=[]; seen=set()
+        for e in list(feed.entries)[:maxrecords*2]:
+            title=" ".join(str(getattr(e,"title","") or "").split()).strip()
+            url=str(getattr(e,"link","") or "").strip()
+            if not title or not url.startswith(("http://","https://")):
+                continue
+            key=normalize_match_key(title)
+            if key in seen:
+                continue
+            seen.add(key)
+            publisher="Google News 掲載メディア"
+            src=getattr(e,"source",None)
+            if src:
+                try:
+                    publisher=str(src.get("title") or src.get("href") or publisher) if isinstance(src,dict) else str(getattr(src,"title",publisher))
+                except Exception:
+                    pass
+            # Many Google News titles end with " - publisher". Use that as a safe display fallback.
+            if " - " in title:
+                maybe=title.rsplit(" - ",1)[-1].strip()
+                if maybe and len(maybe)<100:
+                    publisher=maybe
+            published=str(getattr(e,"published","") or "")
+            out.append({"publisher":publisher,"title":title,"url":url,"published_at":published,"source_label":"Google News 関連記事"})
+            if len(out)>=maxrecords:
+                break
+        return out, f"ok {len(out)} entries"
+    except Exception as e:
+        return [], f"{type(e).__name__}: {e}"
+
+def _derive_related_from_sources(c, trend_id, keyword):
+    """Create conservative related-search phrases from collected article titles."""
+    rows=c.execute("SELECT title FROM sources WHERE trend_id=? ORDER BY id DESC LIMIT 12",(trend_id,)).fetchall()
+    if not rows:
+        return 0
+    base=_clean_keyword(keyword)
+    candidates=[f"{base} なぜ話題", f"{base} 最新", f"{base} ニュース"]
+    # Extract quoted/bracketed named phrases only; avoid inventing facts.
+    for r in rows:
+        title=str(r["title"] or "")
+        for pat in [r"[「『【]([^」』】]{2,28})[」』】]", r"([A-Za-z0-9ぁ-んァ-ヶ一-龠々ー]{3,20})"]:
+            for m in re.findall(pat,title):
+                term=" ".join(str(m).split()).strip()
+                if term and normalize_match_key(term)!=normalize_match_key(base):
+                    candidates.append(f"{base} {term}")
+    inserted=0; seen=set()
+    for term in candidates:
+        key=normalize_match_key(term)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        before=c.execute("SELECT id FROM related_keywords WHERE trend_id=? AND keyword=?",(trend_id,term)).fetchone()
+        c.execute("INSERT OR IGNORE INTO related_keywords(trend_id,keyword) VALUES(?,?)",(trend_id,term[:120]))
+        if not before:
+            inserted+=1
+        if inserted>=8:
+            break
+    return inserted
+
+def _record_news_diagnostic(c, trend_id, provider, message, ts):
+    c.execute("""INSERT INTO system_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+              (f"news_diag:{trend_id}:{provider}", f"{ts} | {message}"[:1000]))
+
+
 def _mark_news_checked(c, trend_id, ts):
     key=f"news_checked:{trend_id}"
     c.execute("""
@@ -1146,25 +1226,39 @@ def _news_check_is_due(c, trend_id, hours=2):
 
 
 def _enrich_keyword_news(c, keyword, ts, force=False):
-    """Targeted WHY NOW enrichment for a single trend.
-
-    This is used both by the scheduled collector and, when a detail page has no
-    sources yet, by a throttled on-demand refresh. It prevents a high-value SEO
-    page from staying permanently on the generic fallback just because the trend
-    was outside the scheduled enrichment batch at a particular cycle.
-    """
-    if not NEWS_ENRICHMENT_ENABLED or not GDELT_NEWS_ENABLED:
+    """V21: exact-keyword enrichment with provider fallback and diagnostics."""
+    if not NEWS_ENRICHMENT_ENABLED:
         return 0
     trend=_find_trend_row(c,keyword)
     if not trend:
         return 0
     if not force and not _news_check_is_due(c,trend["id"]):
         return 0
-    articles=_fetch_gdelt_articles_for_keyword(keyword,8)
-    inserted=_store_article_sources(c,keyword,articles,ts) if articles else 0
-    _mark_news_checked(c,trend["id"],ts)
-    return inserted
 
+    total=0
+    # 1) GDELT first when enabled.
+    if GDELT_NEWS_ENABLED:
+        try:
+            articles=_fetch_gdelt_articles_for_keyword(keyword,8)
+            _record_news_diagnostic(c,trend["id"],"gdelt",f"articles={len(articles)}",ts)
+            if articles:
+                total += _store_article_sources(c,keyword,articles,ts)
+        except Exception as e:
+            _record_news_diagnostic(c,trend["id"],"gdelt",f"error {type(e).__name__}: {e}",ts)
+
+    # 2) Google News RSS metadata fallback. This is especially useful for Japanese proper nouns.
+    try:
+        gnews,msg=_fetch_google_news_rss_for_keyword(keyword,8)
+        _record_news_diagnostic(c,trend["id"],"google_news",msg,ts)
+        if gnews:
+            total += _store_article_sources(c,keyword,gnews,ts)
+    except Exception as e:
+        _record_news_diagnostic(c,trend["id"],"google_news",f"error {type(e).__name__}: {e}",ts)
+
+    # Build related-search helpers only from a keyword + collected source titles.
+    _derive_related_from_sources(c,trend["id"],keyword)
+    _mark_news_checked(c,trend["id"],ts)
+    return total
 
 def collect_gdelt_news(c, ts, limit=None):
     """Enrich the strongest live trends with recent article metadata from GDELT."""
@@ -2050,6 +2144,10 @@ def trend_detail(slug: str, request: Request):
                     "SELECT * FROM sources WHERE trend_id=? ORDER BY CASE WHEN published_at='' THEN 1 ELSE 0 END, published_at DESC, id DESC LIMIT 10",
                     (trend["id"],)
                 ).fetchall()
+                related = c.execute(
+                    "SELECT keyword FROM related_keywords WHERE trend_id=? ORDER BY id LIMIT 12",
+                    (trend["id"],)
+                ).fetchall()
             except Exception as e:
                 logger.warning("detail news enrichment failed slug=%s: %s", slug, e)
 
@@ -2074,6 +2172,27 @@ def trend_detail(slug: str, request: Request):
         "canonical": canonical,
     })
 
+
+
+@app.get("/api/trends/{slug}/news-diagnostic")
+def trend_news_diagnostic(slug: str):
+    with db() as c:
+        trend=c.execute("SELECT id,keyword,why_now FROM trends WHERE slug=?",(slug,)).fetchone()
+        if not trend:
+            raise HTTPException(404,"Trend not found")
+        sources=c.execute("SELECT publisher,title,url,published_at,source_label FROM sources WHERE trend_id=? ORDER BY id DESC LIMIT 10",(trend["id"],)).fetchall()
+        related=c.execute("SELECT keyword FROM related_keywords WHERE trend_id=? ORDER BY id DESC LIMIT 12",(trend["id"],)).fetchall()
+        states=c.execute("SELECT key,value FROM system_state WHERE key LIKE ? ORDER BY key",(f"news_diag:{trend['id']}:%",)).fetchall()
+        checked=c.execute("SELECT value FROM system_state WHERE key=?",(f"news_checked:{trend['id']}",)).fetchone()
+    return {
+        "keyword":trend["keyword"],
+        "why_now":trend["why_now"],
+        "source_count":len(sources),
+        "sources":[dict(x) for x in sources],
+        "related_keywords":[x["keyword"] for x in related],
+        "last_checked": checked["value"] if checked else None,
+        "diagnostics":{x["key"].split(":")[-1]:x["value"] for x in states},
+    }
 
 @app.get("/api/system-status")
 def system_status():
