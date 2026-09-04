@@ -60,6 +60,19 @@
 
 
     <section class="section">
+          <div class="kicker">WHY NOW?</div>
+          <h2>なぜ今、注目されている？</h2>
+          <div class="card why-now-card">
+            <p style="margin:0;line-height:1.9;">{{ trend['why_now'] }}</p>
+            {% if sources %}
+            <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(148,163,184,.16);font-size:12px;opacity:.72;">
+              公開情報とBUZZ NOWの検索・閲覧シグナルを照合して自動整理しています。記事の内容そのものを転載せず、元情報へのリンクを掲載しています。
+            </div>
+            {% endif %}
+          </div>
+        </section>
+
+    <section class="section">
       <div class="kicker">BUZZ PROPAGATION</div>
       <h2>バズの発火・波及</h2>
       <div class="card">
@@ -153,21 +166,7 @@
         <div id="history">読み込み中...</div>
       </div>
     </section>
-
-    <section class="section">
-      <div class="kicker">WHY NOW?</div>
-      <h2>なぜ今、注目されている？</h2>
-      <div class="card why-now-card">
-        <p style="margin:0;line-height:1.9;">{{ trend['why_now'] }}</p>
-        {% if sources %}
-        <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(148,163,184,.16);font-size:12px;opacity:.72;">
-          公開情報とBUZZ NOWの検索・閲覧シグナルを照合して自動整理しています。記事の内容そのものを転載せず、元情報へのリンクを掲載しています。
-        </div>
-        {% endif %}
-      </div>
-    </section>
-
-    <section class="section">
+<section class="section">
       <div class="kicker">RELATED SEARCHES</div>
       <h2>関連キーワード</h2>
       <div class="tags">
