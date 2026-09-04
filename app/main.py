@@ -29,7 +29,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.3.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.4.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3304,6 +3304,29 @@ def _social_image_jpeg_payload(trend_id: int) -> bytes:
                         pass
                 return ImageFont.load_default()
 
+            def mincho_font(size):
+                paths = [
+                    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
+                    "/usr/share/fonts/opentype/noto/NotoSerifCJKJP-Bold.otf",
+                    "/opt/render/project/src/.venv/lib/python3.13/site-packages/japanize_matplotlib/fonts/ipaexm.ttf",
+                ]
+                for p in paths:
+                    try:
+                        return ImageFont.truetype(p, size)
+                    except Exception:
+                        pass
+                return font(size, True)
+
+            def fit_mincho(text, max_width, start_size, min_size=44):
+                size = start_size
+                while size > min_size:
+                    f = mincho_font(size)
+                    box = d.textbbox((0, 0), text, font=f, stroke_width=2)
+                    if box[2] - box[0] <= max_width:
+                        return f
+                    size -= 2
+                return mincho_font(min_size)
+
             def fit_font(text, max_width, start_size, min_size=34):
                 size = start_size
                 while size > min_size:
@@ -3328,9 +3351,12 @@ def _social_image_jpeg_payload(trend_id: int) -> bytes:
             d.text((54, 125), "いま、話題のニュースをわかりやすく", font=font(22, True), fill="white")
 
             # Keyword — large, bold, exact.
-            kw_font = fit_font(keyword, 690, 92, 50)
-            d.text((48, 198), keyword, font=kw_font, fill="white",
-                   stroke_width=5, stroke_fill=(0,0,0,255))
+            kw_font = fit_mincho(keyword, 700, 104, 54)
+            # Person/topic name: bold Mincho for editorial gravitas.
+            d.text((52, 203), keyword, font=kw_font, fill=(0,0,0,190),
+                   stroke_width=3, stroke_fill=(0,0,0,190))
+            d.text((47, 197), keyword, font=kw_font, fill="white",
+                   stroke_width=2, stroke_fill=(15,15,15,255))
 
             # Red brush-like underline (deterministic).
             y = 320
