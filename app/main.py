@@ -25,7 +25,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "26.0.0")
+APP_VERSION = os.getenv("APP_VERSION", "30.0.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -34,6 +34,15 @@ REAL_DATA_INTERVAL_MINUTES = int(os.getenv("REAL_DATA_INTERVAL_MINUTES","30"))
 # V26: Make.com webhook bridge for BUZZ NOW social automation
 MAKE_WEBHOOK_URL = os.getenv("MAKE_WEBHOOK_URL", "").strip()
 SOCIAL_TEST_ENABLED = os.getenv("SOCIAL_TEST_ENABLED", "false").lower() == "true"
+
+# V30: production X auto-posting via Make -> Buffer -> X
+SOCIAL_AUTO_ENABLED = os.getenv("SOCIAL_AUTO_ENABLED", "false").lower() == "true"
+SOCIAL_MIN_PREBUZZ = float(os.getenv("SOCIAL_MIN_PREBUZZ", "85"))
+SOCIAL_MIN_TRAFFIC = float(os.getenv("SOCIAL_MIN_TRAFFIC", "70"))
+SOCIAL_KEYWORD_COOLDOWN_HOURS = int(os.getenv("SOCIAL_KEYWORD_COOLDOWN_HOURS", "72"))
+SOCIAL_GLOBAL_COOLDOWN_MINUTES = int(os.getenv("SOCIAL_GLOBAL_COOLDOWN_MINUTES", "60"))
+SOCIAL_DAILY_CAP = int(os.getenv("SOCIAL_DAILY_CAP", "8"))
+SOCIAL_MAX_POSTS_PER_RUN = int(os.getenv("SOCIAL_MAX_POSTS_PER_RUN", "1"))
 
 # V19: article discovery / WHY NOW enrichment
 NEWS_ENRICHMENT_ENABLED = os.getenv("NEWS_ENRICHMENT_ENABLED", "true").lower() == "true"
@@ -179,6 +188,21 @@ def init_db():
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS social_posts(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trend_id INTEGER NOT NULL,
+            keyword TEXT NOT NULL,
+            pre_buzz_score REAL NOT NULL DEFAULT 0,
+            traffic_potential REAL NOT NULL DEFAULT 0,
+            post_text TEXT NOT NULL,
+            make_status INTEGER NOT NULL DEFAULT 0,
+            posted_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_social_posts_trend_time
+            ON social_posts(trend_id, posted_at);
+        CREATE INDEX IF NOT EXISTS idx_social_posts_posted_at
+            ON social_posts(posted_at);
         
         CREATE TABLE IF NOT EXISTS traffic_history(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2167,6 +2191,157 @@ def refresh_real_traffic_forecast(c, ts):
         """, (r["id"], predicted_impressions, predicted_clicks,
               predicted_pv, predicted_ctr, potential, ts))
 
+def _parse_iso_datetime(value: str):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _social_detail_url(slug: str) -> str:
+    return f"{SITE_URL}/trend/{quote(str(slug), safe='-_%')}"
+
+
+def _build_social_post_text(row) -> str:
+    keyword = str(row["keyword"]).strip()
+    pre = int(round(float(row["pre_buzz_score"] or 0)))
+    traffic = int(round(float(row["traffic_potential"] or 0)))
+    status = str(row["status"] or "急上昇")
+    status_plain = re.sub(r"^[^ぁ-んァ-ヶ一-龠A-Za-z0-9]+\s*", "", status).strip() or "急上昇"
+    detail_url = _social_detail_url(row["slug"])
+    return (
+        f"🚨 BUZZNOW SNS捜査官｜{status_plain}を検知\n"
+        f"「{keyword}」\n"
+        f"Pre-Buzz Score：{pre}\n"
+        f"Traffic Potential：{traffic}\n"
+        f"{detail_url}"
+    )
+
+
+def _social_candidate_rows(c, limit: int = 20):
+    limit = max(1, min(int(limit), 100))
+    return c.execute("""
+        SELECT
+            t.id,t.keyword,t.slug,t.pre_buzz_score,t.buzz_score,t.acceleration,
+            t.status,t.why_now,t.updated_at,
+            COALESCE(tt.traffic_potential,0) AS traffic_potential,
+            COALESCE(cf.confidence_score,0) AS confidence_score
+        FROM trends t
+        LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
+        LEFT JOIN confidence_state cf ON cf.trend_id=t.id
+        WHERE t.is_indexable=1
+          AND t.pre_buzz_score>=?
+          AND COALESCE(tt.traffic_potential,0)>=?
+          AND t.status NOT LIKE '%下降%'
+        ORDER BY
+          t.pre_buzz_score DESC,
+          COALESCE(tt.traffic_potential,0) DESC,
+          COALESCE(cf.confidence_score,0) DESC,
+          t.updated_at DESC
+        LIMIT ?
+    """, (SOCIAL_MIN_PREBUZZ, SOCIAL_MIN_TRAFFIC, limit)).fetchall()
+
+
+def _social_post_allowed(c, row, now_dt):
+    # Daily safety cap.
+    daily_cutoff = (now_dt - timedelta(hours=24)).isoformat()
+    daily_count = c.execute(
+        "SELECT COUNT(*) AS n FROM social_posts WHERE make_status=1 AND posted_at>=?",
+        (daily_cutoff,),
+    ).fetchone()["n"]
+    if int(daily_count or 0) >= max(0, SOCIAL_DAILY_CAP):
+        return False, "daily_cap"
+
+    # Global cooldown so one collector run cannot turn into a noisy posting burst.
+    last_any = c.execute(
+        "SELECT posted_at FROM social_posts WHERE make_status=1 ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if last_any:
+        last_dt = _parse_iso_datetime(last_any["posted_at"])
+        if last_dt and now_dt - last_dt < timedelta(minutes=max(0, SOCIAL_GLOBAL_COOLDOWN_MINUTES)):
+            return False, "global_cooldown"
+
+    # Keyword cooldown prevents repeating the same topic over and over.
+    last_same = c.execute(
+        "SELECT posted_at FROM social_posts WHERE make_status=1 AND trend_id=? ORDER BY id DESC LIMIT 1",
+        (row["id"],),
+    ).fetchone()
+    if last_same:
+        last_dt = _parse_iso_datetime(last_same["posted_at"])
+        if last_dt and now_dt - last_dt < timedelta(hours=max(0, SOCIAL_KEYWORD_COOLDOWN_HOURS)):
+            return False, "keyword_cooldown"
+
+    return True, "ok"
+
+
+def auto_post_social(c, ts: str):
+    """V30 production social dispatcher.
+
+    Uses only BUZZ NOW's own scored trend state. It sends qualifying topics to the
+    existing Make webhook, where Buffer publishes to X. Deduplication, cooldowns
+    and a daily cap live in PostgreSQL so restarts do not reset posting history.
+    """
+    result = {
+        "enabled": SOCIAL_AUTO_ENABLED,
+        "sent": 0,
+        "skipped": [],
+        "errors": [],
+    }
+    if not SOCIAL_AUTO_ENABLED or not MAKE_WEBHOOK_URL:
+        return result
+
+    now_dt = _parse_iso_datetime(ts) or datetime.now(timezone.utc)
+    candidates = _social_candidate_rows(c, limit=30)
+
+    for row in candidates:
+        if result["sent"] >= max(0, SOCIAL_MAX_POSTS_PER_RUN):
+            break
+
+        allowed, reason = _social_post_allowed(c, row, now_dt)
+        if not allowed:
+            result["skipped"].append({"keyword": row["keyword"], "reason": reason})
+            continue
+
+        post_text = _build_social_post_text(row)
+        payload = {
+            "keyword": row["keyword"],
+            "pre_buzz_score": round(float(row["pre_buzz_score"] or 0), 1),
+            "traffic_potential": round(float(row["traffic_potential"] or 0), 1),
+            "status": row["status"],
+            "why_now": row["why_now"] or "",
+            "detail_url": _social_detail_url(row["slug"]),
+            "post_text": post_text,
+            "source": "buzz-now-v30-auto",
+            "sent_at": ts,
+        }
+
+        try:
+            make_result = _send_to_make(payload)
+            ok = bool(make_result.get("ok"))
+            c.execute("""
+                INSERT INTO social_posts(
+                    trend_id,keyword,pre_buzz_score,traffic_potential,
+                    post_text,make_status,posted_at
+                ) VALUES(?,?,?,?,?,?,?)
+            """, (
+                row["id"], row["keyword"], payload["pre_buzz_score"],
+                payload["traffic_potential"], post_text, 1 if ok else 0, ts
+            ))
+            if ok:
+                result["sent"] += 1
+                result["last_keyword"] = row["keyword"]
+                logger.info("V30 social auto-post sent: %s", row["keyword"])
+            else:
+                result["errors"].append({"keyword": row["keyword"], "error": "Make returned not-ok"})
+        except Exception as exc:
+            logger.exception("V30 social auto-post failed for %s", row["keyword"])
+            result["errors"].append({"keyword": row["keyword"], "error": str(exc)[:300]})
+
+    return result
+
+
 def collect_real_sources():
     ts=now_iso()
     with db() as c:
@@ -2185,8 +2360,17 @@ def collect_real_sources():
         evaluate_predictions(c, ts)
         create_predictions(c, ts)
         cautiously_tune_model(c)
+        # V30: after all real-data scores are refreshed, publish at most the
+        # configured number of qualifying topics to Make -> Buffer -> X.
+        social_result = auto_post_social(c, ts)
         c.commit()
-    return {"google_trends":g,"wikimedia":w,"news":news_count,"total":g+w}
+    return {
+        "google_trends": g,
+        "wikimedia": w,
+        "news": news_count,
+        "total": g + w,
+        "social": social_result,
+    }
 
 
 def demo_tick():
@@ -2575,7 +2759,7 @@ def _send_to_make(payload: dict) -> dict:
             timeout=15,
             follow_redirects=True,
             headers={
-                "User-Agent": "BUZZ-NOW/26 Make-Webhook",
+                "User-Agent": "BUZZ-NOW/30 Make-Webhook",
                 "Content-Type": "application/json",
             },
         )
@@ -2613,7 +2797,7 @@ def social_test_send():
             "Pre-Buzz Score：92\n"
             "Traffic Potential：81"
         ),
-        "source": "buzz-now-v26-test",
+        "source": "buzz-now-v30-test",
         "sent_at": datetime.now(timezone.utc).isoformat(),
     }
     result = _send_to_make(payload)
@@ -2633,11 +2817,57 @@ def social_send_test_post():
 
 @app.get("/api/social/status")
 def social_status():
+    with db() as c:
+        last = c.execute("""
+            SELECT keyword,pre_buzz_score,traffic_potential,make_status,posted_at
+            FROM social_posts ORDER BY id DESC LIMIT 1
+        """).fetchone()
+        sent_24h = c.execute(
+            "SELECT COUNT(*) AS n FROM social_posts WHERE make_status=1 AND posted_at>=?",
+            ((datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(),),
+        ).fetchone()["n"]
     return {
         "make_webhook_configured": bool(MAKE_WEBHOOK_URL),
         "social_test_enabled": SOCIAL_TEST_ENABLED,
+        "social_auto_enabled": SOCIAL_AUTO_ENABLED,
+        "min_pre_buzz": SOCIAL_MIN_PREBUZZ,
+        "min_traffic_potential": SOCIAL_MIN_TRAFFIC,
+        "keyword_cooldown_hours": SOCIAL_KEYWORD_COOLDOWN_HOURS,
+        "global_cooldown_minutes": SOCIAL_GLOBAL_COOLDOWN_MINUTES,
+        "daily_cap": SOCIAL_DAILY_CAP,
+        "max_posts_per_run": SOCIAL_MAX_POSTS_PER_RUN,
+        "sent_last_24h": int(sent_24h or 0),
+        "last_post": dict(last) if last else None,
         "version": APP_VERSION,
     }
+
+
+@app.get("/api/social/candidates")
+def social_candidates(limit: int = 10):
+    """Read-only preview. This endpoint never posts to X."""
+    with db() as c:
+        rows = _social_candidate_rows(c, limit=limit)
+        now_dt = datetime.now(timezone.utc)
+        items = []
+        for row in rows:
+            allowed, reason = _social_post_allowed(c, row, now_dt)
+            item = dict(row)
+            item["eligible_now"] = allowed
+            item["blocked_reason"] = None if allowed else reason
+            item["post_text_preview"] = _build_social_post_text(row)
+            items.append(item)
+    return {"ok": True, "auto_enabled": SOCIAL_AUTO_ENABLED, "items": items}
+
+
+@app.get("/api/social/history")
+def social_history(limit: int = 20):
+    limit = max(1, min(int(limit), 100))
+    with db() as c:
+        rows = c.execute("""
+            SELECT keyword,pre_buzz_score,traffic_potential,make_status,posted_at
+            FROM social_posts ORDER BY id DESC LIMIT ?
+        """, (limit,)).fetchall()
+    return {"ok": True, "items": [dict(r) for r in rows]}
 
 
 @app.post("/api/collect-now")
