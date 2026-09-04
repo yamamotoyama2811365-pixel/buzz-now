@@ -29,7 +29,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "34.0.0")
+APP_VERSION = os.getenv("APP_VERSION", "34.1.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3308,8 +3308,21 @@ def _social_image_jpeg_payload(trend_id: int) -> bytes:
         return b""
 
 def _prewarm_social_jpeg(trend_id: int) -> None:
-    """Create the derivative before Make/Buffer is called."""
-    _social_image_jpeg_payload(trend_id)
+    """V34.1: rebuild and persist the editorial JPEG before Buffer fetches it."""
+    data = _social_image_jpeg_payload(trend_id)
+    if not data:
+        raise RuntimeError(f"Editorial JPEG build failed for trend_id={trend_id}")
+    encoded = base64.b64encode(data).decode("ascii")
+    ts = now_iso()
+    with db() as c:
+        c.execute("""
+            INSERT INTO social_image_derivatives(trend_id,jpeg_b64,byte_length,created_at)
+            VALUES(?,?,?,?)
+            ON CONFLICT(trend_id) DO UPDATE SET
+                jpeg_b64=excluded.jpeg_b64,
+                byte_length=excluded.byte_length,
+                created_at=excluded.created_at
+        """, (trend_id, encoded, len(data), ts))
 
 def _social_jpeg_headers(trend_id: int, content_length: int) -> dict:
     return {
@@ -3322,9 +3335,13 @@ def _social_jpeg_headers(trend_id: int, content_length: int) -> dict:
 
 @app.get("/social-image/{trend_id}.jpg")
 def social_ai_image_jpg(trend_id: int):
-    data = _social_image_jpeg_payload(trend_id)
-    return Response(content=data, media_type="image/jpeg", headers=_social_jpeg_headers(trend_id, len(data)), status_code=200)
-
+    _prewarm_social_jpeg(trend_id)
+    with db() as c:
+        row = c.execute("SELECT jpeg_b64 FROM social_image_derivatives WHERE trend_id=?", (trend_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Social image not found")
+    data = base64.b64decode(row["jpeg_b64"])
+    return Response(content=data, media_type="image/jpeg", headers=_social_jpeg_headers(trend_id, len(data)))
 
 @app.head("/social-image/{trend_id}.jpg")
 def social_ai_image_jpg_head(trend_id: int):
