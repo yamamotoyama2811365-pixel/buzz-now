@@ -28,7 +28,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "30.8.0")
+APP_VERSION = os.getenv("APP_VERSION", "30.9.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2229,7 +2229,7 @@ def _social_short_url(trend_id: int) -> str:
 
 
 def _social_image_url(trend_id: int) -> str:
-    return f"{SITE_URL}/social-image/{int(trend_id)}.png"
+    return f"{SITE_URL}/social-image/{int(trend_id)}.jpg"
 
 
 def _build_ai_visual_prompt(row) -> str:
@@ -3160,6 +3160,57 @@ def social_ai_image_png_head(trend_id: int):
     )
 
 
+def _social_image_jpeg_payload(trend_id: int) -> bytes:
+    """Return a compact JPEG for third-party social-media fetchers.
+
+    The original AI image remains stored once in PostgreSQL. This endpoint
+    converts it to a smaller RGB JPEG on request so Buffer has far fewer bytes
+    to download from the Render free service.
+    """
+    with db() as c:
+        row = c.execute(
+            "SELECT image_b64 FROM social_images WHERE trend_id=?",
+            (trend_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Social image not generated yet")
+    try:
+        raw = base64.b64decode(row["image_b64"], validate=True)
+        with Image.open(BytesIO(raw)) as im:
+            im = im.convert("RGB")
+            im.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
+            out = BytesIO()
+            im.save(out, format="JPEG", quality=82, optimize=True, progressive=False)
+            data = out.getvalue()
+    except Exception:
+        logger.exception("Could not build social JPEG for trend_id=%s", trend_id)
+        raise HTTPException(500, "Stored social image could not be converted")
+    if not data:
+        raise HTTPException(500, "Stored social image is empty")
+    return data
+
+
+def _social_jpeg_headers(trend_id: int, content_length: int) -> dict:
+    return {
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "Content-Disposition": f'inline; filename="buzz-now-{int(trend_id)}.jpg"',
+        "Content-Length": str(int(content_length)),
+        "X-Content-Type-Options": "nosniff",
+    }
+
+
+@app.get("/social-image/{trend_id}.jpg")
+def social_ai_image_jpg(trend_id: int):
+    data = _social_image_jpeg_payload(trend_id)
+    return Response(content=data, media_type="image/jpeg", headers=_social_jpeg_headers(trend_id, len(data)), status_code=200)
+
+
+@app.head("/social-image/{trend_id}.jpg")
+def social_ai_image_jpg_head(trend_id: int):
+    data = _social_image_jpeg_payload(trend_id)
+    return Response(content=b"", media_type="image/jpeg", headers=_social_jpeg_headers(trend_id, len(data)), status_code=200)
+
+
 @app.get("/api/social/generate-image/{trend_id}")
 def generate_social_image_only(trend_id: int):
     """Generate/cache one AI visual only. Does NOT call Make and does NOT post to X."""
@@ -3238,7 +3289,7 @@ def test_image_post_to_make(trend_id: int):
         "image_url": _social_image_url(row["id"]),
         "image_ready": True,
         "post_text": _build_social_post_text(row),
-        "source": "buzz-now-v30.7-image-test",
+        "source": "buzz-now-v30.9-image-test",
         "sent_at": now_iso(),
     }
 
