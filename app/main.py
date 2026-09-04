@@ -29,7 +29,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "32.2.0")
+APP_VERSION = os.getenv("APP_VERSION", "33.0.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2565,13 +2565,25 @@ def auto_post_social(c, ts: str):
             "image_url": image_result.get("image_url", "") if image_result.get("ok") else "",
             "image_ready": bool(image_result.get("ok")),
             "post_text": post_text,
-            "source": "buzz-now-v30.5-auto",
+            "source": "buzz-now-v33-buffer-direct-auto",
             "sent_at": ts,
         }
 
         try:
-            make_result = _send_to_make(payload)
-            ok = bool(make_result.get("ok"))
+            # V33 production route:
+            # BUZZ NOW -> cached AI JPEG -> Buffer official API -> X.
+            # Make's Buffer module is intentionally not used.
+            image_url = payload.get("image_url", "") if payload.get("image_ready") else ""
+            if image_url:
+                _prewarm_social_jpeg(row["id"])
+
+            buffer_result = _send_to_buffer_direct(
+                post_text,
+                image_url,
+                "shareNow",
+            )
+            ok = bool(buffer_result.get("ok"))
+
             c.execute("""
                 INSERT INTO social_posts(
                     trend_id,keyword,pre_buzz_score,traffic_potential,
@@ -2581,14 +2593,19 @@ def auto_post_social(c, ts: str):
                 row["id"], row["keyword"], payload["pre_buzz_score"],
                 payload["traffic_potential"], post_text, 1 if ok else 0, ts
             ))
+
             if ok:
                 result["sent"] += 1
                 result["last_keyword"] = row["keyword"]
-                logger.info("V30 social auto-post sent: %s", row["keyword"])
+                result["last_post_id"] = buffer_result.get("post_id")
+                logger.info("V33 Buffer direct auto-post sent: %s", row["keyword"])
             else:
-                result["errors"].append({"keyword": row["keyword"], "error": "Make returned not-ok"})
+                result["errors"].append({
+                    "keyword": row["keyword"],
+                    "error": buffer_result.get("reason", "Buffer returned not-ok"),
+                })
         except Exception as exc:
-            logger.exception("V30 social auto-post failed for %s", row["keyword"])
+            logger.exception("V33 Buffer direct auto-post failed for %s", row["keyword"])
             result["errors"].append({"keyword": row["keyword"], "error": str(exc)[:300]})
 
     return result
@@ -3137,6 +3154,10 @@ def social_status():
             ((datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(),),
         ).fetchone()["n"]
     return {
+        "version": APP_VERSION,
+        "production_social_route": "buffer-direct",
+        "buffer_api_key_configured": bool(BUFFER_API_KEY),
+        "buffer_channel_id_configured": bool(BUFFER_CHANNEL_ID),
         "make_webhook_configured": bool(MAKE_WEBHOOK_URL),
         "social_image_mode": "ai_context_visual",
         "social_ai_image_enabled": SOCIAL_AI_IMAGE_ENABLED,
