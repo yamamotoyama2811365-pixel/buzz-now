@@ -1056,8 +1056,8 @@ def _clear_auto_news_for_trend(c, trend_id, keyword):
       DELETE FROM sources
       WHERE trend_id=?
         AND (
-          source_label LIKE 'Bing News%'
-          OR source_label LIKE 'Google News%'
+          source_label LIKE 'Bing News%%'
+          OR source_label LIKE 'Google News%%'
           OR source_label='関連報道'
           OR source_label='Google Trends 関連記事'
         )
