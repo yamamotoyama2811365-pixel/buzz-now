@@ -28,7 +28,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "30.9.0")
+APP_VERSION = os.getenv("APP_VERSION", "31.0.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -221,6 +221,13 @@ def init_db():
             mime_type TEXT NOT NULL DEFAULT 'image/png',
             model TEXT NOT NULL DEFAULT '',
             prompt TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS social_image_derivatives(
+            trend_id INTEGER PRIMARY KEY,
+            jpeg_b64 TEXT NOT NULL,
+            byte_length INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL
         );
         
@@ -3161,34 +3168,71 @@ def social_ai_image_png_head(trend_id: int):
 
 
 def _social_image_jpeg_payload(trend_id: int) -> bytes:
-    """Return a compact JPEG for third-party social-media fetchers.
+    """Return a compact JPEG cached in PostgreSQL.
 
-    The original AI image remains stored once in PostgreSQL. This endpoint
-    converts it to a smaller RGB JPEG on request so Buffer has far fewer bytes
-    to download from the Render free service.
+    V31 converts the AI image only once. Buffer's HEAD/GET requests then only
+    decode a small cached base64 value, avoiding Pillow work during media fetch.
     """
     with db() as c:
+        cached = c.execute(
+            "SELECT jpeg_b64 FROM social_image_derivatives WHERE trend_id=?",
+            (trend_id,),
+        ).fetchone()
+        if cached and cached["jpeg_b64"]:
+            try:
+                return base64.b64decode(cached["jpeg_b64"])
+            except Exception:
+                c.execute("DELETE FROM social_image_derivatives WHERE trend_id=?", (trend_id,))
+
         row = c.execute(
             "SELECT image_b64 FROM social_images WHERE trend_id=?",
             (trend_id,),
         ).fetchone()
-    if not row:
-        raise HTTPException(404, "Social image not generated yet")
-    try:
-        raw = base64.b64decode(row["image_b64"], validate=True)
-        with Image.open(BytesIO(raw)) as im:
-            im = im.convert("RGB")
-            im.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
-            out = BytesIO()
-            im.save(out, format="JPEG", quality=82, optimize=True, progressive=False)
-            data = out.getvalue()
-    except Exception:
-        logger.exception("Could not build social JPEG for trend_id=%s", trend_id)
-        raise HTTPException(500, "Stored social image could not be converted")
-    if not data:
-        raise HTTPException(500, "Stored social image is empty")
-    return data
+        if not row:
+            raise HTTPException(404, "Social image not found")
 
+        try:
+            original = base64.b64decode(row["image_b64"])
+            image = Image.open(BytesIO(original))
+            image.load()
+            if image.mode != "RGB":
+                if image.mode in ("RGBA", "LA"):
+                    bg = Image.new("RGB", image.size, (255, 255, 255))
+                    alpha = image.getchannel("A") if "A" in image.getbands() else None
+                    bg.paste(image.convert("RGB"), mask=alpha)
+                    image = bg
+                else:
+                    image = image.convert("RGB")
+
+            max_width = 1200
+            if image.width > max_width:
+                new_h = max(1, round(image.height * max_width / image.width))
+                image = image.resize((max_width, new_h), Image.Resampling.LANCZOS)
+
+            out = BytesIO()
+            image.save(out, format="JPEG", quality=78, optimize=True, progressive=False)
+            data = out.getvalue()
+            encoded = base64.b64encode(data).decode("ascii")
+            ts = now_iso()
+            c.execute("""
+                INSERT INTO social_image_derivatives(trend_id,jpeg_b64,byte_length,created_at)
+                VALUES(?,?,?,?)
+                ON CONFLICT(trend_id) DO UPDATE SET
+                    jpeg_b64=excluded.jpeg_b64,
+                    byte_length=excluded.byte_length,
+                    created_at=excluded.created_at
+            """, (trend_id, encoded, len(data), ts))
+            return data
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("JPEG derivative failed trend_id=%s", trend_id)
+            raise HTTPException(500, f"JPEG derivative failed: {str(exc)[:200]}")
+
+
+def _prewarm_social_jpeg(trend_id: int) -> None:
+    """Create the derivative before Make/Buffer is called."""
+    _social_image_jpeg_payload(trend_id)
 
 def _social_jpeg_headers(trend_id: int, content_length: int) -> dict:
     return {
@@ -3289,10 +3333,12 @@ def test_image_post_to_make(trend_id: int):
         "image_url": _social_image_url(row["id"]),
         "image_ready": True,
         "post_text": _build_social_post_text(row),
-        "source": "buzz-now-v30.9-image-test",
+        "source": "buzz-now-v31-image-test",
         "sent_at": now_iso(),
     }
 
+    # V31: build/cache the JPEG BEFORE Buffer receives the URL.
+    _prewarm_social_jpeg(row["id"])
     make_result = _send_to_make(payload)
     return {
         "ok": bool(make_result.get("ok")),
