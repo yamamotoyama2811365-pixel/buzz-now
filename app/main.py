@@ -29,7 +29,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "34.9.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.0.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2714,7 +2714,8 @@ scheduler = BackgroundScheduler()
 
 @app.on_event("startup")
 def startup():
-    init_db()
+    # V35: PostgreSQL is already initialized. Do not block Render startup on DB DDL.
+    # init_db() remains available for explicit maintenance, but is not run here.
 
     if DEMO_MODE:
         ensure_demo_keywords()
