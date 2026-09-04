@@ -29,7 +29,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "33.0.0")
+APP_VERSION = os.getenv("APP_VERSION", "34.0.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2455,7 +2455,7 @@ def _build_social_post_text(row) -> str:
         f"「{keyword}」\n"
         f"検索・閲覧シグナルが上昇中。\n"
         f"Pre-Buzz：{pre} / Traffic：{traffic}\n"
-        f"詳細 → {detail_url}"
+        f"なぜ今話題？ → {detail_url}"
     )
 
 
@@ -3250,68 +3250,62 @@ def social_ai_image_png_head(trend_id: int):
     )
 
 
+def _editorial_social_image(raw: bytes, keyword: str) -> Image.Image:
+    """Add BUZZ NOW editorial text after AI generation so Japanese is exact."""
+    from PIL import ImageDraw, ImageFont
+    img = Image.open(io.BytesIO(raw)).convert("RGB")
+    w, h = 1200, 675
+    scale = max(w / img.width, h / img.height)
+    img = img.resize((int(img.width*scale), int(img.height*scale)), Image.Resampling.LANCZOS)
+    x0=max(0,(img.width-w)//2); y0=max(0,(img.height-h)//2)
+    img=img.crop((x0,y0,x0+w,y0+h))
+
+    # Left-side dark gradient for legibility while preserving the contextual visual.
+    mask=Image.new("L",(w,h),0); md=ImageDraw.Draw(mask)
+    for x in range(w):
+        md.line((x,0,x,h), fill=int(215*max(0,1-x/760)))
+    img=Image.composite(Image.new("RGB",(w,h),(0,0,0)),img,mask)
+    draw=ImageDraw.Draw(img)
+
+    fonts=[
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ]
+    def font(sz):
+        for fp in fonts:
+            try: return ImageFont.truetype(fp,sz)
+            except Exception: pass
+        return ImageFont.load_default()
+
+    kw=str(keyword or "")[:30]
+    title_size=82 if len(kw)<=8 else 64 if len(kw)<=14 else 50
+    draw.text((58,42),"BUZZ NOW",font=font(30),fill="white")
+    draw.text((58,205),kw,font=font(title_size),fill="white",stroke_width=2,stroke_fill="black")
+    draw.text((60,335),"なぜ今、話題？",font=font(40),fill="white",stroke_width=1,stroke_fill="black")
+    draw.line((60,400,360,400),fill="white",width=3)
+    return img
+
+
 def _social_image_jpeg_payload(trend_id: int) -> bytes:
-    """Return a compact JPEG cached in PostgreSQL.
-
-    V31 converts the AI image only once. Buffer's HEAD/GET requests then only
-    decode a small cached base64 value, avoiding Pillow work during media fetch.
-    """
+    """V34: cached AI visual + exact editorial keyword overlay."""
     with db() as c:
-        cached = c.execute(
-            "SELECT jpeg_b64 FROM social_image_derivatives WHERE trend_id=?",
-            (trend_id,),
-        ).fetchone()
-        if cached and cached["jpeg_b64"]:
-            try:
-                return base64.b64decode(cached["jpeg_b64"])
-            except Exception:
-                c.execute("DELETE FROM social_image_derivatives WHERE trend_id=?", (trend_id,))
-
-        row = c.execute(
-            "SELECT image_b64 FROM social_images WHERE trend_id=?",
-            (trend_id,),
-        ).fetchone()
-        if not row:
-            raise HTTPException(404, "Social image not found")
-
-        try:
-            original = base64.b64decode(row["image_b64"])
-            image = Image.open(BytesIO(original))
-            image.load()
-            if image.mode != "RGB":
-                if image.mode in ("RGBA", "LA"):
-                    bg = Image.new("RGB", image.size, (255, 255, 255))
-                    alpha = image.getchannel("A") if "A" in image.getbands() else None
-                    bg.paste(image.convert("RGB"), mask=alpha)
-                    image = bg
-                else:
-                    image = image.convert("RGB")
-
-            max_width = 1200
-            if image.width > max_width:
-                new_h = max(1, round(image.height * max_width / image.width))
-                image = image.resize((max_width, new_h), Image.Resampling.LANCZOS)
-
-            out = BytesIO()
-            image.save(out, format="JPEG", quality=78, optimize=True, progressive=False)
-            data = out.getvalue()
-            encoded = base64.b64encode(data).decode("ascii")
-            ts = now_iso()
-            c.execute("""
-                INSERT INTO social_image_derivatives(trend_id,jpeg_b64,byte_length,created_at)
-                VALUES(?,?,?,?)
-                ON CONFLICT(trend_id) DO UPDATE SET
-                    jpeg_b64=excluded.jpeg_b64,
-                    byte_length=excluded.byte_length,
-                    created_at=excluded.created_at
-            """, (trend_id, encoded, len(data), ts))
-            return data
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.exception("JPEG derivative failed trend_id=%s", trend_id)
-            raise HTTPException(500, f"JPEG derivative failed: {str(exc)[:200]}")
-
+        row=c.execute("""
+            SELECT si.image_b64, t.keyword
+            FROM social_images si JOIN trends t ON t.id=si.trend_id
+            WHERE si.trend_id=? LIMIT 1
+        """,(trend_id,)).fetchone()
+    if not row or not row["image_b64"]:
+        return b""
+    try:
+        raw=base64.b64decode(row["image_b64"])
+        img=_editorial_social_image(raw,row["keyword"] or "")
+        out=io.BytesIO()
+        img.save(out,format="JPEG",quality=84,optimize=True,progressive=False)
+        return out.getvalue()
+    except Exception:
+        logger.exception("V34 editorial JPEG failed for trend_id=%s",trend_id)
+        return b""
 
 def _prewarm_social_jpeg(trend_id: int) -> None:
     """Create the derivative before Make/Buffer is called."""
