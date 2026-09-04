@@ -1,5 +1,6 @@
 
 import os
+import base64
 import logging
 import re
 import sqlite3
@@ -27,7 +28,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "30.4.0")
+APP_VERSION = os.getenv("APP_VERSION", "30.5.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -46,6 +47,13 @@ SOCIAL_KEYWORD_COOLDOWN_HOURS = int(os.getenv("SOCIAL_KEYWORD_COOLDOWN_HOURS", "
 SOCIAL_GLOBAL_COOLDOWN_MINUTES = int(os.getenv("SOCIAL_GLOBAL_COOLDOWN_MINUTES", "60"))
 SOCIAL_DAILY_CAP = int(os.getenv("SOCIAL_DAILY_CAP", "8"))
 SOCIAL_MAX_POSTS_PER_RUN = int(os.getenv("SOCIAL_MAX_POSTS_PER_RUN", "1"))
+
+# V30.5: AI visual for social posts.
+# Keep the key only in Render Environment; never commit it to GitHub.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2").strip()
+SOCIAL_AI_IMAGE_ENABLED = os.getenv("SOCIAL_AI_IMAGE_ENABLED", "false").lower() == "true"
+SOCIAL_AI_IMAGE_QUALITY = os.getenv("SOCIAL_AI_IMAGE_QUALITY", "low").strip()
 
 # V19: article discovery / WHY NOW enrichment
 NEWS_ENRICHMENT_ENABLED = os.getenv("NEWS_ENRICHMENT_ENABLED", "true").lower() == "true"
@@ -206,6 +214,15 @@ def init_db():
             ON social_posts(trend_id, posted_at);
         CREATE INDEX IF NOT EXISTS idx_social_posts_posted_at
             ON social_posts(posted_at);
+
+        CREATE TABLE IF NOT EXISTS social_images(
+            trend_id INTEGER PRIMARY KEY,
+            image_b64 TEXT NOT NULL,
+            mime_type TEXT NOT NULL DEFAULT 'image/png',
+            model TEXT NOT NULL DEFAULT '',
+            prompt TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
         
         CREATE TABLE IF NOT EXISTS traffic_history(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2212,7 +2229,124 @@ def _social_short_url(trend_id: int) -> str:
 
 
 def _social_image_url(trend_id: int) -> str:
-    return f"{SITE_URL}/social-card/{int(trend_id)}.png"
+    return f"{SITE_URL}/social-image/{int(trend_id)}.png"
+
+
+def _build_ai_visual_prompt(row) -> str:
+    keyword = str(row["keyword"] or "").strip()
+    why_now = str(row["why_now"] or "").strip()
+    category = str(row["category"] or "総合").strip() if "category" in row.keys() else "総合"
+    context = why_now[:500] if why_now else "This topic is showing a rapid rise in search and viewing signals."
+
+    return f"""
+Create one compelling horizontal editorial news photograph/visual for a Japanese trend-detection social post.
+
+Trending topic: {keyword}
+Category: {category}
+Context: {context}
+
+Important safety and rights rules:
+- Do NOT depict, imitate, or recreate the recognizable face or likeness of any real person, celebrity, politician, athlete, creator, or private individual.
+- If a real person is central to the topic, represent the surrounding event or context instead: anonymous silhouettes, back-of-head figures, hands, studio equipment, venue, city scene, symbolic objects, documents, screens without copyrighted content, or other non-identifying visual cues.
+- Do NOT copy a real press photograph, entertainment still, social-media screenshot, website screenshot, logo, trademark, poster, or copyrighted artwork.
+- No readable names, captions, headlines, watermarks, logos, UI, or text inside the image.
+- Do not imply factual details that are not supplied in the context.
+
+Visual direction:
+- photorealistic editorial photography
+- contemporary Japanese news / culture atmosphere where relevant
+- strong single focal point
+- dramatic but credible lighting
+- clean composition suitable for X
+- landscape 3:2 composition
+- no text
+""".strip()
+
+
+def _generate_ai_social_image(row) -> tuple[bytes, str, str]:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+
+    prompt = _build_ai_visual_prompt(row)
+    payload = {
+        "model": OPENAI_IMAGE_MODEL,
+        "prompt": prompt,
+        "size": "1536x1024",
+        "quality": SOCIAL_AI_IMAGE_QUALITY,
+        "n": 1,
+    }
+
+    response = httpx.post(
+        "https://api.openai.com/v1/images/generations",
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+            "User-Agent": "BUZZ-NOW/30.5",
+        },
+        json=payload,
+        timeout=180,
+        follow_redirects=True,
+    )
+    response.raise_for_status()
+    data = response.json()
+    items = data.get("data") or []
+    if not items:
+        raise RuntimeError("OpenAI image response contained no image")
+
+    item = items[0]
+    if item.get("b64_json"):
+        return base64.b64decode(item["b64_json"]), "image/png", prompt
+
+    # Compatibility fallback in case an API response supplies a temporary URL.
+    if item.get("url"):
+        img_res = httpx.get(item["url"], timeout=120, follow_redirects=True)
+        img_res.raise_for_status()
+        mime = (img_res.headers.get("content-type") or "image/png").split(";")[0]
+        return img_res.content, mime, prompt
+
+    raise RuntimeError("OpenAI image response had neither b64_json nor url")
+
+
+def _ensure_social_ai_image(c, row, ts: str):
+    """Generate once and persist in PostgreSQL so Buffer can fetch a stable HTTPS URL."""
+    existing = c.execute(
+        "SELECT trend_id,mime_type,created_at FROM social_images WHERE trend_id=?",
+        (row["id"],),
+    ).fetchone()
+    if existing:
+        return {
+            "ok": True,
+            "cached": True,
+            "image_url": _social_image_url(row["id"]),
+        }
+
+    if not SOCIAL_AI_IMAGE_ENABLED:
+        return {"ok": False, "reason": "SOCIAL_AI_IMAGE_ENABLED=false"}
+    if not OPENAI_API_KEY:
+        return {"ok": False, "reason": "OPENAI_API_KEY missing"}
+
+    image_bytes, mime_type, prompt = _generate_ai_social_image(row)
+    image_b64 = base64.b64encode(image_bytes).decode("ascii")
+
+    c.execute("""
+        INSERT INTO social_images(
+            trend_id,image_b64,mime_type,model,prompt,created_at
+        ) VALUES(?,?,?,?,?,?)
+        ON CONFLICT(trend_id) DO UPDATE SET
+            image_b64=excluded.image_b64,
+            mime_type=excluded.mime_type,
+            model=excluded.model,
+            prompt=excluded.prompt,
+            created_at=excluded.created_at
+    """, (
+        row["id"], image_b64, mime_type, OPENAI_IMAGE_MODEL, prompt, ts
+    ))
+
+    return {
+        "ok": True,
+        "cached": False,
+        "image_url": _social_image_url(row["id"]),
+    }
 
 
 def _social_font(size: int, bold: bool = False):
@@ -2316,7 +2450,7 @@ def _social_candidate_rows(c, limit: int = 20):
     limit = max(1, min(int(limit), 100))
     return c.execute("""
         SELECT
-            t.id,t.keyword,t.slug,t.pre_buzz_score,t.buzz_score,t.acceleration,
+            t.id,t.keyword,t.slug,t.category,t.pre_buzz_score,t.buzz_score,t.acceleration,
             t.status,t.why_now,t.updated_at,
             COALESCE(tt.traffic_potential,0) AS traffic_potential,
             COALESCE(cf.confidence_score,0) AS confidence_score
@@ -2398,6 +2532,16 @@ def auto_post_social(c, ts: str):
             continue
 
         post_text = _build_social_post_text(row)
+
+        # Generate a contextual visual only for a topic that is actually about to post.
+        # If image generation is disabled or fails, posting safely falls back to text+link.
+        image_result = {"ok": False, "reason": "not_attempted"}
+        try:
+            image_result = _ensure_social_ai_image(c, row, ts)
+        except Exception as image_exc:
+            logger.exception("V30.5 AI social image failed for %s", row["keyword"])
+            image_result = {"ok": False, "reason": str(image_exc)[:300]}
+
         payload = {
             "keyword": row["keyword"],
             "pre_buzz_score": round(float(row["pre_buzz_score"] or 0), 1),
@@ -2405,9 +2549,10 @@ def auto_post_social(c, ts: str):
             "status": row["status"],
             "why_now": row["why_now"] or "",
             "detail_url": _social_short_url(row["id"]),
-            "image_url": _social_image_url(row["id"]),
+            "image_url": image_result.get("image_url", "") if image_result.get("ok") else "",
+            "image_ready": bool(image_result.get("ok")),
             "post_text": post_text,
-            "source": "buzz-now-v30-auto",
+            "source": "buzz-now-v30.5-auto",
             "sent_at": ts,
         }
 
@@ -2885,7 +3030,8 @@ def social_test_send():
         "status": "急上昇",
         "why_now": "検索量と情報源の増加を検知",
         "detail_url": f"{SITE_URL}/",
-        "image_url": f"{SITE_URL}/social-card/1.png",
+        "image_url": "",
+        "image_ready": False,
         "post_text": (
             "🚀 BUZZ NOW｜急上昇を検知\n"
             "BUZZ NOW テスト\n"
@@ -2923,7 +3069,10 @@ def social_status():
         ).fetchone()["n"]
     return {
         "make_webhook_configured": bool(MAKE_WEBHOOK_URL),
-        "social_image_mode": "generated_png_card",
+        "social_image_mode": "ai_context_visual",
+        "social_ai_image_enabled": SOCIAL_AI_IMAGE_ENABLED,
+        "openai_api_key_configured": bool(OPENAI_API_KEY),
+        "openai_image_model": OPENAI_IMAGE_MODEL,
         "social_test_enabled": SOCIAL_TEST_ENABLED,
         "social_auto_enabled": SOCIAL_AUTO_ENABLED,
         "min_pre_buzz": SOCIAL_MIN_PREBUZZ,
@@ -2939,29 +3088,41 @@ def social_status():
     }
 
 
-@app.get("/social-card/{trend_id}.png")
-def social_card_png(trend_id: int):
-    """Public PNG used by Make/Buffer as X media."""
+@app.get("/social-image/{trend_id}.png")
+def social_ai_image_png(trend_id: int):
+    """Stable public image URL for Make/Buffer; image bytes live in PostgreSQL."""
+    with db() as c:
+        row = c.execute(
+            "SELECT image_b64,mime_type FROM social_images WHERE trend_id=?",
+            (trend_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Social image not generated yet")
+    try:
+        raw = base64.b64decode(row["image_b64"])
+    except Exception:
+        raise HTTPException(500, "Stored social image is invalid")
+    return Response(
+        content=raw,
+        media_type=row["mime_type"] or "image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@app.get("/api/social/image-status/{trend_id}")
+def social_ai_image_status(trend_id: int):
     with db() as c:
         row = c.execute("""
-            SELECT
-                t.id,t.keyword,t.slug,t.pre_buzz_score,t.status,
-                COALESCE(tt.traffic_potential,0) AS traffic_potential,
-                COALESCE(cf.confidence_score,0) AS confidence_score
-            FROM trends t
-            LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
-            LEFT JOIN confidence_state cf ON cf.trend_id=t.id
-            WHERE t.id=?
-            LIMIT 1
+            SELECT trend_id,mime_type,model,created_at
+            FROM social_images WHERE trend_id=?
         """, (trend_id,)).fetchone()
-    if not row:
-        raise HTTPException(404, "Trend not found")
-    png = _build_social_card_png(row)
-    return Response(
-        content=png,
-        media_type="image/png",
-        headers={"Cache-Control": "public, max-age=900"},
-    )
+    return {
+        "trend_id": trend_id,
+        "ready": bool(row),
+        "image_url": _social_image_url(trend_id) if row else "",
+        "model": row["model"] if row else "",
+        "created_at": row["created_at"] if row else "",
+    }
 
 
 @app.get("/t/{trend_id}")
