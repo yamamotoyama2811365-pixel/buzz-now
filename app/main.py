@@ -10,13 +10,15 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 from xml.sax.saxutils import escape as xml_escape
 import xml.etree.ElementTree as ET
+from io import BytesIO
 
 from fastapi import FastAPI, Request, Form, HTTPException, BackgroundTasks
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import httpx
 import feedparser
+from PIL import Image, ImageDraw, ImageFont
 
 BASE = Path(__file__).resolve().parent.parent
 DB_PATH = BASE / "buzznow.db"
@@ -25,7 +27,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "30.0.0")
+APP_VERSION = os.getenv("APP_VERSION", "30.4.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2209,6 +2211,91 @@ def _social_short_url(trend_id: int) -> str:
     return f"{SITE_URL}/t/{int(trend_id)}"
 
 
+def _social_image_url(trend_id: int) -> str:
+    return f"{SITE_URL}/social-card/{int(trend_id)}.png"
+
+
+def _social_font(size: int, bold: bool = False):
+    candidates = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc" if bold else "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc" if bold else "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansJP-Bold.ttf" if bold else "/usr/share/fonts/opentype/noto/NotoSansJP-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    for path in candidates:
+        try:
+            if os.path.exists(path):
+                return ImageFont.truetype(path, size=size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
+
+
+def _fit_text(draw, value: str, font, max_width: int, max_chars: int = 26) -> str:
+    value = str(value or "").strip().replace("\\n", " ")
+    if len(value) > max_chars:
+        value = value[:max_chars - 1] + "…"
+    while value:
+        try:
+            box = draw.textbbox((0, 0), value, font=font)
+            if box[2] - box[0] <= max_width:
+                return value
+        except Exception:
+            return value
+        value = value[:-2] + "…" if len(value) > 2 else value[:-1]
+    return ""
+
+
+def _build_social_card_png(row) -> bytes:
+    """Generate a BUZZ NOW-owned 1200x675 social card.
+
+    This intentionally uses BUZZ NOW's own trend data instead of copying
+    third-party celebrity/news photos.
+    """
+    width, height = 1200, 675
+    img = Image.new("RGB", (width, height), (10, 13, 20))
+    draw = ImageDraw.Draw(img)
+
+    # simple dashboard-style panels
+    draw.rounded_rectangle((46, 42, 1154, 633), radius=34, fill=(18, 23, 34), outline=(67, 77, 96), width=2)
+    draw.rounded_rectangle((82, 88, 1118, 186), radius=24, fill=(27, 34, 49))
+    draw.rounded_rectangle((82, 414, 430, 572), radius=24, fill=(25, 31, 45))
+    draw.rounded_rectangle((447, 414, 795, 572), radius=24, fill=(25, 31, 45))
+    draw.rounded_rectangle((812, 414, 1118, 572), radius=24, fill=(25, 31, 45))
+
+    title_font = _social_font(44, True)
+    keyword_font = _social_font(68, True)
+    status_font = _social_font(31, True)
+    label_font = _social_font(25, False)
+    score_font = _social_font(54, True)
+    small_font = _social_font(22, False)
+
+    keyword = _fit_text(draw, row["keyword"], keyword_font, 960, 24)
+    status = re.sub(r"^[^ぁ-んァ-ヶ一-龠A-Za-z0-9]+\\s*", "", str(row["status"] or "急上昇")).strip() or "急上昇"
+    pre = int(round(float(row["pre_buzz_score"] or 0)))
+    traffic = int(round(float(row["traffic_potential"] or 0)))
+    confidence = int(round(float(row["confidence_score"] or 0)))
+
+    draw.text((86, 108), "BUZZ NOW  /  SNS SIGNAL", font=title_font, fill=(245, 247, 250))
+    draw.text((86, 222), keyword, font=keyword_font, fill=(255, 255, 255))
+    draw.text((88, 326), f"SIGNAL: {status}", font=status_font, fill=(214, 220, 230))
+
+    draw.text((112, 438), "PRE-BUZZ", font=label_font, fill=(160, 169, 184))
+    draw.text((112, 484), str(pre), font=score_font, fill=(255, 255, 255))
+
+    draw.text((477, 438), "TRAFFIC", font=label_font, fill=(160, 169, 184))
+    draw.text((477, 484), str(traffic), font=score_font, fill=(255, 255, 255))
+
+    draw.text((842, 438), "CONFIDENCE", font=label_font, fill=(160, 169, 184))
+    draw.text((842, 484), str(confidence), font=score_font, fill=(255, 255, 255))
+
+    draw.text((86, 594), "buzz-now.onrender.com", font=small_font, fill=(125, 135, 150))
+
+    out = BytesIO()
+    img.save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
 def _build_social_post_text(row) -> str:
     keyword = str(row["keyword"]).strip()
     pre = int(round(float(row["pre_buzz_score"] or 0)))
@@ -2318,6 +2405,7 @@ def auto_post_social(c, ts: str):
             "status": row["status"],
             "why_now": row["why_now"] or "",
             "detail_url": _social_short_url(row["id"]),
+            "image_url": _social_image_url(row["id"]),
             "post_text": post_text,
             "source": "buzz-now-v30-auto",
             "sent_at": ts,
@@ -2797,6 +2885,7 @@ def social_test_send():
         "status": "急上昇",
         "why_now": "検索量と情報源の増加を検知",
         "detail_url": f"{SITE_URL}/",
+        "image_url": f"{SITE_URL}/social-card/1.png",
         "post_text": (
             "🚀 BUZZ NOW｜急上昇を検知\n"
             "BUZZ NOW テスト\n"
@@ -2834,6 +2923,7 @@ def social_status():
         ).fetchone()["n"]
     return {
         "make_webhook_configured": bool(MAKE_WEBHOOK_URL),
+        "social_image_mode": "generated_png_card",
         "social_test_enabled": SOCIAL_TEST_ENABLED,
         "social_auto_enabled": SOCIAL_AUTO_ENABLED,
         "min_pre_buzz": SOCIAL_MIN_PREBUZZ,
@@ -2847,6 +2937,31 @@ def social_status():
         "last_post": dict(last) if last else None,
         "version": APP_VERSION,
     }
+
+
+@app.get("/social-card/{trend_id}.png")
+def social_card_png(trend_id: int):
+    """Public PNG used by Make/Buffer as X media."""
+    with db() as c:
+        row = c.execute("""
+            SELECT
+                t.id,t.keyword,t.slug,t.pre_buzz_score,t.status,
+                COALESCE(tt.traffic_potential,0) AS traffic_potential,
+                COALESCE(cf.confidence_score,0) AS confidence_score
+            FROM trends t
+            LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
+            LEFT JOIN confidence_state cf ON cf.trend_id=t.id
+            WHERE t.id=?
+            LIMIT 1
+        """, (trend_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Trend not found")
+    png = _build_social_card_png(row)
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=900"},
+    )
 
 
 @app.get("/t/{trend_id}")
