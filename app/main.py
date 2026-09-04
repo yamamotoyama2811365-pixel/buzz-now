@@ -29,7 +29,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.2.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.3.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3329,25 +3329,31 @@ def _social_image_jpeg_payload(trend_id: int) -> bytes:
 
             # Keyword — large, bold, exact.
             kw_font = fit_font(keyword, 690, 92, 50)
-            d.text((50, 205), keyword, font=kw_font, fill="white",
-                   stroke_width=2, stroke_fill=(0,0,0,255))
+            d.text((48, 198), keyword, font=kw_font, fill="white",
+                   stroke_width=5, stroke_fill=(0,0,0,255))
 
             # Red brush-like underline (deterministic).
-            y = 322
-            d.polygon([(42,y+13),(700,y-5),(755,y+8),(705,y+20),(55,y+29)], fill=(235,0,25,235))
-            d.line((58,y+18,650,y+4), fill=(255,45,45,255), width=4)
+            y = 320
+            # Irregular brush stroke, deliberately not an arrow.
+            d.polygon([(40,y+10),(165,y+4),(315,y+8),(470,y-1),(620,y+5),(705,y+1),
+                       (682,y+16),(535,y+18),(390,y+15),(245,y+23),(105,y+20),(48,y+27)],
+                      fill=(235,0,25,240))
+            d.line((60,y+13,640,y+8), fill=(255,55,55,255), width=3)
 
             # Main CTA: intentionally huge.
-            d.text((50, 360), "なぜ今、", font=font(64, True), fill="white",
-                   stroke_width=2, stroke_fill=(0,0,0,255))
-            d.text((50, 430), "話題", font=font(105, True), fill=(255,232,0,255),
-                   stroke_width=3, stroke_fill=(0,0,0,255))
-            topic_box = d.textbbox((50, 430), "話題", font=font(105, True))
-            d.text((topic_box[2] + 10, 432), "？", font=font(102, True), fill="white",
-                   stroke_width=3, stroke_fill=(0,0,0,255))
+            d.text((48, 350), "なぜ今、", font=font(76, True), fill="white",
+                   stroke_width=5, stroke_fill=(0,0,0,255))
+            topic_font = font(126, True)
+            d.text((45, 423), "話題", font=topic_font, fill=(255,232,0,255),
+                   stroke_width=6, stroke_fill=(0,0,0,255))
+            topic_box = d.textbbox((45, 423), "話題", font=topic_font, stroke_width=6)
+            d.text((topic_box[2] + 2, 425), "？", font=font(118, True), fill="white",
+                   stroke_width=6, stroke_fill=(0,0,0,255))
 
             # Bottom red accent.
-            d.polygon([(45,555),(575,540),(645,553),(560,570),(48,574)], fill=(225,0,24,225))
+            d.polygon([(42,563),(170,555),(330,559),(485,548),(620,554),
+                       (595,568),(450,573),(285,568),(125,579),(48,576)],
+                      fill=(225,0,24,230))
 
             # Compact category-style tags. Keep them generic and factual.
             tags = ["#いま話題", "#急上昇", "#BUZZNOW"]
