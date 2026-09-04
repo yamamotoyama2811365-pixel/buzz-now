@@ -2205,13 +2205,17 @@ def _social_detail_url(slug: str) -> str:
     return f"{SITE_URL}/trend/{quote(str(slug), safe='-_%')}"
 
 
+def _social_short_url(trend_id: int) -> str:
+    return f"{SITE_URL}/t/{int(trend_id)}"
+
+
 def _build_social_post_text(row) -> str:
     keyword = str(row["keyword"]).strip()
     pre = int(round(float(row["pre_buzz_score"] or 0)))
     traffic = int(round(float(row["traffic_potential"] or 0)))
     status = str(row["status"] or "急上昇")
     status_plain = re.sub(r"^[^ぁ-んァ-ヶ一-龠A-Za-z0-9]+\s*", "", status).strip() or "急上昇"
-    detail_url = _social_detail_url(row["slug"])
+    detail_url = _social_short_url(row["id"])
     return (
         f"🚨 BUZZNOW SNS捜査官｜{status_plain}を検知\n"
         f"「{keyword}」\n"
@@ -2313,7 +2317,7 @@ def auto_post_social(c, ts: str):
             "traffic_potential": round(float(row["traffic_potential"] or 0), 1),
             "status": row["status"],
             "why_now": row["why_now"] or "",
-            "detail_url": _social_detail_url(row["slug"]),
+            "detail_url": _social_short_url(row["id"]),
             "post_text": post_text,
             "source": "buzz-now-v30-auto",
             "sent_at": ts,
@@ -2843,6 +2847,16 @@ def social_status():
         "last_post": dict(last) if last else None,
         "version": APP_VERSION,
     }
+
+
+@app.get("/t/{trend_id}")
+def social_short_link(trend_id: int):
+    """Short mobile-safe URL for social posts; redirects to the canonical trend page."""
+    with db() as c:
+        row = c.execute("SELECT slug FROM trends WHERE id=?", (trend_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Trend not found")
+    return RedirectResponse(url=_social_detail_url(row["slug"]), status_code=307)
 
 
 @app.get("/api/social/candidates")
