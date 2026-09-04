@@ -1376,7 +1376,7 @@ def _news_check_is_due(c, trend_id, hours=2):
         return True
 
 
-def _enrich_keyword_news(c, keyword, ts, force=False):
+def _enrich_keyword_news(c, keyword, ts, force=False, include_gdelt=True):
     """V24: high-precision news enrichment with relevance diagnostics."""
     if not NEWS_ENRICHMENT_ENABLED:
         return 0
@@ -1398,7 +1398,7 @@ def _enrich_keyword_news(c, keyword, ts, force=False):
             total += _store_article_sources(c,keyword,accepted,ts)
     except Exception as e:
         _record_news_diagnostic(c,trend["id"],"bing_news",f"error {type(e).__name__}: {e}",ts)
-    if GDELT_NEWS_ENABLED:
+    if include_gdelt and GDELT_NEWS_ENABLED:
         try:
             articles=_fetch_gdelt_articles_for_keyword(keyword,12)
             accepted,rejected=_filter_relevant_articles(keyword,articles,8)
@@ -1424,15 +1424,20 @@ def _enrich_keyword_news(c, keyword, ts, force=False):
     _mark_news_checked(c,trend["id"],ts)
     return total
 
-def collect_gdelt_news(c, ts, limit=None):
-    """Enrich the strongest live trends with recent article metadata from GDELT."""
-    if not NEWS_ENRICHMENT_ENABLED or not GDELT_NEWS_ENABLED:
+def collect_fast_news(c, ts, limit=6):
+    """Fast routine news enrichment using Bing/Google RSS only.
+
+    GDELT is intentionally excluded from scheduled collection because its public
+    endpoint rate-limits repeated keyword queries. GDELT remains available for
+    explicit force diagnostics/detail checks where include_gdelt=True.
+    """
+    if not NEWS_ENRICHMENT_ENABLED:
         return 0
-    limit = GDELT_NEWS_LIMIT if limit is None else max(0, min(15, int(limit)))
+    limit=max(0, min(10, int(limit)))
     if limit <= 0:
         return 0
 
-    trends = c.execute("""
+    trends=c.execute("""
       SELECT id,keyword,pre_buzz_score,buzz_score,updated_at
       FROM trends
       WHERE is_indexable=1 AND pre_buzz_score>=55
@@ -1445,7 +1450,29 @@ def collect_gdelt_news(c, ts, limit=None):
         keyword=_clean_keyword(trend["keyword"])
         if not keyword or len(keyword)>60:
             continue
-        total += _enrich_keyword_news(c, keyword, ts)
+        total += _enrich_keyword_news(c, keyword, ts, include_gdelt=False)
+    return total
+
+def collect_gdelt_news(c, ts, limit=None):
+    """Manual/diagnostic GDELT enrichment. Not used by routine collection."""
+    if not NEWS_ENRICHMENT_ENABLED or not GDELT_NEWS_ENABLED:
+        return 0
+    limit = GDELT_NEWS_LIMIT if limit is None else max(0, min(3, int(limit)))
+    if limit <= 0:
+        return 0
+    trends=c.execute("""
+      SELECT id,keyword,pre_buzz_score,buzz_score,updated_at
+      FROM trends
+      WHERE is_indexable=1 AND pre_buzz_score>=55
+      ORDER BY pre_buzz_score DESC, acceleration DESC, buzz_score DESC
+      LIMIT ?
+    """, (limit,)).fetchall()
+    total=0
+    for trend in trends:
+        keyword=_clean_keyword(trend["keyword"])
+        if not keyword or len(keyword)>60:
+            continue
+        total += _enrich_keyword_news(c, keyword, ts, include_gdelt=True)
     return total
 
 def collect_google_trends(c, ts):
@@ -2145,7 +2172,7 @@ def collect_real_sources():
     with db() as c:
         g=collect_google_trends(c,ts)
         w=collect_wikimedia(c,ts)
-        news_count=collect_gdelt_news(c,ts)
+        news_count=collect_fast_news(c,ts,limit=6)
         refresh_confidence(c,ts)
         refresh_propagation(c,ts)
         refresh_monetization(c,ts)
