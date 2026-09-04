@@ -29,7 +29,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "34.8.0")
+APP_VERSION = os.getenv("APP_VERSION", "34.9.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2730,7 +2730,7 @@ def startup():
 
     if REAL_DATA_MODE:
         # Run once at startup, then continue periodically.
-        collect_real_sources()
+    # V34.9 disabled: collect_real_sources()
         scheduler.add_job(
             collect_real_sources,
             "interval",
