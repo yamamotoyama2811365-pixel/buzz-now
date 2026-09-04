@@ -28,7 +28,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "30.6.0")
+APP_VERSION = os.getenv("APP_VERSION", "30.7.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3145,6 +3145,58 @@ def generate_social_image_only(trend_id: int):
         "image_url": result.get("image_url", ""),
         "cached": bool(result.get("cached")),
         "reason": result.get("reason", ""),
+    }
+
+
+@app.get("/api/social/test-image-post/{trend_id}")
+def test_image_post_to_make(trend_id: int):
+    """Send one existing generated image + current post text to Make for an intentional X test."""
+    if not MAKE_WEBHOOK_URL:
+        raise HTTPException(500, "MAKE_WEBHOOK_URL is not configured")
+
+    with db() as c:
+        row = c.execute("""
+            SELECT
+                t.id,t.keyword,t.slug,t.category,t.pre_buzz_score,t.status,t.why_now,
+                COALESCE(tt.traffic_potential,0) AS traffic_potential,
+                COALESCE(cf.confidence_score,0) AS confidence_score,
+                si.trend_id AS image_exists
+            FROM trends t
+            LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
+            LEFT JOIN confidence_state cf ON cf.trend_id=t.id
+            LEFT JOIN social_images si ON si.trend_id=t.id
+            WHERE t.id=?
+            LIMIT 1
+        """, (trend_id,)).fetchone()
+
+    if not row:
+        raise HTTPException(404, "Trend not found")
+    if not row["image_exists"]:
+        raise HTTPException(
+            400,
+            "No generated image exists for this trend. Generate it first.",
+        )
+
+    payload = {
+        "keyword": row["keyword"],
+        "pre_buzz_score": round(float(row["pre_buzz_score"] or 0), 1),
+        "traffic_potential": round(float(row["traffic_potential"] or 0), 1),
+        "status": row["status"],
+        "why_now": row["why_now"] or "",
+        "detail_url": _social_short_url(row["id"]),
+        "image_url": _social_image_url(row["id"]),
+        "image_ready": True,
+        "post_text": _build_social_post_text(row),
+        "source": "buzz-now-v30.7-image-test",
+        "sent_at": now_iso(),
+    }
+
+    make_result = _send_to_make(payload)
+    return {
+        "ok": bool(make_result.get("ok")),
+        "message": "Image test payload sent to Make.com",
+        "payload": payload,
+        "make": make_result,
     }
 
 
