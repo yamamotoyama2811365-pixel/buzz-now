@@ -39,6 +39,7 @@ SOCIAL_TEST_ENABLED = os.getenv("SOCIAL_TEST_ENABLED", "false").lower() == "true
 SOCIAL_AUTO_ENABLED = os.getenv("SOCIAL_AUTO_ENABLED", "false").lower() == "true"
 SOCIAL_MIN_PREBUZZ = float(os.getenv("SOCIAL_MIN_PREBUZZ", "85"))
 SOCIAL_MIN_TRAFFIC = float(os.getenv("SOCIAL_MIN_TRAFFIC", "70"))
+SOCIAL_MIN_CONFIDENCE = float(os.getenv("SOCIAL_MIN_CONFIDENCE", "50"))
 SOCIAL_KEYWORD_COOLDOWN_HOURS = int(os.getenv("SOCIAL_KEYWORD_COOLDOWN_HOURS", "72"))
 SOCIAL_GLOBAL_COOLDOWN_MINUTES = int(os.getenv("SOCIAL_GLOBAL_COOLDOWN_MINUTES", "60"))
 SOCIAL_DAILY_CAP = int(os.getenv("SOCIAL_DAILY_CAP", "8"))
@@ -2214,9 +2215,9 @@ def _build_social_post_text(row) -> str:
     return (
         f"🚨 BUZZNOW SNS捜査官｜{status_plain}を検知\n"
         f"「{keyword}」\n"
-        f"Pre-Buzz Score：{pre}\n"
-        f"Traffic Potential：{traffic}\n"
-        f"{detail_url}"
+        f"検索・閲覧シグナルが上昇中。\n"
+        f"Pre-Buzz：{pre} / Traffic：{traffic}\n"
+        f"詳細 → {detail_url}"
     )
 
 
@@ -2234,6 +2235,7 @@ def _social_candidate_rows(c, limit: int = 20):
         WHERE t.is_indexable=1
           AND t.pre_buzz_score>=?
           AND COALESCE(tt.traffic_potential,0)>=?
+          AND COALESCE(cf.confidence_score,0)>=?
           AND t.status NOT LIKE '%%下降%%'
         ORDER BY
           t.pre_buzz_score DESC,
@@ -2241,7 +2243,7 @@ def _social_candidate_rows(c, limit: int = 20):
           COALESCE(cf.confidence_score,0) DESC,
           t.updated_at DESC
         LIMIT ?
-    """, (SOCIAL_MIN_PREBUZZ, SOCIAL_MIN_TRAFFIC, limit)).fetchall()
+    """, (SOCIAL_MIN_PREBUZZ, SOCIAL_MIN_TRAFFIC, SOCIAL_MIN_CONFIDENCE, limit)).fetchall()
 
 
 def _social_post_allowed(c, row, now_dt):
@@ -2832,6 +2834,7 @@ def social_status():
         "social_auto_enabled": SOCIAL_AUTO_ENABLED,
         "min_pre_buzz": SOCIAL_MIN_PREBUZZ,
         "min_traffic_potential": SOCIAL_MIN_TRAFFIC,
+        "min_confidence_score": SOCIAL_MIN_CONFIDENCE,
         "keyword_cooldown_hours": SOCIAL_KEYWORD_COOLDOWN_HOURS,
         "global_cooldown_minutes": SOCIAL_GLOBAL_COOLDOWN_MINUTES,
         "daily_cap": SOCIAL_DAILY_CAP,
