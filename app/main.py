@@ -28,7 +28,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "30.5.0")
+APP_VERSION = os.getenv("APP_VERSION", "30.6.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3107,6 +3107,45 @@ def social_ai_image_png(trend_id: int):
         media_type=row["mime_type"] or "image/png",
         headers={"Cache-Control": "public, max-age=86400"},
     )
+
+
+@app.get("/api/social/generate-image/{trend_id}")
+def generate_social_image_only(trend_id: int):
+    """Generate/cache one AI visual only. Does NOT call Make and does NOT post to X."""
+    ts = now_iso()
+    with db() as c:
+        row = c.execute("""
+            SELECT
+                t.id,t.keyword,t.slug,t.category,t.pre_buzz_score,t.status,t.why_now,
+                COALESCE(tt.traffic_potential,0) AS traffic_potential,
+                COALESCE(cf.confidence_score,0) AS confidence_score
+            FROM trends t
+            LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
+            LEFT JOIN confidence_state cf ON cf.trend_id=t.id
+            WHERE t.id=?
+            LIMIT 1
+        """, (trend_id,)).fetchone()
+
+        if not row:
+            raise HTTPException(404, "Trend not found")
+
+        try:
+            result = _ensure_social_ai_image(c, row, ts)
+            c.commit()
+        except Exception as exc:
+            logger.exception("Manual AI image generation failed for trend_id=%s", trend_id)
+            raise HTTPException(500, f"AI image generation failed: {str(exc)[:300]}")
+
+    return {
+        "ok": bool(result.get("ok")),
+        "trend_id": trend_id,
+        "keyword": row["keyword"],
+        "posted_to_x": False,
+        "sent_to_make": False,
+        "image_url": result.get("image_url", ""),
+        "cached": bool(result.get("cached")),
+        "reason": result.get("reason", ""),
+    }
 
 
 @app.get("/api/social/image-status/{trend_id}")
