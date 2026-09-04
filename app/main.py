@@ -1,4 +1,5 @@
 
+import io
 import os
 import base64
 import json
@@ -29,7 +30,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "34.4.0")
+APP_VERSION = os.getenv("APP_VERSION", "34.6.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3253,7 +3254,7 @@ def social_ai_image_png_head(trend_id: int):
 def _editorial_social_image(raw: bytes, keyword: str) -> Image.Image:
     """Add BUZZ NOW editorial text after AI generation so Japanese is exact."""
     from PIL import ImageDraw, ImageFont
-    img = Image.open(io.BytesIO(raw)).convert("RGB")
+    img = Image.open(BytesIO(raw)).convert("RGB")
     w, h = 1200, 675
     scale = max(w / img.width, h / img.height)
     img = img.resize((int(img.width*scale), int(img.height*scale)), Image.Resampling.LANCZOS)
