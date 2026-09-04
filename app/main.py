@@ -29,7 +29,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.1.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.2.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3252,14 +3252,8 @@ def social_ai_image_png_head(trend_id: int):
 
 
 def _social_image_jpeg_payload(trend_id: int) -> bytes:
-    """V34.8: V33 stable flow + deterministic editorial text overlay."""
+    """V35.2: strong BUZZ NOW editorial thumbnail; image pipeline/startup unchanged."""
     with db() as c:
-        # Reuse derivative cache only after V34.8 has rebuilt it.
-        cached = c.execute(
-            "SELECT jpeg_b64 FROM social_image_derivatives WHERE trend_id=?",
-            (trend_id,),
-        ).fetchone()
-
         row = c.execute(
             """SELECT si.image_b64, t.keyword
                FROM social_images si
@@ -3274,7 +3268,7 @@ def _social_image_jpeg_payload(trend_id: int) -> bytes:
             original = base64.b64decode(row["image_b64"])
             image = Image.open(BytesIO(original)).convert("RGB")
 
-            # Crop to X-friendly 1200x675.
+            # X landscape: 1200x675
             target_ratio = 1200 / 675
             ratio = image.width / image.height
             if ratio > target_ratio:
@@ -3285,15 +3279,17 @@ def _social_image_jpeg_payload(trend_id: int) -> bytes:
                 nh = int(image.width / target_ratio)
                 top = max(0, (image.height - nh) // 2)
                 image = image.crop((0, top, image.width, top + nh))
-            image = image.resize((1200, 675), Image.Resampling.LANCZOS)
+            image = image.resize((1200, 675), Image.Resampling.LANCZOS).convert("RGBA")
 
-            # Dark left panel.
-            overlay = Image.new("RGBA", image.size, (0,0,0,0))
-            od = ImageDraw.Draw(overlay)
-            for x in range(760):
-                alpha = int(205 * (1 - x / 760))
-                od.rectangle((x,0,x+1,675), fill=(0,0,0,max(0,alpha)))
-            image = Image.alpha_composite(image.convert("RGBA"), overlay)
+            # Strong black editorial gradient on left.
+            shade = Image.new("RGBA", image.size, (0, 0, 0, 0))
+            sd = ImageDraw.Draw(shade)
+            for x in range(820):
+                alpha = int(235 * (1 - (x / 820) ** 1.7))
+                sd.rectangle((x, 0, x + 1, 675), fill=(0, 0, 0, max(0, alpha)))
+            sd.rectangle((0, 0, 1200, 675), fill=(0, 0, 0, 20))
+            image = Image.alpha_composite(image, shade)
+            d = ImageDraw.Draw(image)
 
             def font(size, bold=False):
                 paths = [
@@ -3308,18 +3304,69 @@ def _social_image_jpeg_payload(trend_id: int) -> bytes:
                         pass
                 return ImageFont.load_default()
 
-            d=ImageDraw.Draw(image)
-            keyword=(row["keyword"] or "").strip()
-            title_size=72 if len(keyword)<=12 else 54 if len(keyword)<=20 else 42
-            d.text((58,55),"BUZZ NOW",font=font(34,True),fill="white")
-            d.text((58,235),keyword,font=font(title_size,True),fill="white")
-            d.text((60,350),"なぜ今、話題？",font=font(34,True),fill="white")
+            def fit_font(text, max_width, start_size, min_size=34):
+                size = start_size
+                while size > min_size:
+                    f = font(size, True)
+                    box = d.textbbox((0, 0), text, font=f)
+                    if box[2] - box[0] <= max_width:
+                        return f
+                    size -= 2
+                return font(min_size, True)
 
-            out=BytesIO()
-            image.convert("RGB").save(out,format="JPEG",quality=82,optimize=True,progressive=False)
-            data=out.getvalue()
-            encoded=base64.b64encode(data).decode("ascii")
-            ts=now_iso()
+            keyword = (row["keyword"] or "").strip()
+
+            # Brand: BUZZ + red NOW plate
+            brand = font(48, True)
+            d.text((54, 42), "BUZZ", font=brand, fill="white")
+            buzz_box = d.textbbox((54, 42), "BUZZ", font=brand)
+            nx = buzz_box[2] + 14
+            now_box = d.textbbox((nx + 12, 42), "NOW", font=brand)
+            d.rounded_rectangle((nx, 34, now_box[2] + 12, 98), radius=3, fill=(225, 0, 24, 255))
+            d.text((nx + 12, 42), "NOW", font=brand, fill="white")
+            d.line((54, 113, 470, 113), fill=(255,255,255,220), width=2)
+            d.text((54, 125), "いま、話題のニュースをわかりやすく", font=font(22, True), fill="white")
+
+            # Keyword — large, bold, exact.
+            kw_font = fit_font(keyword, 690, 92, 50)
+            d.text((50, 205), keyword, font=kw_font, fill="white",
+                   stroke_width=2, stroke_fill=(0,0,0,255))
+
+            # Red brush-like underline (deterministic).
+            y = 322
+            d.polygon([(42,y+13),(700,y-5),(755,y+8),(705,y+20),(55,y+29)], fill=(235,0,25,235))
+            d.line((58,y+18,650,y+4), fill=(255,45,45,255), width=4)
+
+            # Main CTA: intentionally huge.
+            d.text((50, 360), "なぜ今、", font=font(64, True), fill="white",
+                   stroke_width=2, stroke_fill=(0,0,0,255))
+            d.text((50, 430), "話題", font=font(105, True), fill=(255,232,0,255),
+                   stroke_width=3, stroke_fill=(0,0,0,255))
+            topic_box = d.textbbox((50, 430), "話題", font=font(105, True))
+            d.text((topic_box[2] + 10, 432), "？", font=font(102, True), fill="white",
+                   stroke_width=3, stroke_fill=(0,0,0,255))
+
+            # Bottom red accent.
+            d.polygon([(45,555),(575,540),(645,553),(560,570),(48,574)], fill=(225,0,24,225))
+
+            # Compact category-style tags. Keep them generic and factual.
+            tags = ["#いま話題", "#急上昇", "#BUZZNOW"]
+            x = 52
+            for tag in tags:
+                tf = font(20, True)
+                bb = d.textbbox((0,0), tag, font=tf)
+                tw = bb[2]-bb[0]
+                d.rectangle((x, 598, x+tw+24, 638), fill=(8,8,8,210), outline=(255,255,255,230), width=1)
+                d.text((x+12, 606), tag, font=tf, fill="white")
+                x += tw + 38
+
+            out = BytesIO()
+            image.convert("RGB").save(out, format="JPEG", quality=86, optimize=True, progressive=False)
+            data = out.getvalue()
+
+            # Refresh derivative cache with the new V35.2 design.
+            encoded = base64.b64encode(data).decode("ascii")
+            ts = now_iso()
             c.execute("""
                 INSERT INTO social_image_derivatives(trend_id,jpeg_b64,byte_length,created_at)
                 VALUES(?,?,?,?)
@@ -3327,12 +3374,12 @@ def _social_image_jpeg_payload(trend_id: int) -> bytes:
                     jpeg_b64=excluded.jpeg_b64,
                     byte_length=excluded.byte_length,
                     created_at=excluded.created_at
-            """,(trend_id,encoded,len(data),ts))
+            """, (trend_id, encoded, len(data), ts))
             return data
         except HTTPException:
             raise
         except Exception as exc:
-            logger.exception("V34.8 editorial JPEG failed trend_id=%s", trend_id)
+            logger.exception("V35.2 editorial JPEG failed trend_id=%s", trend_id)
             raise HTTPException(500, f"Editorial JPEG failed: {str(exc)[:200]}")
 
 
