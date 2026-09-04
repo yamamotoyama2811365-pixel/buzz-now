@@ -29,7 +29,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "32.1.0")
+APP_VERSION = os.getenv("APP_VERSION", "32.2.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3370,36 +3370,40 @@ def social_buffer_status():
 
 @app.get("/api/social/test-image-post/{trend_id}")
 def social_test_image_post(trend_id: int):
-    """V32 direct Buffer/X test; Make is not used."""
+    """V32.2 direct Buffer/X test using an already-generated cached image."""
     with db() as c:
-        row = c.execute(
-            """SELECT id, keyword, slug, status, pre_buzz_score, traffic_potential,
-                      confidence_score, why_now
-               FROM trends WHERE id=? LIMIT 1""",
-            (trend_id,),
-        ).fetchone()
+        row = c.execute("""
+            SELECT
+                t.id,t.keyword,t.slug,t.category,t.pre_buzz_score,t.status,t.why_now,
+                COALESCE(tt.traffic_potential,0) AS traffic_potential,
+                COALESCE(cf.confidence_score,0) AS confidence_score,
+                si.trend_id AS image_exists
+            FROM trends t
+            LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
+            LEFT JOIN confidence_state cf ON cf.trend_id=t.id
+            LEFT JOIN social_images si ON si.trend_id=t.id
+            WHERE t.id=?
+            LIMIT 1
+        """, (trend_id,)).fetchone()
+
     if not row:
         raise HTTPException(404, "Trend not found")
 
-    image_state = _ensure_social_ai_image(row["id"], row["keyword"], row["why_now"] or "")
-    if not image_state.get("ok"):
-        return {"ok": False, "message": "AI image is not ready", "image": image_state, "posted_to_x": False}
+    if not row["image_exists"]:
+        return {
+            "ok": False,
+            "version": APP_VERSION,
+            "posted_to_x": False,
+            "message": "No generated image exists for this trend.",
+        }
 
+    # The image already exists. Prebuild the compact JPEG before Buffer fetches it.
     _prewarm_social_jpeg(row["id"])
+
     image_url = _social_image_url(row["id"])
     detail_url = _social_short_url(row["id"])
-    status_text = row["status"] or "加速中"
-    for prefix in ("⚡ ", "🔥 ", "🚀 ", "🌱 ", "📉 "):
-        status_text = status_text.replace(prefix, "")
+    post_text = _build_social_post_text(row)
 
-    post_text = (
-        f"🚨 BUZZNOW SNS捜査官｜{status_text}を検知\n"
-        f"「{row['keyword']}」\n"
-        f"検索・閲覧シグナルが上昇中。\n"
-        f"Pre-Buzz：{int(round(float(row['pre_buzz_score'] or 0)))} / "
-        f"Traffic：{int(round(float(row['traffic_potential'] or 0)))}\n"
-        f"詳細 → {detail_url}"
-    )
     result = _send_to_buffer_direct(post_text, image_url, "shareNow")
     return {
         "ok": bool(result.get("ok")),
@@ -3407,9 +3411,11 @@ def social_test_image_post(trend_id: int):
         "posted_to_x": bool(result.get("ok")),
         "make_used": False,
         "payload": {
-            "keyword": row["keyword"], "detail_url": detail_url,
-            "image_url": image_url, "post_text": post_text,
-            "source": "buzz-now-v32-buffer-direct"
+            "keyword": row["keyword"],
+            "detail_url": detail_url,
+            "image_url": image_url,
+            "post_text": post_text,
+            "source": "buzz-now-v32.2-buffer-direct"
         },
         "buffer": result,
     }
