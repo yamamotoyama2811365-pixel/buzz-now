@@ -29,7 +29,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "34.3.0")
+APP_VERSION = os.getenv("APP_VERSION", "34.4.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3290,11 +3290,10 @@ def _editorial_social_image(raw: bytes, keyword: str) -> Image.Image:
 def _social_image_jpeg_payload(trend_id: int) -> bytes:
     """V34.3: ensure AI source exists, then add exact editorial text."""
     with db() as c:
-        row = c.execute("""
-            SELECT id,keyword,why_now,status,pre_buzz_score,traffic_potential,
-                   buzz_score,acceleration
-            FROM trends WHERE id=? LIMIT 1
-        """, (trend_id,)).fetchone()
+        row = c.execute(
+            "SELECT * FROM trends WHERE id=? LIMIT 1",
+            (trend_id,),
+        ).fetchone()
         if not row:
             return b""
 
