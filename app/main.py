@@ -25,11 +25,15 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "21.0.0")
+APP_VERSION = os.getenv("APP_VERSION", "26.0.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
 REAL_DATA_INTERVAL_MINUTES = int(os.getenv("REAL_DATA_INTERVAL_MINUTES","30"))
+
+# V26: Make.com webhook bridge for BUZZ NOW social automation
+MAKE_WEBHOOK_URL = os.getenv("MAKE_WEBHOOK_URL", "").strip()
+SOCIAL_TEST_ENABLED = os.getenv("SOCIAL_TEST_ENABLED", "false").lower() == "true"
 
 # V19: article discovery / WHY NOW enrichment
 NEWS_ENRICHMENT_ENABLED = os.getenv("NEWS_ENRICHMENT_ENABLED", "true").lower() == "true"
@@ -2526,6 +2530,87 @@ def trend_predictions(slug: str):
         """,(t["id"],)).fetchall()
     return {"keyword":t["keyword"],"items":[dict(r) for r in rows]}
 
+
+
+def _send_to_make(payload: dict) -> dict:
+    """Send one JSON payload to the configured Make.com Custom Webhook.
+
+    The webhook URL is intentionally read only from Render environment variables
+    so it never has to be committed to GitHub.
+    """
+    if not MAKE_WEBHOOK_URL:
+        raise HTTPException(503, "MAKE_WEBHOOK_URL is not configured")
+
+    try:
+        response = httpx.post(
+            MAKE_WEBHOOK_URL,
+            json=payload,
+            timeout=15,
+            follow_redirects=True,
+            headers={
+                "User-Agent": "BUZZ-NOW/26 Make-Webhook",
+                "Content-Type": "application/json",
+            },
+        )
+        response.raise_for_status()
+        return {
+            "ok": True,
+            "status_code": response.status_code,
+            "response": (response.text or "")[:500],
+        }
+    except httpx.HTTPError as exc:
+        logger.exception("Make webhook send failed")
+        raise HTTPException(502, f"Make webhook send failed: {exc}")
+
+
+@app.get("/api/social/test-send")
+def social_test_send():
+    """Browser-friendly one-time connection test for Make.com.
+
+    Keep SOCIAL_TEST_ENABLED=false in normal production. During setup, enable it
+    temporarily in Render, open this endpoint once, then disable it again.
+    """
+    if not SOCIAL_TEST_ENABLED:
+        raise HTTPException(403, "SOCIAL_TEST_ENABLED is false")
+
+    payload = {
+        "keyword": "BUZZ NOW テスト",
+        "pre_buzz_score": 92,
+        "traffic_potential": 81,
+        "status": "急上昇",
+        "why_now": "検索量と情報源の増加を検知",
+        "detail_url": f"{SITE_URL}/",
+        "post_text": (
+            "🚀 BUZZ NOW｜急上昇を検知\n"
+            "BUZZ NOW テスト\n"
+            "Pre-Buzz Score：92\n"
+            "Traffic Potential：81"
+        ),
+        "source": "buzz-now-v26-test",
+        "sent_at": datetime.now(timezone.utc).isoformat(),
+    }
+    result = _send_to_make(payload)
+    return {
+        "ok": True,
+        "message": "Test payload sent to Make.com",
+        "payload": payload,
+        "make": result,
+    }
+
+
+@app.post("/api/social/send-test")
+def social_send_test_post():
+    """POST alias for the same temporary Make.com connection test."""
+    return social_test_send()
+
+
+@app.get("/api/social/status")
+def social_status():
+    return {
+        "make_webhook_configured": bool(MAKE_WEBHOOK_URL),
+        "social_test_enabled": SOCIAL_TEST_ENABLED,
+        "version": APP_VERSION,
+    }
 
 
 @app.post("/api/collect-now")
