@@ -11,7 +11,7 @@ from urllib.parse import quote, urlparse
 from xml.sax.saxutils import escape as xml_escape
 import xml.etree.ElementTree as ET
 
-from fastapi import FastAPI, Request, Form, HTTPException
+from fastapi import FastAPI, Request, Form, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -2652,6 +2652,17 @@ def collect_now():
       "ok": result.get("total", 0) > 0,
       "result": result,
       "collectors": [dict(x) for x in states]
+    }
+
+
+@app.get("/api/collect-now-browser")
+def collect_now_browser(background_tasks: BackgroundTasks):
+    """Browser-friendly collection trigger. Returns immediately and runs collection in background."""
+    background_tasks.add_task(collect_real_sources)
+    return {
+      "ok": True,
+      "message": "Collection started in background. Wait about 30-60 seconds, then open /api/collector-debug to confirm.",
+      "check_url": f"{SITE_URL}/api/collector-debug"
     }
 
 @app.get("/api/collector-debug")
