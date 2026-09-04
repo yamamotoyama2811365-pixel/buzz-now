@@ -28,7 +28,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "31.0.0")
+APP_VERSION = os.getenv("APP_VERSION", "32.0.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -36,6 +36,11 @@ REAL_DATA_INTERVAL_MINUTES = int(os.getenv("REAL_DATA_INTERVAL_MINUTES","30"))
 
 # V26: Make.com webhook bridge for BUZZ NOW social automation
 MAKE_WEBHOOK_URL = os.getenv("MAKE_WEBHOOK_URL", "").strip()
+
+# V32 direct Buffer API
+BUFFER_API_KEY = os.getenv("BUFFER_API_KEY", "").strip()
+BUFFER_CHANNEL_ID = os.getenv("BUFFER_CHANNEL_ID", "6a9a680a065799be4686e3d9").strip()
+BUFFER_API_URL = "https://api.buffer.com"
 SOCIAL_TEST_ENABLED = os.getenv("SOCIAL_TEST_ENABLED", "false").lower() == "true"
 
 # V30: production X auto-posting via Make -> Buffer -> X
@@ -2989,6 +2994,62 @@ def trend_predictions(slug: str):
 
 
 
+def _graphql_string(value: str) -> str:
+    return json.dumps(value or "", ensure_ascii=False)
+
+
+def _send_to_buffer_direct(post_text: str, image_url: str = "", mode: str = "shareNow") -> dict:
+    if not BUFFER_API_KEY:
+        return {"ok": False, "reason": "BUFFER_API_KEY is not configured"}
+    if not BUFFER_CHANNEL_ID:
+        return {"ok": False, "reason": "BUFFER_CHANNEL_ID is not configured"}
+
+    assets = ""
+    if image_url:
+        assets = "assets: [{ image: { url: " + _graphql_string(image_url) + " } }] "
+
+    query = (
+        "mutation CreateBuzzNowPost { createPost(input: { "
+        + "text: " + _graphql_string(post_text) + " "
+        + "channelId: " + _graphql_string(BUFFER_CHANNEL_ID) + " "
+        + "schedulingType: automatic "
+        + "mode: " + mode + " "
+        + assets
+        + "}) { "
+        + "... on PostActionSuccess { post { id text status assets { id mimeType } } } "
+        + "... on MutationError { message } "
+        + "} }"
+    )
+    try:
+        response = httpx.post(
+            BUFFER_API_URL,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {BUFFER_API_KEY}"},
+            json={"query": query},
+            timeout=45.0,
+        )
+        try:
+            body = response.json()
+        except Exception:
+            body = {"raw": response.text[:1000]}
+        if response.status_code != 200:
+            return {"ok": False, "status_code": response.status_code, "reason": "Buffer HTTP error", "response": body}
+        if isinstance(body, dict) and body.get("errors"):
+            return {"ok": False, "status_code": 200, "reason": "Buffer GraphQL error", "response": body}
+        result = ((body or {}).get("data") or {}).get("createPost") if isinstance(body, dict) else None
+        if not result:
+            return {"ok": False, "reason": "Buffer returned no createPost result", "response": body}
+        if result.get("message"):
+            return {"ok": False, "reason": result["message"], "response": body}
+        post = result.get("post")
+        if post and post.get("id"):
+            return {"ok": True, "post_id": post["id"], "post": post}
+        return {"ok": False, "reason": "Buffer did not return a post id", "response": body}
+    except Exception as exc:
+        logger.exception("Direct Buffer post failed")
+        return {"ok": False, "reason": str(exc)[:500]}
+
+
 def _send_to_make(payload: dict) -> dict:
     """Send one JSON payload to the configured Make.com Custom Webhook.
 
@@ -3294,59 +3355,63 @@ def generate_social_image_only(trend_id: int):
     }
 
 
+@app.get("/api/social/buffer-status")
+def social_buffer_status():
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "buffer_api_key_configured": bool(BUFFER_API_KEY),
+        "buffer_channel_id_configured": bool(BUFFER_CHANNEL_ID),
+        "buffer_channel_id_suffix": BUFFER_CHANNEL_ID[-6:] if BUFFER_CHANNEL_ID else "",
+        "mode": "direct-buffer-graphql",
+    }
+
+
 @app.get("/api/social/test-image-post/{trend_id}")
-def test_image_post_to_make(trend_id: int):
-    """Send one existing generated image + current post text to Make for an intentional X test."""
-    if not MAKE_WEBHOOK_URL:
-        raise HTTPException(500, "MAKE_WEBHOOK_URL is not configured")
-
+def social_test_image_post(trend_id: int):
+    """V32 direct Buffer/X test; Make is not used."""
     with db() as c:
-        row = c.execute("""
-            SELECT
-                t.id,t.keyword,t.slug,t.category,t.pre_buzz_score,t.status,t.why_now,
-                COALESCE(tt.traffic_potential,0) AS traffic_potential,
-                COALESCE(cf.confidence_score,0) AS confidence_score,
-                si.trend_id AS image_exists
-            FROM trends t
-            LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
-            LEFT JOIN confidence_state cf ON cf.trend_id=t.id
-            LEFT JOIN social_images si ON si.trend_id=t.id
-            WHERE t.id=?
-            LIMIT 1
-        """, (trend_id,)).fetchone()
-
+        row = c.execute(
+            """SELECT id, keyword, slug, status, pre_buzz_score, traffic_potential,
+                      confidence_score, why_now
+               FROM trends WHERE id=? LIMIT 1""",
+            (trend_id,),
+        ).fetchone()
     if not row:
         raise HTTPException(404, "Trend not found")
-    if not row["image_exists"]:
-        raise HTTPException(
-            400,
-            "No generated image exists for this trend. Generate it first.",
-        )
 
-    payload = {
-        "keyword": row["keyword"],
-        "pre_buzz_score": round(float(row["pre_buzz_score"] or 0), 1),
-        "traffic_potential": round(float(row["traffic_potential"] or 0), 1),
-        "status": row["status"],
-        "why_now": row["why_now"] or "",
-        "detail_url": _social_short_url(row["id"]),
-        "image_url": _social_image_url(row["id"]),
-        "image_ready": True,
-        "post_text": _build_social_post_text(row),
-        "source": "buzz-now-v31-image-test",
-        "sent_at": now_iso(),
-    }
+    image_state = _ensure_social_ai_image(row["id"], row["keyword"], row["why_now"] or "")
+    if not image_state.get("ok"):
+        return {"ok": False, "message": "AI image is not ready", "image": image_state, "posted_to_x": False}
 
-    # V31: build/cache the JPEG BEFORE Buffer receives the URL.
     _prewarm_social_jpeg(row["id"])
-    make_result = _send_to_make(payload)
-    return {
-        "ok": bool(make_result.get("ok")),
-        "message": "Image test payload sent to Make.com",
-        "payload": payload,
-        "make": make_result,
-    }
+    image_url = _social_image_url(row["id"])
+    detail_url = _social_short_url(row["id"])
+    status_text = row["status"] or "加速中"
+    for prefix in ("⚡ ", "🔥 ", "🚀 ", "🌱 ", "📉 "):
+        status_text = status_text.replace(prefix, "")
 
+    post_text = (
+        f"🚨 BUZZNOW SNS捜査官｜{status_text}を検知\n"
+        f"「{row['keyword']}」\n"
+        f"検索・閲覧シグナルが上昇中。\n"
+        f"Pre-Buzz：{int(round(float(row['pre_buzz_score'] or 0)))} / "
+        f"Traffic：{int(round(float(row['traffic_potential'] or 0)))}\n"
+        f"詳細 → {detail_url}"
+    )
+    result = _send_to_buffer_direct(post_text, image_url, "shareNow")
+    return {
+        "ok": bool(result.get("ok")),
+        "version": APP_VERSION,
+        "posted_to_x": bool(result.get("ok")),
+        "make_used": False,
+        "payload": {
+            "keyword": row["keyword"], "detail_url": detail_url,
+            "image_url": image_url, "post_text": post_text,
+            "source": "buzz-now-v32-buffer-direct"
+        },
+        "buffer": result,
+    }
 
 @app.get("/api/social/image-status/{trend_id}")
 def social_ai_image_status(trend_id: int):
