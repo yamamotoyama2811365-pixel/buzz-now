@@ -7,3 +7,4 @@ httpx>=0.28,<1
 feedparser>=6.0.11,<7
 psycopg[binary]>=3.2,<4
 Pillow>=11,<12
+japanize-matplotlib>=1.1.3,<2
