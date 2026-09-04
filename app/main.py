@@ -29,7 +29,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "34.2.0")
+APP_VERSION = os.getenv("APP_VERSION", "34.3.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3288,24 +3288,45 @@ def _editorial_social_image(raw: bytes, keyword: str) -> Image.Image:
 
 
 def _social_image_jpeg_payload(trend_id: int) -> bytes:
-    """V34: cached AI visual + exact editorial keyword overlay."""
+    """V34.3: ensure AI source exists, then add exact editorial text."""
     with db() as c:
-        row=c.execute("""
-            SELECT si.image_b64, t.keyword
-            FROM social_images si JOIN trends t ON t.id=si.trend_id
-            WHERE si.trend_id=? LIMIT 1
-        """,(trend_id,)).fetchone()
-    if not row or not row["image_b64"]:
+        row = c.execute("""
+            SELECT id,keyword,why_now,status,pre_buzz_score,traffic_potential,
+                   buzz_score,acceleration
+            FROM trends WHERE id=? LIMIT 1
+        """, (trend_id,)).fetchone()
+        if not row:
+            return b""
+
+        existing = c.execute(
+            "SELECT image_b64 FROM social_images WHERE trend_id=?",
+            (trend_id,),
+        ).fetchone()
+
+        if not existing:
+            result = _ensure_social_ai_image(c, row, now_iso())
+            if not result.get("ok"):
+                logger.warning("V34.3 image ensure failed trend_id=%s reason=%s",
+                               trend_id, result.get("reason"))
+                return b""
+            existing = c.execute(
+                "SELECT image_b64 FROM social_images WHERE trend_id=?",
+                (trend_id,),
+            ).fetchone()
+
+    if not existing or not existing["image_b64"]:
         return b""
+
     try:
-        raw=base64.b64decode(row["image_b64"])
-        img=_editorial_social_image(raw,row["keyword"] or "")
-        out=io.BytesIO()
-        img.save(out,format="JPEG",quality=84,optimize=True,progressive=False)
+        raw = base64.b64decode(existing["image_b64"])
+        img = _editorial_social_image(raw, row["keyword"] or "")
+        out = BytesIO()
+        img.save(out, format="JPEG", quality=84, optimize=True, progressive=False)
         return out.getvalue()
     except Exception:
-        logger.exception("V34 editorial JPEG failed for trend_id=%s",trend_id)
+        logger.exception("V34.3 editorial JPEG failed trend_id=%s", trend_id)
         return b""
+
 
 def _prewarm_social_jpeg(trend_id: int) -> None:
     """V34.2: validate that the editorial JPEG can be built; no derivative DB write."""
