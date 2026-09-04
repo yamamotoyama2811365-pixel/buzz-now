@@ -28,7 +28,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "30.7.0")
+APP_VERSION = os.getenv("APP_VERSION", "30.8.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3088,9 +3088,13 @@ def social_status():
     }
 
 
-@app.get("/social-image/{trend_id}.png")
-def social_ai_image_png(trend_id: int):
-    """Stable public image URL for Make/Buffer; image bytes live in PostgreSQL."""
+def _social_image_payload(trend_id: int) -> bytes:
+    """Load a cached social image and normalize it to a real PNG byte stream.
+
+    Buffer fetches remote media from its own servers.  Serving a predictable
+    PNG with explicit response headers avoids scraper/CDN ambiguity around a
+    dynamic database-backed endpoint.
+    """
     with db() as c:
         row = c.execute(
             "SELECT image_b64,mime_type FROM social_images WHERE trend_id=?",
@@ -3098,14 +3102,61 @@ def social_ai_image_png(trend_id: int):
         ).fetchone()
     if not row:
         raise HTTPException(404, "Social image not generated yet")
+
     try:
-        raw = base64.b64decode(row["image_b64"])
+        raw = base64.b64decode(row["image_b64"], validate=True)
     except Exception:
         raise HTTPException(500, "Stored social image is invalid")
+
+    # Re-encode through Pillow so the URL extension, MIME type and actual file
+    # format are guaranteed to agree. This also strips metadata that some
+    # third-party media fetchers can reject.
+    try:
+        with Image.open(BytesIO(raw)) as im:
+            if im.mode not in ("RGB", "RGBA"):
+                im = im.convert("RGB")
+            out = BytesIO()
+            im.save(out, format="PNG", optimize=False)
+            png = out.getvalue()
+    except Exception:
+        raise HTTPException(500, "Stored social image could not be decoded")
+
+    if not png:
+        raise HTTPException(500, "Stored social image is empty")
+    return png
+
+
+def _social_image_headers(trend_id: int, content_length: int) -> dict:
+    return {
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "Content-Disposition": f'inline; filename="buzz-now-{int(trend_id)}.png"',
+        "Content-Length": str(int(content_length)),
+        "Accept-Ranges": "bytes",
+        "X-Content-Type-Options": "nosniff",
+    }
+
+
+@app.get("/social-image/{trend_id}.png")
+def social_ai_image_png(trend_id: int):
+    """Direct public image response for Make/Buffer/X. No auth, no redirect."""
+    png = _social_image_payload(trend_id)
     return Response(
-        content=raw,
-        media_type=row["mime_type"] or "image/png",
-        headers={"Cache-Control": "public, max-age=86400"},
+        content=png,
+        media_type="image/png",
+        headers=_social_image_headers(trend_id, len(png)),
+        status_code=200,
+    )
+
+
+@app.head("/social-image/{trend_id}.png")
+def social_ai_image_png_head(trend_id: int):
+    """Explicit HEAD support for third-party media fetchers such as Buffer."""
+    png = _social_image_payload(trend_id)
+    return Response(
+        content=b"",
+        media_type="image/png",
+        headers=_social_image_headers(trend_id, len(png)),
+        status_code=200,
     )
 
 
