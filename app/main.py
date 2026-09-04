@@ -2234,7 +2234,7 @@ def _social_candidate_rows(c, limit: int = 20):
         WHERE t.is_indexable=1
           AND t.pre_buzz_score>=?
           AND COALESCE(tt.traffic_potential,0)>=?
-          AND t.status NOT LIKE '%下降%'
+          AND t.status NOT LIKE '%%下降%%'
         ORDER BY
           t.pre_buzz_score DESC,
           COALESCE(tt.traffic_potential,0) DESC,
