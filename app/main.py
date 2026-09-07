@@ -29,7 +29,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.5.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.5.2")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2443,6 +2443,29 @@ def _build_social_card_png(row) -> bytes:
     return out.getvalue()
 
 
+def _social_reason_from_row(row, keyword: str) -> str:
+    """Create one short, cautious X reason line from an actually collected article title."""
+    try:
+        keys = set(row.keys())
+    except Exception:
+        keys = set()
+
+    title = str(row["reason_title"] or "").strip() if "reason_title" in keys else ""
+    if title:
+        # Remove common publisher suffixes and the keyword itself to avoid a clumsy repeat.
+        title = re.sub(r"\s*[|｜]\s*[^|｜]{1,40}$", "", title).strip()
+        title = re.sub(r"\s*[-–—]\s*[^-–—]{1,35}$", "", title).strip()
+        title = title.replace(keyword, "").strip(" 　「」『』:：-–—|｜")
+        title = re.sub(r"\s+", " ", title)
+        if len(title) > 42:
+            title = title[:42].rstrip("、。・ ") + "…"
+        if title:
+            return f"{title}が要因か。"
+
+    # No sufficiently relevant collected article: do not invent a cause.
+    return "関連報道の増加が要因か。"
+
+
 def _build_social_post_text(row) -> str:
     keyword = str(row["keyword"]).strip()
     pre = int(round(float(row["pre_buzz_score"] or 0)))
@@ -2450,11 +2473,12 @@ def _build_social_post_text(row) -> str:
     status = str(row["status"] or "急上昇")
     status_plain = re.sub(r"^[^ぁ-んァ-ヶ一-龠A-Za-z0-9]+\s*", "", status).strip() or "急上昇"
     detail_url = _social_short_url(row["id"])
+    reason = _social_reason_from_row(row, keyword)
     return (
         f"🚨 BUZZNOW SNS捜査官｜{status_plain}を検知\n"
-        f"「{keyword}」\n"
-        f"検索・閲覧シグナルが上昇中。\n"
-        f"Pre-Buzz：{pre} / Traffic：{traffic}\n"
+        f"いま「{keyword}」がバズり中。\n"
+        f"{reason}\n"
+        f"シグナル上昇 / Pre-Buzz：{pre} / Traffic：{traffic}\n"
         f"なぜ今話題？ → {detail_url}"
     )
 
@@ -2466,7 +2490,18 @@ def _social_candidate_rows(c, limit: int = 20):
             t.id,t.keyword,t.slug,t.category,t.pre_buzz_score,t.buzz_score,t.acceleration,
             t.status,t.why_now,t.updated_at,
             COALESCE(tt.traffic_potential,0) AS traffic_potential,
-            COALESCE(cf.confidence_score,0) AS confidence_score
+            COALESCE(cf.confidence_score,0) AS confidence_score,
+            (
+                SELECT s.title
+                FROM sources s
+                WHERE s.trend_id=t.id
+                  AND COALESCE(TRIM(s.title),'')<>''
+                ORDER BY
+                  CASE WHEN COALESCE(TRIM(s.published_at),'')='' THEN 1 ELSE 0 END,
+                  s.published_at DESC,
+                  s.id DESC
+                LIMIT 1
+            ) AS reason_title
         FROM trends t
         LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
         LEFT JOIN confidence_state cf ON cf.trend_id=t.id
