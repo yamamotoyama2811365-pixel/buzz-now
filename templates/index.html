@@ -10,6 +10,10 @@
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://buzz-now.onrender.com/">
 <link rel="stylesheet" href="/static/style.css">
+<style>
+  .top-tab{text-decoration:none;display:flex;align-items:center;justify-content:center;cursor:pointer;}
+  html{scroll-behavior:smooth;}
+</style>
     <!-- Google AdSense -->
     <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5776658615046901" crossorigin="anonymous"></script>
 
@@ -35,7 +39,7 @@
 
 </head>
 <body>
-<div class="app-shell">
+<div class="app-shell" id="top">
   <header class="app-header">
     <button class="icon-btn menu-btn" aria-label="メニュー"><span></span><span></span><span></span></button>
     <a href="/" class="brand-lockup">
@@ -49,11 +53,11 @@
   </header>
 
   <nav class="top-tabs" aria-label="ランキング切替">
-    <button class="top-tab active" data-mode="top">TOP</button>
-    <button class="top-tab" data-mode="all">総合TOP50</button>
-    <button class="top-tab" data-mode="pre">バズりそう <span class="new-badge">NEW</span></button>
-    <button class="top-tab" data-mode="boom">爆発中 🔥</button>
-    <button class="top-tab" data-mode="category">カテゴリ</button>
+    <a class="top-tab active" href="#top" data-mode="top">TOP</a>
+    <a class="top-tab" href="#ranking" data-mode="all">総合TOP50</a>
+    <a class="top-tab" href="#ranking" data-mode="pre">バズりそう <span class="new-badge">NEW</span></a>
+    <a class="top-tab" href="#ranking" data-mode="boom">爆発中 🔥</a>
+    <a class="top-tab" href="#categoryTabs" data-mode="category">カテゴリ</a>
   </nav>
 
   <main class="content">
@@ -104,7 +108,7 @@
       <a id="preBuzzLink" class="primary-cta" href="/">今すぐチェック <span>›</span></a>
     </section>
 
-    <section class="ranking-section">
+    <section class="ranking-section" id="ranking">
       <div class="section-title-row">
         <h1>👑 総合ランキング TOP50</h1>
         <button id="showAllBtn" class="text-link">もっと見る <span>›</span></button>
@@ -469,16 +473,38 @@ async function refreshStatus(){
   }catch(e){}
 }
 
-document.querySelectorAll('.top-tab').forEach(btn=>btn.addEventListener('click',()=>{
+document.querySelectorAll('.top-tab').forEach(btn=>btn.addEventListener('click',(e)=>{
   document.querySelectorAll('.top-tab').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
-  currentMode=btn.dataset.mode;
-  if(currentMode==='category'){
-    document.getElementById('categoryTabs').scrollIntoView({behavior:'smooth',block:'center'});
+
+  const mode=btn.dataset.mode;
+
+  if(mode==='top'){
     currentMode='top';
+    window.scrollTo({top:0,behavior:'smooth'});
+    renderRanking();
+    return;
   }
+
+  if(mode==='category'){
+    currentMode='top';
+    document.getElementById('categoryTabs').scrollIntoView({behavior:'smooth',block:'center'});
+    renderRanking();
+    return;
+  }
+
+  currentMode=mode;
+  document.getElementById('ranking').scrollIntoView({behavior:'smooth',block:'start'});
   renderRanking();
 }));
+
+// Direct-link support for the main menu (#ranking / #categoryTabs).
+if(location.hash==='#categoryTabs'){
+  setTimeout(()=>document.getElementById('categoryTabs')?.scrollIntoView({block:'center'}),100);
+}
+if(location.hash==='#ranking'){
+  setTimeout(()=>document.getElementById('ranking')?.scrollIntoView({block:'start'}),100);
+}
 
 document.querySelectorAll('.chip').forEach(btn=>btn.addEventListener('click',()=>{
   document.querySelectorAll('.chip').forEach(b=>b.classList.remove('active'));
