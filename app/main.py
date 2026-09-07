@@ -29,7 +29,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.10.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.10.1")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3459,6 +3459,52 @@ def social_buffer_status():
     }
 
 
+
+@app.get("/api/social/preview-image-post/{trend_id}")
+def social_preview_image_post(trend_id: int):
+    """Preview the exact X text/image without posting anything."""
+    with db() as c:
+        row = c.execute("""
+            SELECT
+                t.id,t.keyword,t.slug,t.category,t.pre_buzz_score,t.status,t.why_now,
+                COALESCE(tt.traffic_potential,0) AS traffic_potential,
+                COALESCE(cf.confidence_score,0) AS confidence_score,
+                si.trend_id AS image_exists,
+                (
+                    SELECT s.title
+                    FROM sources s
+                    WHERE s.trend_id=t.id
+                      AND COALESCE(TRIM(s.title),'')<>''
+                    ORDER BY
+                      CASE WHEN COALESCE(TRIM(s.published_at),'')='' THEN 1 ELSE 0 END,
+                      s.published_at DESC,
+                      s.id DESC
+                    LIMIT 1
+                ) AS reason_title
+            FROM trends t
+            LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
+            LEFT JOIN confidence_state cf ON cf.trend_id=t.id
+            LEFT JOIN social_images si ON si.trend_id=t.id
+            WHERE t.id=?
+            LIMIT 1
+        """, (trend_id,)).fetchone()
+
+    if not row:
+        raise HTTPException(404, "Trend not found")
+
+    image_url = _social_image_url(row["id"]) if row["image_exists"] else ""
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "posted_to_x": False,
+        "keyword": row["keyword"],
+        "reason_title": row["reason_title"] or "",
+        "post_text": _build_social_post_text(row),
+        "image_url": image_url,
+        "detail_url": _social_short_url(row["id"]),
+    }
+
+
 @app.get("/api/social/test-image-post/{trend_id}")
 def social_test_image_post(trend_id: int):
     """V32.2 direct Buffer/X test using an already-generated cached image."""
@@ -3468,7 +3514,18 @@ def social_test_image_post(trend_id: int):
                 t.id,t.keyword,t.slug,t.category,t.pre_buzz_score,t.status,t.why_now,
                 COALESCE(tt.traffic_potential,0) AS traffic_potential,
                 COALESCE(cf.confidence_score,0) AS confidence_score,
-                si.trend_id AS image_exists
+                si.trend_id AS image_exists,
+                (
+                    SELECT s.title
+                    FROM sources s
+                    WHERE s.trend_id=t.id
+                      AND COALESCE(TRIM(s.title),'')<>''
+                    ORDER BY
+                      CASE WHEN COALESCE(TRIM(s.published_at),'')='' THEN 1 ELSE 0 END,
+                      s.published_at DESC,
+                      s.id DESC
+                    LIMIT 1
+                ) AS reason_title
             FROM trends t
             LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
             LEFT JOIN confidence_state cf ON cf.trend_id=t.id
