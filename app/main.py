@@ -29,7 +29,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.11.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.12.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -832,6 +832,50 @@ def _collector_state(c, source, status, message, count, ts):
         last_run_at=excluded.last_run_at
     """,(source,status,message,count,ts))
 
+
+def infer_category(keyword: str, context: str = "") -> str:
+    """Lightweight category classifier for ranking UI.
+    Uses the buzzword plus collected source titles; no external AI/API call.
+    """
+    s = f"{keyword or ''} {context or ''}".lower()
+
+    groups = [
+        ("スポーツ", [
+            "野球","サッカー","試合","選手","投手","打者","監督","優勝","リーグ",
+            "wbc","mlb","npb","jリーグ","bリーグ","バスケ","バスケット","テニス",
+            "ゴルフ","相撲","オリンピック","高校野球","ファイターズ","日本ハム",
+            "阪神","巨人","ドジャース","大谷","サッカー日本代表"
+        ]),
+        ("美容", [
+            "美容","コスメ","化粧","メイク","スキンケア","美肌","毛穴","脱毛",
+            "ネイル","ヘア","髪","肌荒れ","日焼け止め","美容医療","整形",
+            "クリニック","ダイエット","香水","フレグランス"
+        ]),
+        ("ビジネス", [
+            "株価","株式","日経","為替","円安","円高","金利","決算","企業","経済",
+            "ipo","m&a","買収","上場","投資","ビットコイン","暗号資産","仮想通貨",
+            "openai","chatgpt","生成ai","人工知能","apple","google","microsoft",
+            "amazon","meta","tesla","半導体","nvidia","エヌビディア"
+        ]),
+        ("エンタメ", [
+            "芸能","映画","ドラマ","アニメ","漫画","マンガ","俳優","女優","声優",
+            "歌手","アイドル","音楽","ライブ","テレビ","番組","放送","プロデューサー",
+            "監督作品","主演","出演","nhk","tbs","フジテレビ","日本テレビ","テレビ朝日",
+            "netflix","youtube","youtuber","vtuber","渡鬼","紅白","舞台","映画祭"
+        ]),
+        ("北海道", [
+            "北海道","札幌","函館","旭川","帯広","釧路","苫小牧","小樽","千歳",
+            "北広島","ニセコ","すすきの","大通公園","新千歳","石狩","恵庭"
+        ]),
+    ]
+
+    for category, words in groups:
+        if any(w.lower() in s for w in words):
+            return category
+
+    return "ニュース・時事"
+
+
 def upsert_real_trend(c, keyword, source_name, source_score, raw_metric, source_url, external_id, ts):
     keyword=_clean_keyword(keyword)
     if not keyword or len(keyword) > 80:
@@ -876,12 +920,18 @@ def upsert_real_trend(c, keyword, source_name, source_score, raw_metric, source_
         new_pre=max(float(row["pre_buzz_score"]), pre)
         new_buzz=max(float(row["buzz_score"]), buzz)
         new_acc=max(float(row["acceleration"]), acceleration)
+        inferred_category = infer_category(keyword)
         c.execute("""
           UPDATE trends
-          SET pre_buzz_score=?,buzz_score=?,acceleration=?,status=?,updated_at=?
+          SET pre_buzz_score=?,buzz_score=?,acceleration=?,status=?,
+              category=CASE
+                WHEN COALESCE(category,'') IN ('','総合') THEN ?
+                ELSE category
+              END,
+              updated_at=?
           WHERE id=?
         """,(round(new_pre,1),round(new_buzz,1),round(new_acc,2),
-             classify(new_pre,new_buzz,new_acc),ts,row["id"]))
+             classify(new_pre,new_buzz,new_acc),inferred_category,ts,row["id"]))
         return True
 
     c.execute("""
@@ -893,7 +943,7 @@ def upsert_real_trend(c, keyword, source_name, source_score, raw_metric, source_
         keyword,slug,
         f"{keyword} に関する検索・閲覧の増加シグナルを検出しています。",
         f"{source_name} の公開データで上昇シグナルを確認しました。詳細は元データをご確認ください。",
-        "総合",round(pre,1),round(buzz,1),round(acceleration,2),status,ts,ts
+        infer_category(keyword),round(pre,1),round(buzz,1),round(acceleration,2),status,ts,ts
     ))
     return True
 
@@ -2936,6 +2986,7 @@ def traffic_ranking(limit: int = 50):
     with db() as c:
         rows=c.execute("""
             SELECT
+              t.id,
               t.keyword,t.slug,t.category,t.status,
               t.pre_buzz_score,t.buzz_score,t.acceleration,
               COALESCE(x.impressions,0) AS impressions,
@@ -2952,7 +3003,13 @@ def traffic_ranking(limit: int = 50):
               ps.propagation_minutes AS propagation_minutes,
               COALESCE(ps.velocity_30m,0) AS velocity_30m,
               COALESCE(ps.velocity_1h,0) AS velocity_1h,
-              COALESCE(ps.velocity_3h,0) AS velocity_3h
+              COALESCE(ps.velocity_3h,0) AS velocity_3h,
+              COALESCE((
+                SELECT STRING_AGG(s.title, ' ')
+                FROM sources s
+                WHERE s.trend_id=t.id
+                  AND COALESCE(TRIM(s.title),'')<>''
+              ), '') AS category_context
             FROM trends t
             LEFT JOIN traffic_totals x ON x.trend_id=t.id
             LEFT JOIN confidence_state cs ON cs.trend_id=t.id
@@ -2960,7 +3017,23 @@ def traffic_ranking(limit: int = 50):
             ORDER BY traffic_potential DESC, confidence_score DESC, pageviews DESC
             LIMIT ?
         """,(limit,)).fetchall()
-    return {"items":[dict(r) for r in rows]}
+
+    items=[]
+    for r in rows:
+        item=dict(r)
+        stored=str(item.get("category") or "").strip()
+        inferred=infer_category(item.get("keyword",""), item.pop("category_context",""))
+
+        # Keep a deliberate/manual category, but repair legacy generic rows live.
+        if stored in ("", "総合", "ニュース・時事"):
+            item["category"]=inferred
+        else:
+            item["category"]=stored
+
+        item.pop("id", None)
+        items.append(item)
+
+    return {"items":items}
 
 
 @app.get("/api/trends/{slug}/traffic")
