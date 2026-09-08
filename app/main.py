@@ -42,7 +42,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.19.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.20.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3449,26 +3449,61 @@ def _fetch_yahoo_quote_candidates(keyword: str):
         }
 
 
-def _sns_detective_preview_text(keyword: str, rank: int, detail_url: str, why_now: str = ""):
-    """Safe deterministic preview. AI personality comes after source-post
-    extraction is confirmed.
-    """
-    hook = ""
-    if why_now:
-        m = re.search(r'「([^」]{6,70})」', why_now)
-        if m:
-            hook = m.group(1).strip()
+def _compact_metric_ja(n: int) -> str:
+    n = max(0, int(n or 0))
+    if n >= 10000:
+        v = n / 10000.0
+        if v >= 10:
+            return f"{v:.0f}万"
+        return f"{v:.1f}万".replace(".0万", "万")
+    if n >= 1000:
+        return f"{n / 1000.0:.1f}千".replace(".0千", "千")
+    return str(n)
 
-    lines = [
-        "🚨 BUZZNOW SNS捜査官｜バズり中",
-        f"これ、かなり伸びてる。「{keyword}」がリアルタイムで上昇中。",
-    ]
-    if hook:
-        lines.append(f"背景を追うと「{hook[:55]}」周辺の動きも確認。")
+
+def _sns_detective_comment(keyword: str, detail_url: str, target: dict | None):
+    """SNS捜査官 3-pattern selector.
+    冷静7：煽り3。元投稿との因果関係は断定しない。
+    """
+    target = target or {}
+    likes = int(target.get("likes") or 0)
+    reposts = int(target.get("reposts") or 0)
+
+    if likes >= 30000 or reposts >= 3000:
+        template = "速報型"
+        text = (
+            "🚨 BUZZNOW SNS捜査官｜バズり中\n"
+            f"これ、かなり伸びてる。「{keyword}」がリアルタイムで急上昇。\n"
+            f"この投稿も{_compact_metric_ja(likes)}いいねまで拡散。関連する公開情報も追跡中。\n"
+            f"なぜ今話題？ → {detail_url}"
+        )
+    elif likes >= 10000 or reposts >= 1000:
+        template = "人間っぽい型"
+        text = (
+            "この投稿、かなり動いてる。👀\n"
+            f"「{keyword}」がリアルタイムで上昇中。\n"
+            f"この投稿も{_compact_metric_ja(likes)}いいねまで伸びてる。まだ動きそうなので追跡します。\n"
+            f"背景はこちら → {detail_url}"
+        )
     else:
-        lines.append("関連する公開情報も追跡中。")
-    lines.append(f"なぜ今話題？ → {detail_url}")
-    return "\n".join(lines)
+        template = "捜査官型"
+        text = (
+            "🕵️ SNS捜査メモ\n"
+            f"「{keyword}」を追跡中。この投稿も大きく反応を集めています。\n"
+            "関連する公開情報とあわせて話題の経緯を整理しました。\n"
+            f"🔎 {detail_url}"
+        )
+
+    # Keep a safety margin for X text limits.
+    if len(text) > 250:
+        text = text[:247].rstrip() + "…"
+
+    return {
+        "template": template,
+        "text": text,
+        "likes": likes,
+        "reposts": reposts,
+    }
 
 
 @app.get("/api/buzzing-now/quote-preview")
@@ -3521,6 +3556,8 @@ def yahoo_buzz_quote_preview(limit: int = 5):
             ]
             best = eligible[0] if eligible else None
 
+            comment = _sns_detective_comment(keyword, detail_url, best)
+
             previews.append({
                 "keyword": keyword,
                 "rank": int(row["rank"]),
@@ -3528,12 +3565,8 @@ def yahoo_buzz_quote_preview(limit: int = 5):
                 "quality": quality,
                 "source_search": source,
                 "best_quote_target": best,
-                "comment_preview": _sns_detective_preview_text(
-                    keyword,
-                    int(row["rank"]),
-                    detail_url,
-                    row["why_now"] or "",
-                ),
+                "comment_template": comment["template"],
+                "comment_preview": comment["text"],
                 "ready_for_quote_test": bool(best and best.get("tweet_id") and best.get("strong_enough")),
             })
 
@@ -3618,6 +3651,187 @@ def _send_to_buffer_quote_post(tweet_id: str, comment: str, mode: str = "shareNo
     except Exception as exc:
         logger.exception("Direct Buffer quote post failed")
         return {"ok": False, "reason": str(exc)[:500]}
+
+
+def _ensure_quote_post_log(c):
+    c.execute("""
+      CREATE TABLE IF NOT EXISTS buzzing_quote_posts(
+        id BIGSERIAL PRIMARY KEY,
+        keyword TEXT NOT NULL,
+        tweet_id TEXT NOT NULL UNIQUE,
+        tweet_url TEXT NOT NULL,
+        comment_text TEXT NOT NULL,
+        comment_template TEXT NOT NULL,
+        buffer_post_id TEXT,
+        status TEXT NOT NULL DEFAULT 'sent',
+        sent_at TEXT NOT NULL
+      )
+    """)
+
+
+@app.get("/api/buzzing-now/quote-test-one")
+def yahoo_buzz_quote_test_one(keyword: str = "", confirm: str = ""):
+    """MANUAL REAL POST TEST.
+
+    Safety:
+    - does nothing unless confirm=POST_ONE
+    - posts only one qualified/strong quote target
+    - blocks duplicate tweet_id
+    - does not enable any scheduler/automatic quote-posting
+    """
+    if confirm != "POST_ONE":
+        return {
+            "ok": False,
+            "version": APP_VERSION,
+            "posted_to_x": False,
+            "reason": "confirmation_required",
+            "how_to_confirm": "Add ?keyword=<keyword>&confirm=POST_ONE",
+        }
+
+    keyword = _clean_keyword(keyword)
+    if not keyword:
+        return {
+            "ok": False,
+            "version": APP_VERSION,
+            "posted_to_x": False,
+            "reason": "keyword_required",
+        }
+
+    with db() as c:
+        _ensure_yahoo_buzz_tables(c)
+        _ensure_quote_post_log(c)
+
+        row = c.execute("""
+          SELECT
+            y.keyword,
+            y.rank,
+            t.id AS trend_id,
+            t.slug,
+            t.status
+          FROM yahoo_buzz_candidates y
+          JOIN trends t ON t.keyword=y.keyword
+          WHERE y.active=1
+            AND t.status='🔥 バズり中'
+            AND y.keyword=?
+          ORDER BY y.rank ASC
+          LIMIT 1
+        """, (keyword,)).fetchone()
+
+        if not row:
+            return {
+                "ok": False,
+                "version": APP_VERSION,
+                "posted_to_x": False,
+                "reason": "qualified_buzzing_topic_not_found",
+                "keyword": keyword,
+            }
+
+        quality = _buzzing_now_quality(c, row["trend_id"])
+        if not quality["qualified"]:
+            return {
+                "ok": False,
+                "version": APP_VERSION,
+                "posted_to_x": False,
+                "reason": "fresh_source_quality_gate_failed",
+                "keyword": keyword,
+                "quality": quality,
+            }
+
+        source = _fetch_yahoo_quote_candidates(keyword)
+        eligible = [
+            x for x in (source.get("items") or [])
+            if x.get("keyword_relevant")
+            and x.get("strong_enough")
+            and (
+                x.get("source_type") == "yahoo_popular_post"
+                or (
+                    x.get("source_type") == "yahoo_keyword_search"
+                    and x.get("metric_verified")
+                )
+            )
+        ]
+
+        if not eligible:
+            return {
+                "ok": False,
+                "version": APP_VERSION,
+                "posted_to_x": False,
+                "reason": "strong_quote_target_not_found",
+                "keyword": keyword,
+                "source_mode": source.get("source_mode"),
+            }
+
+        target = eligible[0]
+
+        duplicate = c.execute(
+            "SELECT id,buffer_post_id,sent_at FROM buzzing_quote_posts WHERE tweet_id=? LIMIT 1",
+            (target["tweet_id"],),
+        ).fetchone()
+        if duplicate:
+            return {
+                "ok": False,
+                "version": APP_VERSION,
+                "posted_to_x": False,
+                "reason": "duplicate_quote_blocked",
+                "keyword": keyword,
+                "tweet_id": target["tweet_id"],
+                "previous": dict(duplicate),
+            }
+
+        detail_url = f"{SITE_URL}/trend/{row['slug']}"
+        comment = _sns_detective_comment(keyword, detail_url, target)
+
+        send_result = _send_to_buffer_quote_post(
+            target["tweet_id"],
+            comment["text"],
+            mode="shareNow",
+        )
+
+        if not send_result.get("ok"):
+            return {
+                "ok": False,
+                "version": APP_VERSION,
+                "posted_to_x": False,
+                "keyword": keyword,
+                "tweet_id": target["tweet_id"],
+                "tweet_url": target["tweet_url"],
+                "comment_template": comment["template"],
+                "comment_text": comment["text"],
+                "buffer_result": send_result,
+            }
+
+        ts = now_iso()
+        c.execute("""
+          INSERT INTO buzzing_quote_posts(
+            keyword,tweet_id,tweet_url,comment_text,comment_template,
+            buffer_post_id,status,sent_at
+          ) VALUES(?,?,?,?,?,?,?,?)
+        """, (
+            keyword,
+            target["tweet_id"],
+            target["tweet_url"],
+            comment["text"],
+            comment["template"],
+            str(send_result.get("post_id") or ""),
+            "sent",
+            ts,
+        ))
+        c.commit()
+
+        return {
+            "ok": True,
+            "version": APP_VERSION,
+            "posted_to_x": True,
+            "automatic_quote_posting": False,
+            "keyword": keyword,
+            "tweet_id": target["tweet_id"],
+            "tweet_url": target["tweet_url"],
+            "likes": target.get("likes", 0),
+            "reposts": target.get("reposts", 0),
+            "comment_template": comment["template"],
+            "comment_text": comment["text"],
+            "buffer_result": send_result,
+        }
 
 
 @app.get("/api/buzzing-now/yahoo-status")
