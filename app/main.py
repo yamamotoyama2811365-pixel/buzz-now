@@ -32,13 +32,14 @@ YAHOO_BUZZ_ENABLED = os.getenv("YAHOO_BUZZ_ENABLED", "true").lower() == "true"
 YAHOO_BUZZ_RANK_MIN = max(1, int(os.getenv("YAHOO_BUZZ_RANK_MIN", "30")))
 YAHOO_BUZZ_RANK_MAX = max(YAHOO_BUZZ_RANK_MIN, int(os.getenv("YAHOO_BUZZ_RANK_MAX", "80")))
 YAHOO_BUZZ_FALLBACK_COUNT = max(1, min(int(os.getenv("YAHOO_BUZZ_FALLBACK_COUNT", "10")), 30))
+YAHOO_BUZZ_PROMOTE_LIMIT = max(1, min(int(os.getenv("YAHOO_BUZZ_PROMOTE_LIMIT", "5")), 10))
 
 
 SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.13.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.14.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2838,6 +2839,159 @@ def collect_yahoo_realtime_buzz(c, ts: str):
     except Exception as exc:
         logger.exception("Yahoo realtime Buzzing Now collection failed")
         return {"ok": False, "reason": str(exc)[:220], "count": 0}
+
+
+
+def _yahoo_rank_signal_score(rank: int) -> float:
+    """Convert a Yahoo realtime rank into a BUZZ NOW signal score.
+    Lower rank number = stronger signal. Keeps 30-80 useful without pretending
+    Yahoo rank is a literal search-volume metric.
+    """
+    rank = max(1, min(int(rank), 100))
+    # rank 1 -> 98, rank 20 -> ~88, rank 50 -> ~72, rank 80 -> ~57
+    return round(max(52.0, min(98.0, 98.0 - (rank - 1) * 0.52)), 1)
+
+
+def promote_yahoo_buzz_candidates(limit: int = None):
+    """Turn active Yahoo Buzzing Now candidates into BUZZ NOW trend pages
+    and enrich them from independent news/RSS sources. Never posts to X.
+    """
+    limit = YAHOO_BUZZ_PROMOTE_LIMIT if limit is None else max(1, min(int(limit), 10))
+    ts = now_iso()
+
+    promoted = []
+    skipped = []
+    errors = []
+
+    with db() as c:
+        _ensure_yahoo_buzz_tables(c)
+        rows = c.execute("""
+          SELECT keyword,rank,source_url,last_seen_at
+          FROM yahoo_buzz_candidates
+          WHERE active=1
+          ORDER BY rank ASC
+          LIMIT ?
+        """, (limit,)).fetchall()
+
+        for row in rows:
+            keyword = _clean_keyword(row["keyword"])
+            rank = int(row["rank"] or 100)
+            if not keyword:
+                continue
+
+            try:
+                score = _yahoo_rank_signal_score(rank)
+
+                # Reuse the existing trend pipeline. This gives the item a normal
+                # BUZZ NOW detail page/slug and keeps all existing SEO/detail logic.
+                upsert_real_trend(
+                    c,
+                    keyword,
+                    "yahoo_realtime_buzz",
+                    score,
+                    float(rank),
+                    str(row["source_url"] or "https://search.yahoo.co.jp/realtime"),
+                    f"rank-{rank}-{normalize_match_key(keyword)[:80]}",
+                    ts,
+                )
+
+                trend = _find_trend_row(c, keyword)
+                if not trend:
+                    skipped.append({"keyword": keyword, "rank": rank, "reason": "trend_not_created"})
+                    continue
+
+                # Mark this surface explicitly as already-buzzing content.
+                c.execute("""
+                  UPDATE trends
+                  SET status='🔥 バズり中',
+                      summary=?,
+                      updated_at=?
+                  WHERE id=?
+                """, (
+                    f"{keyword}はYahoo!リアルタイム検索で上昇を確認した「バズり中」トピックです。"
+                    "BUZZ NOWでは関連する公開情報を確認し、なぜ今注目されているかを整理します。",
+                    ts,
+                    trend["id"],
+                ))
+
+                # Independent-source enrichment: do not make Yahoo/X chatter itself
+                # the factual basis of the article.
+                news_count = _enrich_keyword_news(c, keyword, ts, include_gdelt=False)
+
+                trend2 = _find_trend_row(c, keyword)
+                promoted.append({
+                    "keyword": keyword,
+                    "rank": rank,
+                    "signal_score": score,
+                    "slug": trend2["slug"] if trend2 else trend["slug"],
+                    "detail_url": f"{SITE_URL}/trend/{trend2['slug'] if trend2 else trend['slug']}",
+                    "news_sources_added": int(news_count or 0),
+                    "why_now": (trend2["why_now"] if trend2 else "") or "",
+                })
+
+            except Exception as exc:
+                logger.exception("Yahoo Buzz promotion failed keyword=%s", keyword)
+                errors.append({
+                    "keyword": keyword,
+                    "rank": rank,
+                    "error": str(exc)[:220],
+                })
+
+        c.commit()
+
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "posted_to_x": False,
+        "promoted_count": len(promoted),
+        "promoted": promoted,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
+@app.get("/api/buzzing-now/promote-preview")
+def yahoo_buzz_promote_preview(limit: int = YAHOO_BUZZ_PROMOTE_LIMIT):
+    """Manual safe test: creates/enriches Buzzing Now site pages, never posts to X."""
+    return promote_yahoo_buzz_candidates(limit)
+
+
+@app.get("/api/buzzing-now/articles")
+def yahoo_buzz_articles(limit: int = 20):
+    """Return currently published Buzzing Now trend pages for a future homepage section."""
+    limit = max(1, min(int(limit), 100))
+    with db() as c:
+        rows = c.execute("""
+          SELECT
+            y.keyword,
+            y.rank,
+            y.last_seen_at,
+            t.slug,
+            t.status,
+            t.summary,
+            t.why_now,
+            t.pre_buzz_score,
+            t.buzz_score,
+            t.acceleration,
+            t.category
+          FROM yahoo_buzz_candidates y
+          JOIN trends t ON t.keyword=y.keyword
+          WHERE y.active=1
+          ORDER BY y.rank ASC
+          LIMIT ?
+        """, (limit,)).fetchall()
+
+    items = []
+    for r in rows:
+        item = dict(r)
+        item["detail_url"] = f"{SITE_URL}/trend/{item['slug']}"
+        items.append(item)
+
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "items": items,
+    }
 
 
 @app.get("/api/buzzing-now/yahoo-status")
