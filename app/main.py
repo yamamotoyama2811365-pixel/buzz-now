@@ -40,7 +40,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.16.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.17.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3107,13 +3107,20 @@ def _metric_from_text(label: str, plain: str) -> int:
 
 
 def _extract_yahoo_tweet_candidates(html_text: str, keyword: str):
-    """Find public Yahoo realtime tweet-detail/X status identifiers.
-    This does not call X API.
+    """Find ONLY keyword-relevant X posts from Yahoo realtime public HTML.
+
+    V35.16 could accidentally pick Yahoo's page-wide "人気ポスト" cards that
+    were unrelated to the searched keyword. V35.17 applies a strict local
+    relevance gate before a tweet can become a quote candidate.
+
+    No X API is used.
     """
     from html import unescape
 
     raw = unescape(html_text or "")
     found = {}
+    keyword_norm = normalize_match_key(keyword)
+
     patterns = [
         r'/realtime/search/tweet/([0-9]{8,25})',
         r'https?://(?:www\.)?(?:x\.com|twitter\.com)/[^/"\'<>\s]+/status/([0-9]{8,25})',
@@ -3126,29 +3133,62 @@ def _extract_yahoo_tweet_candidates(html_text: str, keyword: str):
             if tweet_id in found:
                 continue
 
-            left = max(0, m.start() - 2400)
-            right = min(len(raw), m.end() + 2400)
+            # Keep the window local to the candidate card. The previous
+            # implementation used a wide context and could absorb unrelated
+            # page-wide popular posts.
+            left = max(0, m.start() - 1800)
+            right = min(len(raw), m.end() + 1800)
             context_html = raw[left:right]
+
+            # If slicing started in the middle of an HTML/SVG tag, discard that
+            # broken leading fragment so SVG path data cannot leak into snippets.
+            first_gt = context_html.find(">")
+            first_lt = context_html.find("<")
+            if first_gt >= 0 and (first_lt < 0 or first_gt < first_lt):
+                context_html = context_html[first_gt + 1:]
+
             plain = _strip_html_text(context_html)
+            plain_norm = normalize_match_key(plain)
 
-            likes = _metric_from_text("いいね数", plain)
-            reposts = max(
-                _metric_from_text("リポスト数", plain),
-                _metric_from_text("リツイート数", plain),
-            )
-            replies = _metric_from_text("返信数", plain)
+            # CRITICAL: a quote candidate MUST contain the searched keyword in
+            # its own local card/context. Page-wide popular posts are ignored.
+            if not keyword_norm or keyword_norm not in plain_norm:
+                continue
 
-            # A free, Yahoo-derived engagement proxy. We deliberately do not
-            # pretend this is X impressions.
-            engagement_score = likes + reposts * 2 + replies
-
+            # Locate the keyword in human-readable text for a clean snippet.
             keyword_pos = plain.find(keyword)
-            if keyword_pos >= 0:
-                s = max(0, keyword_pos - 180)
-                e = min(len(plain), keyword_pos + len(keyword) + 420)
-                snippet = plain[s:e]
-            else:
-                snippet = plain[:600]
+            if keyword_pos < 0:
+                keyword_pos = plain.casefold().find(str(keyword).casefold())
+            if keyword_pos < 0:
+                # Normalized match succeeded but exact text may differ slightly.
+                # Keep a compact local sample rather than a page-wide block.
+                keyword_pos = min(len(plain) // 2, 500)
+
+            s = max(0, keyword_pos - 220)
+            e = min(len(plain), keyword_pos + len(keyword) + 520)
+            focused = plain[s:e]
+
+            # Metrics must also come from the keyword-local segment first.
+            likes = _metric_from_text("いいね数", focused)
+            reposts = max(
+                _metric_from_text("リポスト数", focused),
+                _metric_from_text("リツイート数", focused),
+            )
+            replies = _metric_from_text("返信数", focused)
+
+            # If Yahoo renders the metric just outside the focused segment,
+            # allow the local card context as a fallback, but never the full page.
+            if likes == 0:
+                likes = _metric_from_text("いいね数", plain)
+            if reposts == 0:
+                reposts = max(
+                    _metric_from_text("リポスト数", plain),
+                    _metric_from_text("リツイート数", plain),
+                )
+            if replies == 0:
+                replies = _metric_from_text("返信数", plain)
+
+            engagement_score = likes + reposts * 2 + replies
 
             found[tweet_id] = {
                 "tweet_id": tweet_id,
@@ -3157,7 +3197,8 @@ def _extract_yahoo_tweet_candidates(html_text: str, keyword: str):
                 "reposts": reposts,
                 "replies": replies,
                 "engagement_score": engagement_score,
-                "snippet": snippet[:700],
+                "keyword_relevant": True,
+                "snippet": focused[:700],
             }
 
     items = list(found.values())
@@ -3272,7 +3313,7 @@ def yahoo_buzz_quote_preview(limit: int = 5):
                     detail_url,
                     row["why_now"] or "",
                 ),
-                "ready_for_quote_test": bool(best and best.get("tweet_id")),
+                "ready_for_quote_test": bool(best and best.get("tweet_id") and best.get("keyword_relevant")),
             })
 
     return {
