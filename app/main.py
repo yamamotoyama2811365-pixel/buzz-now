@@ -34,13 +34,15 @@ YAHOO_BUZZ_RANK_MAX = max(YAHOO_BUZZ_RANK_MIN, int(os.getenv("YAHOO_BUZZ_RANK_MA
 YAHOO_BUZZ_FALLBACK_COUNT = max(1, min(int(os.getenv("YAHOO_BUZZ_FALLBACK_COUNT", "10")), 30))
 YAHOO_BUZZ_PROMOTE_LIMIT = max(1, min(int(os.getenv("YAHOO_BUZZ_PROMOTE_LIMIT", "5")), 10))
 YAHOO_QUOTE_SCAN_LIMIT = max(1, min(int(os.getenv("YAHOO_QUOTE_SCAN_LIMIT", "8")), 20))
+YAHOO_QUOTE_MIN_LIKES = max(0, int(os.getenv("YAHOO_QUOTE_MIN_LIKES", "300")))
+YAHOO_QUOTE_MIN_REPOSTS = max(0, int(os.getenv("YAHOO_QUOTE_MIN_REPOSTS", "50")))
 
 
 SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.17.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.18.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3209,9 +3211,126 @@ def _extract_yahoo_tweet_candidates(html_text: str, keyword: str):
     return items
 
 
+
+def _extract_yahoo_popular_keyword_posts(html_text: str, keyword: str):
+    """Extract keyword-relevant posts specifically from Yahoo's 「人気ポスト」 section.
+
+    This is the source we actually want for quote-posting. It avoids selecting
+    ordinary latest-search results with 0 likes just because they contain the keyword.
+    No X API is used.
+    """
+    from html import unescape
+
+    raw = unescape(html_text or "")
+    keyword_norm = normalize_match_key(keyword)
+    if not keyword_norm:
+        return []
+
+    section = ""
+    # Pick a 人気ポスト occurrence that is followed by tweet detail links / metrics.
+    for m in re.finditer("人気ポスト", raw):
+        candidate = raw[m.start(): min(len(raw), m.start() + 180000)]
+        if "/realtime/search/tweet/" in candidate and ("いいね数" in candidate or "リポスト数" in candidate):
+            section = candidate
+            break
+
+    if not section:
+        return []
+
+    # Stop before unrelated site sections when possible.
+    stop_positions = []
+    for stop_word in ("電車遅延", "トレンド", "急上昇ワード"):
+        p = section.find(stop_word, 20)
+        if p > 0:
+            stop_positions.append(p)
+    if stop_positions:
+        section = section[:min(stop_positions)]
+
+    results = {}
+    for m in re.finditer(r'/realtime/search/tweet/([0-9]{8,25})[^"\'<>\s]*', section, flags=re.I):
+        tweet_id = m.group(1)
+        if tweet_id in results:
+            continue
+
+        # Popular cards are compact; keep a local window to avoid neighboring cards.
+        left = max(0, m.start() - 1600)
+        right = min(len(section), m.end() + 2400)
+        card_html = section[left:right]
+
+        first_gt = card_html.find(">")
+        first_lt = card_html.find("<")
+        if first_gt >= 0 and (first_lt < 0 or first_gt < first_lt):
+            card_html = card_html[first_gt + 1:]
+
+        plain = _strip_html_text(card_html)
+        plain_norm = normalize_match_key(plain)
+
+        if keyword_norm not in plain_norm:
+            continue
+
+        keyword_pos = plain.find(keyword)
+        if keyword_pos < 0:
+            keyword_pos = min(len(plain) // 2, 500)
+
+        s = max(0, keyword_pos - 260)
+        e = min(len(plain), keyword_pos + len(keyword) + 720)
+        focused = plain[s:e]
+
+        replies = _metric_from_text("返信数", focused)
+        reposts = max(
+            _metric_from_text("リポスト数", focused),
+            _metric_from_text("リツイート数", focused),
+        )
+        likes = _metric_from_text("いいね数", focused)
+
+        # Fallback to local card if metric labels sit just outside focused text.
+        if replies == 0:
+            replies = _metric_from_text("返信数", plain)
+        if reposts == 0:
+            reposts = max(
+                _metric_from_text("リポスト数", plain),
+                _metric_from_text("リツイート数", plain),
+            )
+        if likes == 0:
+            likes = _metric_from_text("いいね数", plain)
+
+        engagement_score = likes + reposts * 2 + replies
+        strong_enough = (
+            likes >= YAHOO_QUOTE_MIN_LIKES
+            or reposts >= YAHOO_QUOTE_MIN_REPOSTS
+        )
+
+        results[tweet_id] = {
+            "tweet_id": tweet_id,
+            "tweet_url": f"https://x.com/i/web/status/{tweet_id}",
+            "likes": likes,
+            "reposts": reposts,
+            "replies": replies,
+            "engagement_score": engagement_score,
+            "keyword_relevant": True,
+            "source_type": "yahoo_popular_post",
+            "strong_enough": strong_enough,
+            "snippet": focused[:850],
+        }
+
+    items = list(results.values())
+    items.sort(
+        key=lambda x: (
+            bool(x.get("strong_enough")),
+            x["engagement_score"],
+            x["likes"],
+            x["reposts"],
+        ),
+        reverse=True,
+    )
+    return items
+
+
 def _fetch_yahoo_quote_candidates(keyword: str):
-    """Fetch the public Yahoo realtime search page for one keyword and find
-    possible original X posts to quote. No X API is used.
+    """Fetch Yahoo realtime public search page and prefer keyword-relevant
+    「人気ポスト」 candidates. Falls back to ordinary relevant results only
+    for diagnosis; fallback items are not auto-ready for quote testing.
+    No X API is used.
     """
     url = "https://search.yahoo.co.jp/realtime/search"
     headers = {
@@ -3222,18 +3341,37 @@ def _fetch_yahoo_quote_candidates(keyword: str):
         with httpx.Client(timeout=15.0, follow_redirects=True, headers=headers) as client:
             r = client.get(url, params={"p": keyword, "rkf": "1"})
             r.raise_for_status()
-        items = _extract_yahoo_tweet_candidates(r.text, keyword)
+
+        popular_items = _extract_yahoo_popular_keyword_posts(r.text, keyword)
+
+        if popular_items:
+            items = popular_items[:YAHOO_QUOTE_SCAN_LIMIT]
+            source_mode = "popular_posts"
+        else:
+            # Keep this only so we can see whether Yahoo had relevant ordinary posts.
+            # These are NOT considered quote-ready when engagement is unknown/zero.
+            fallback = _extract_yahoo_tweet_candidates(r.text, keyword)
+            for item in fallback:
+                item["source_type"] = "ordinary_search_result"
+                item["strong_enough"] = False
+            items = fallback[:YAHOO_QUOTE_SCAN_LIMIT]
+            source_mode = "ordinary_fallback"
+
         return {
             "ok": True,
             "search_url": str(r.url),
+            "source_mode": source_mode,
+            "popular_count": len(popular_items),
             "count": len(items),
-            "items": items[:YAHOO_QUOTE_SCAN_LIMIT],
+            "items": items,
         }
     except Exception as exc:
         logger.exception("Yahoo quote-candidate fetch failed keyword=%s", keyword)
         return {
             "ok": False,
             "search_url": f"{url}?p={quote(keyword)}&rkf=1",
+            "source_mode": "error",
+            "popular_count": 0,
             "count": 0,
             "items": [],
             "reason": str(exc)[:220],
@@ -3298,7 +3436,13 @@ def yahoo_buzz_quote_preview(limit: int = 5):
             keyword = row["keyword"]
             detail_url = f"{SITE_URL}/trend/{row['slug']}"
             source = _fetch_yahoo_quote_candidates(keyword)
-            best = source["items"][0] if source.get("items") else None
+            eligible = [
+                x for x in (source.get("items") or [])
+                if x.get("source_type") == "yahoo_popular_post"
+                and x.get("keyword_relevant")
+                and x.get("strong_enough")
+            ]
+            best = eligible[0] if eligible else None
 
             previews.append({
                 "keyword": keyword,
@@ -3313,7 +3457,7 @@ def yahoo_buzz_quote_preview(limit: int = 5):
                     detail_url,
                     row["why_now"] or "",
                 ),
-                "ready_for_quote_test": bool(best and best.get("tweet_id") and best.get("keyword_relevant")),
+                "ready_for_quote_test": bool(best and best.get("tweet_id") and best.get("strong_enough")),
             })
 
     return {
