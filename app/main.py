@@ -52,7 +52,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.27.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.28.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3843,6 +3843,7 @@ def yahoo_buzz_quote_preview(limit: int = 5):
 
             keyword = row["keyword"]
             detail_url = f"{SITE_URL}/trend/{row['slug']}"
+            share_url = _social_short_url(row["trend_id"])
             source = _fetch_yahoo_quote_candidates(keyword)
             eligible = [
                 x for x in (source.get("items") or [])
@@ -3854,12 +3855,13 @@ def yahoo_buzz_quote_preview(limit: int = 5):
             ]
             best = eligible[0] if eligible else None
 
-            comment = _sns_detective_comment(keyword, detail_url, best)
+            comment = _sns_detective_comment(keyword, share_url, best)
 
             previews.append({
                 "keyword": keyword,
                 "rank": int(row["rank"]),
                 "detail_url": detail_url,
+                "share_url": share_url,
                 "quality": quality,
                 "source_search": source,
                 "best_quote_target": best,
@@ -4073,7 +4075,8 @@ def yahoo_buzz_quote_test_one(keyword: str = "", confirm: str = ""):
             }
 
         detail_url = f"{SITE_URL}/trend/{row['slug']}"
-        comment = _sns_detective_comment(keyword, detail_url, target)
+        share_url = _social_short_url(row["trend_id"])
+        comment = _sns_detective_comment(keyword, share_url, target)
 
         send_result = _send_to_buffer_quote_post(
             target["tweet_id"],
@@ -4089,6 +4092,7 @@ def yahoo_buzz_quote_test_one(keyword: str = "", confirm: str = ""):
                 "keyword": keyword,
                 "tweet_id": target["tweet_id"],
                 "tweet_url": target["tweet_url"],
+                "share_url": share_url,
                 "comment_template": comment["template"],
                 "comment_text": comment["text"],
                 "buffer_result": send_result,
@@ -4120,6 +4124,7 @@ def yahoo_buzz_quote_test_one(keyword: str = "", confirm: str = ""):
             "keyword": keyword,
             "tweet_id": target["tweet_id"],
             "tweet_url": target["tweet_url"],
+            "share_url": share_url,
             "likes": target.get("likes", 0),
             "reposts": target.get("reposts", 0),
             "comment_template": comment["template"],
@@ -4301,7 +4306,8 @@ def auto_quote_yahoo_buzzing_now():
                 continue
 
             detail_url = f"{SITE_URL}/trend/{row['slug']}"
-            comment = _sns_detective_comment(keyword, detail_url, target)
+            share_url = _social_short_url(row["trend_id"])
+            comment = _sns_detective_comment(keyword, share_url, target)
 
             send_result = _send_to_buffer_quote_post(
                 target["tweet_id"],
@@ -4347,6 +4353,7 @@ def auto_quote_yahoo_buzzing_now():
                 "comment_template": comment["template"],
                 "comment_text": comment["text"],
                 "detail_url": detail_url,
+                "share_url": share_url,
                 "buffer_post_id": str(send_result.get("post_id") or ""),
             })
 
