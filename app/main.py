@@ -42,7 +42,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.22.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.23.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3469,10 +3469,14 @@ def _verify_yahoo_tweet_detail(candidate: dict, keyword: str):
             keyword_norm and exact_norm and keyword_norm in exact_norm
         )
 
-        detail_is_reply = bool(
-            re.search(r"返信先\s*[:：]", exact_text[:500])
-            or re.search(r"in_reply_to=", raw, flags=re.I)
-        )
+        # IMPORTANT:
+        # Do NOT scan the entire Yahoo detail-page HTML for "in_reply_to=".
+        # The page can contain reply/intent links from surrounding UI or related
+        # posts even when the exact tweet itself is not a reply.
+        # Only the exact tweet text/metadata is trusted for reply classification.
+        reply_match = re.search(r"返信先\s*[:：]\s*@?", exact_text[:220])
+        detail_is_reply = bool(reply_match)
+        reply_evidence = reply_match.group(0) if reply_match else ""
 
         meta = _extract_yahoo_card_metrics(raw, tweet_id)
         updated = dict(candidate or {})
@@ -3495,6 +3499,7 @@ def _verify_yahoo_tweet_detail(candidate: dict, keyword: str):
         updated["detail_keyword_relevant"] = detail_keyword_relevant
         updated["detail_is_reply"] = detail_is_reply
         updated["is_reply"] = detail_is_reply
+        updated["reply_evidence"] = reply_evidence
         updated["detail_snippet"] = exact_text[:1000]
 
         if exact_text:
@@ -3648,6 +3653,19 @@ def _sns_detective_comment(keyword: str, detail_url: str, target: dict | None):
     likes = int(target.get("likes") or 0)
     reposts = int(target.get("reposts") or 0)
 
+    if not target.get("tweet_id"):
+        return {
+            "template": "候補なし",
+            "text": (
+                "🕵️ SNS捜査メモ\n"
+                f"「{keyword}」を追跡中。\n"
+                "現時点では引用条件を満たす元投稿を確定できていません。\n"
+                f"背景はこちら → {detail_url}"
+            ),
+            "likes": 0,
+            "reposts": 0,
+        }
+
     if likes >= 30000 or reposts >= 3000:
         template = "速報型"
         text = (
@@ -3673,7 +3691,6 @@ def _sns_detective_comment(keyword: str, detail_url: str, target: dict | None):
             f"🔎 {detail_url}"
         )
 
-    # Keep a safety margin for X text limits.
     if len(text) > 250:
         text = text[:247].rstrip() + "…"
 
