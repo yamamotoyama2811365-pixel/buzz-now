@@ -52,7 +52,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.24.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.26.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2393,6 +2393,50 @@ def _generate_ai_social_image(row) -> tuple[bytes, str, str]:
     raise RuntimeError("OpenAI image response had neither b64_json nor url")
 
 
+def _ensure_social_safe_card(c, row, ts: str):
+    """Use a BUZZ NOW-owned data card instead of an AI context image when confidence is low."""
+    existing = c.execute(
+        "SELECT trend_id,mime_type,created_at FROM social_images WHERE trend_id=?",
+        (row["id"],),
+    ).fetchone()
+    if existing:
+        return {
+            "ok": True,
+            "cached": True,
+            "image_url": _social_image_url(row["id"]),
+            "mode": "safe_data_card",
+        }
+
+    image_bytes = _build_social_card_png(row)
+    image_b64 = base64.b64encode(image_bytes).decode("ascii")
+
+    c.execute("""
+        INSERT INTO social_images(
+            trend_id,image_b64,mime_type,model,prompt,created_at
+        ) VALUES(?,?,?,?,?,?)
+        ON CONFLICT(trend_id) DO UPDATE SET
+            image_b64=excluded.image_b64,
+            mime_type=excluded.mime_type,
+            model=excluded.model,
+            prompt=excluded.prompt,
+            created_at=excluded.created_at
+    """, (
+        row["id"],
+        image_b64,
+        "image/png",
+        "buzz-now-safe-data-card",
+        "Low-confidence trend signal card. No factual event depiction.",
+        ts,
+    ))
+
+    return {
+        "ok": True,
+        "cached": False,
+        "image_url": _social_image_url(row["id"]),
+        "mode": "safe_data_card",
+    }
+
+
 def _ensure_social_ai_image(c, row, ts: str):
     """Generate once and persist in PostgreSQL so Buffer can fetch a stable HTTPS URL."""
     existing = c.execute(
@@ -2557,9 +2601,24 @@ def _build_social_post_text(row) -> str:
     keyword = str(row["keyword"]).strip()
     pre = int(round(float(row["pre_buzz_score"] or 0)))
     traffic = int(round(float(row["traffic_potential"] or 0)))
+    confidence = int(round(float(row["confidence_score"] or 0))) if "confidence_score" in row.keys() else 0
+    first_source = str(row["first_source"] or "").strip() if "first_source" in row.keys() else ""
+    detail_url = _social_short_url(row["id"])
+
+    # Low-confidence ranking topics are allowed to post, but ONLY as signal reports.
+    # Example: 「こめお 食中毒」 must not be turned into a factual allegation.
+    if confidence < SOCIAL_MIN_CONFIDENCE:
+        source_line = f"{first_source}で" if first_source else "公開データ上で"
+        return (
+            "🚨 BUZZNOW SNS捜査官｜検索シグナル急上昇\n"
+            f"いま「{keyword}」という検索ワードが上昇中。\n"
+            f"{source_line}動きを検知。現時点では関連情報を確認中です。\n"
+            f"Pre-Buzz：{pre} / Traffic：{traffic} / Confidence：{confidence}\n"
+            f"追跡ページ → {detail_url}"
+        )
+
     status = str(row["status"] or "急上昇")
     status_plain = re.sub(r"^[^ぁ-んァ-ヶ一-龠A-Za-z0-9]+\s*", "", status).strip() or "急上昇"
-    detail_url = _social_short_url(row["id"])
     reason = _social_reason_from_row(row, keyword)
     return (
         f"🚨 BUZZNOW SNS捜査官｜{status_plain}を検知\n"
@@ -2571,13 +2630,34 @@ def _build_social_post_text(row) -> str:
 
 
 def _social_candidate_rows(c, limit: int = 20):
+    """Normal BUZZ NOW X candidates aligned with the visible TOP ranking.
+
+    The public ranking UI uses /api/traffic-ranking and sorts by:
+      traffic_potential DESC -> confidence DESC -> pageviews DESC.
+
+    V35.24 used a different hidden candidate pool, so topics such as
+    那須川天心 / 織田裕二 could post even when they were not visible in TOP,
+    while visible TOP items with Confidence=30 were silently excluded.
+
+    V35.26 fixes that mismatch:
+      - candidate order matches the visible TOP ranking
+      - Pre-Buzz / Traffic remain signal gates
+      - low-confidence topics are allowed only in cautious "signal detected" mode
+      - no factual causal claim is made when confidence is low
+    """
     limit = max(1, min(int(limit), 100))
     return c.execute("""
         SELECT
             t.id,t.keyword,t.slug,t.category,t.pre_buzz_score,t.buzz_score,t.acceleration,
             t.status,t.why_now,t.updated_at,
+            COALESCE(tt.impressions,0) AS impressions,
+            COALESCE(tt.clicks,0) AS clicks,
+            COALESCE(tt.pageviews,0) AS pageviews,
             COALESCE(tt.traffic_potential,0) AS traffic_potential,
             COALESCE(cf.confidence_score,0) AS confidence_score,
+            COALESCE(cf.source_count,0) AS source_count,
+            COALESCE(cf.confidence_label,'デモ/未確認') AS confidence_label,
+            COALESCE(ps.first_source,'') AS first_source,
             (
                 SELECT s.title
                 FROM sources s
@@ -2592,18 +2672,16 @@ def _social_candidate_rows(c, limit: int = 20):
         FROM trends t
         LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
         LEFT JOIN confidence_state cf ON cf.trend_id=t.id
-        WHERE t.is_indexable=1
-          AND t.pre_buzz_score>=?
+        LEFT JOIN propagation_state ps ON ps.trend_id=t.id
+        WHERE t.pre_buzz_score>=?
           AND COALESCE(tt.traffic_potential,0)>=?
-          AND COALESCE(cf.confidence_score,0)>=?
           AND t.status NOT LIKE '%%下降%%'
         ORDER BY
-          t.pre_buzz_score DESC,
           COALESCE(tt.traffic_potential,0) DESC,
           COALESCE(cf.confidence_score,0) DESC,
-          t.updated_at DESC
+          COALESCE(tt.pageviews,0) DESC
         LIMIT ?
-    """, (SOCIAL_MIN_PREBUZZ, SOCIAL_MIN_TRAFFIC, SOCIAL_MIN_CONFIDENCE, limit)).fetchall()
+    """, (SOCIAL_MIN_PREBUZZ, SOCIAL_MIN_TRAFFIC, limit)).fetchall()
 
 
 def _social_post_allowed(c, row, now_dt):
@@ -2651,7 +2729,11 @@ def auto_post_social(c, ts: str):
         "skipped": [],
         "errors": [],
     }
-    if not SOCIAL_AUTO_ENABLED or not MAKE_WEBHOOK_URL:
+    if not SOCIAL_AUTO_ENABLED:
+        result["reason"] = "SOCIAL_AUTO_ENABLED=false"
+        return result
+    if not BUFFER_API_KEY or not BUFFER_CHANNEL_ID:
+        result["reason"] = "buffer_not_configured"
         return result
 
     now_dt = _parse_iso_datetime(ts) or datetime.now(timezone.utc)
@@ -2672,9 +2754,13 @@ def auto_post_social(c, ts: str):
         # If image generation is disabled or fails, posting safely falls back to text+link.
         image_result = {"ok": False, "reason": "not_attempted"}
         try:
-            image_result = _ensure_social_ai_image(c, row, ts)
+            confidence = float(row["confidence_score"] or 0)
+            if confidence < SOCIAL_MIN_CONFIDENCE:
+                image_result = _ensure_social_safe_card(c, row, ts)
+            else:
+                image_result = _ensure_social_ai_image(c, row, ts)
         except Exception as image_exc:
-            logger.exception("V30.5 AI social image failed for %s", row["keyword"])
+            logger.exception("V35.26 social image failed for %s", row["keyword"])
             image_result = {"ok": False, "reason": str(image_exc)[:300]}
 
         payload = {
@@ -4895,6 +4981,58 @@ def social_test_send():
 def social_send_test_post():
     """POST alias for the same temporary Make.com connection test."""
     return social_test_send()
+
+
+@app.get("/api/social/why-not")
+def social_why_not(limit: int = 10):
+    limit = max(1, min(int(limit), 30))
+    now_dt = datetime.now(timezone.utc)
+
+    with db() as c:
+        rows = _social_candidate_rows(c, limit=limit)
+        items = []
+        for rank, row in enumerate(rows, start=1):
+            allowed, cooldown_reason = _social_post_allowed(c, row, now_dt)
+            confidence = float(row["confidence_score"] or 0)
+            mode = "confirmed_reason" if confidence >= SOCIAL_MIN_CONFIDENCE else "cautious_signal_only"
+
+            items.append({
+                "rank": rank,
+                "keyword": row["keyword"],
+                "pre_buzz_score": round(float(row["pre_buzz_score"] or 0), 1),
+                "traffic_potential": round(float(row["traffic_potential"] or 0), 1),
+                "confidence_score": round(confidence, 1),
+                "confidence_label": row["confidence_label"],
+                "pageviews": int(row["pageviews"] or 0),
+                "first_source": row["first_source"],
+                "post_mode": mode,
+                "post_now_ok": bool(allowed),
+                "blocked_by": "" if allowed else cooldown_reason,
+            })
+
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "ranking_alignment": "same default order as visible TOP: traffic -> confidence -> pageviews",
+        "low_confidence_policy": "post signal only; do not assert the event as fact",
+        "daily_cap": SOCIAL_DAILY_CAP,
+        "global_cooldown_minutes": SOCIAL_GLOBAL_COOLDOWN_MINUTES,
+        "items": items,
+    }
+
+
+@app.get("/api/social/run-now")
+def social_run_now():
+    """REAL normal BUZZ NOW X run. Existing caps/cooldowns still apply."""
+    ts = now_iso()
+    with db() as c:
+        result = auto_post_social(c, ts)
+        c.commit()
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "result": result,
+    }
 
 
 @app.get("/api/social/status")
