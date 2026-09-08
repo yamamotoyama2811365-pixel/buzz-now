@@ -39,7 +39,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.14.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.15.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2852,15 +2852,64 @@ def _yahoo_rank_signal_score(rank: int) -> float:
     return round(max(52.0, min(98.0, 98.0 - (rank - 1) * 0.52)), 1)
 
 
+
+def _buzzing_now_quality(c, trend_id: int):
+    """Strict gate for Buzzing Now article/X use.
+    A current social trend needs at least one independently collected article
+    with a parseable publication time within 7 days.
+    """
+    rows = c.execute("""
+      SELECT publisher,title,url,published_at,source_label
+      FROM sources
+      WHERE trend_id=?
+      ORDER BY id DESC
+      LIMIT 20
+    """, (trend_id,)).fetchall()
+
+    now_dt = datetime.now(timezone.utc)
+    fresh_72h = []
+    fresh_7d = []
+    publishers = set()
+
+    for r in rows:
+        published = _parse_news_datetime(r["published_at"])
+        if not published:
+            continue
+        age_h = max(0.0, (now_dt - published).total_seconds() / 3600.0)
+        if age_h <= 168:
+            fresh_7d.append(dict(r))
+            publishers.add(str(r["publisher"] or "").strip())
+        if age_h <= 72:
+            fresh_72h.append(dict(r))
+
+    qualified = len(fresh_7d) >= 1
+    if not qualified:
+        reason = "fresh_independent_source_missing"
+    elif fresh_72h:
+        reason = "fresh_72h_source_confirmed"
+    else:
+        reason = "fresh_7d_source_confirmed"
+
+    return {
+        "qualified": qualified,
+        "reason": reason,
+        "fresh_72h_count": len(fresh_72h),
+        "fresh_7d_count": len(fresh_7d),
+        "publisher_count": len([p for p in publishers if p]),
+        "example_titles": [x["title"] for x in fresh_7d[:3]],
+    }
+
+
 def promote_yahoo_buzz_candidates(limit: int = None):
-    """Turn active Yahoo Buzzing Now candidates into BUZZ NOW trend pages
-    and enrich them from independent news/RSS sources. Never posts to X.
+    """Turn Yahoo candidates into BUZZ NOW pages only when current independent
+    reporting supports the topic. Social-only phrases stay as candidates for the
+    later quote-post/original-post pipeline.
     """
     limit = YAHOO_BUZZ_PROMOTE_LIMIT if limit is None else max(1, min(int(limit), 10))
     ts = now_iso()
 
     promoted = []
-    skipped = []
+    held = []
     errors = []
 
     with db() as c:
@@ -2882,8 +2931,6 @@ def promote_yahoo_buzz_candidates(limit: int = None):
             try:
                 score = _yahoo_rank_signal_score(rank)
 
-                # Reuse the existing trend pipeline. This gives the item a normal
-                # BUZZ NOW detail page/slug and keeps all existing SEO/detail logic.
                 upsert_real_trend(
                     c,
                     keyword,
@@ -2897,10 +2944,38 @@ def promote_yahoo_buzz_candidates(limit: int = None):
 
                 trend = _find_trend_row(c, keyword)
                 if not trend:
-                    skipped.append({"keyword": keyword, "rank": rank, "reason": "trend_not_created"})
+                    held.append({"keyword": keyword, "rank": rank, "reason": "trend_not_created"})
                     continue
 
-                # Mark this surface explicitly as already-buzzing content.
+                # Force a current independent-source check for Buzzing Now.
+                news_count = _enrich_keyword_news(c, keyword, ts, force=True, include_gdelt=False)
+                trend = _find_trend_row(c, keyword)
+                quality = _buzzing_now_quality(c, trend["id"])
+
+                if not quality["qualified"]:
+                    c.execute("""
+                      UPDATE trends
+                      SET status='⚡ ソーシャル急上昇',
+                          summary=?,
+                          updated_at=?
+                      WHERE id=?
+                    """, (
+                        f"{keyword}はYahoo!リアルタイム検索で上昇中です。"
+                        "現在は独立した最新報道による十分な裏取りが取れていないため、"
+                        "BUZZ NOWでは「バズり中」記事・X引用投稿の対象外として監視を継続します。",
+                        ts,
+                        trend["id"],
+                    ))
+                    held.append({
+                        "keyword": keyword,
+                        "rank": rank,
+                        "signal_score": score,
+                        "reason": quality["reason"],
+                        "fresh_72h_count": quality["fresh_72h_count"],
+                        "fresh_7d_count": quality["fresh_7d_count"],
+                    })
+                    continue
+
                 c.execute("""
                   UPDATE trends
                   SET status='🔥 バズり中',
@@ -2908,25 +2983,23 @@ def promote_yahoo_buzz_candidates(limit: int = None):
                       updated_at=?
                   WHERE id=?
                 """, (
-                    f"{keyword}はYahoo!リアルタイム検索で上昇を確認した「バズり中」トピックです。"
-                    "BUZZ NOWでは関連する公開情報を確認し、なぜ今注目されているかを整理します。",
+                    f"{keyword}はYahoo!リアルタイム検索で上昇し、"
+                    "独立した最新の公開情報も確認できた「バズり中」トピックです。"
+                    "BUZZ NOWでは、なぜ今注目されているのかを整理します。",
                     ts,
                     trend["id"],
                 ))
-
-                # Independent-source enrichment: do not make Yahoo/X chatter itself
-                # the factual basis of the article.
-                news_count = _enrich_keyword_news(c, keyword, ts, include_gdelt=False)
 
                 trend2 = _find_trend_row(c, keyword)
                 promoted.append({
                     "keyword": keyword,
                     "rank": rank,
                     "signal_score": score,
-                    "slug": trend2["slug"] if trend2 else trend["slug"],
-                    "detail_url": f"{SITE_URL}/trend/{trend2['slug'] if trend2 else trend['slug']}",
+                    "slug": trend2["slug"],
+                    "detail_url": f"{SITE_URL}/trend/{trend2['slug']}",
                     "news_sources_added": int(news_count or 0),
-                    "why_now": (trend2["why_now"] if trend2 else "") or "",
+                    "quality": quality,
+                    "why_now": trend2["why_now"] or "",
                 })
 
             except Exception as exc:
@@ -2944,8 +3017,9 @@ def promote_yahoo_buzz_candidates(limit: int = None):
         "version": APP_VERSION,
         "posted_to_x": False,
         "promoted_count": len(promoted),
+        "held_count": len(held),
         "promoted": promoted,
-        "skipped": skipped,
+        "held": held,
         "errors": errors,
     }
 
@@ -2958,7 +3032,7 @@ def yahoo_buzz_promote_preview(limit: int = YAHOO_BUZZ_PROMOTE_LIMIT):
 
 @app.get("/api/buzzing-now/articles")
 def yahoo_buzz_articles(limit: int = 20):
-    """Return currently published Buzzing Now trend pages for a future homepage section."""
+    """Only return current Buzzing Now pages that pass the strict fresh-source gate."""
     limit = max(1, min(int(limit), 100))
     with db() as c:
         rows = c.execute("""
@@ -2966,6 +3040,7 @@ def yahoo_buzz_articles(limit: int = 20):
             y.keyword,
             y.rank,
             y.last_seen_at,
+            t.id AS trend_id,
             t.slug,
             t.status,
             t.summary,
@@ -2977,15 +3052,21 @@ def yahoo_buzz_articles(limit: int = 20):
           FROM yahoo_buzz_candidates y
           JOIN trends t ON t.keyword=y.keyword
           WHERE y.active=1
+            AND t.status='🔥 バズり中'
           ORDER BY y.rank ASC
           LIMIT ?
         """, (limit,)).fetchall()
 
-    items = []
-    for r in rows:
-        item = dict(r)
-        item["detail_url"] = f"{SITE_URL}/trend/{item['slug']}"
-        items.append(item)
+        items = []
+        for r in rows:
+            quality = _buzzing_now_quality(c, r["trend_id"])
+            if not quality["qualified"]:
+                continue
+            item = dict(r)
+            item.pop("trend_id", None)
+            item["quality"] = quality
+            item["detail_url"] = f"{SITE_URL}/trend/{item['slug']}"
+            items.append(item)
 
     return {
         "ok": True,
