@@ -42,7 +42,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.20.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.21.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3238,6 +3238,8 @@ def _extract_yahoo_tweet_candidates(html_text: str, keyword: str):
                 or reposts >= YAHOO_QUOTE_MIN_REPOSTS
             )
 
+            is_reply = bool(re.search(r"(?:^|\\s)返信先[:：]", focused[:260]))
+
             found[tweet_id] = {
                 "tweet_id": tweet_id,
                 "tweet_url": f"https://x.com/i/web/status/{tweet_id}",
@@ -3250,6 +3252,7 @@ def _extract_yahoo_tweet_candidates(html_text: str, keyword: str):
                 "metric_verified": bool(meta.get("verified")),
                 "source_type": "yahoo_keyword_search",
                 "strong_enough": strong_enough,
+                "is_reply": is_reply,
                 "snippet": focused[:850],
             }
 
@@ -3356,6 +3359,8 @@ def _extract_yahoo_popular_keyword_posts(html_text: str, keyword: str):
             or reposts >= YAHOO_QUOTE_MIN_REPOSTS
         )
 
+        is_reply = bool(re.search(r"(?:^|\\s)返信先[:：]", focused[:260]))
+
         results[tweet_id] = {
             "tweet_id": tweet_id,
             "tweet_url": f"https://x.com/i/web/status/{tweet_id}",
@@ -3366,6 +3371,7 @@ def _extract_yahoo_popular_keyword_posts(html_text: str, keyword: str):
             "keyword_relevant": True,
             "source_type": "yahoo_popular_post",
             "strong_enough": strong_enough,
+            "is_reply": is_reply,
             "snippet": focused[:850],
         }
 
@@ -3546,6 +3552,7 @@ def yahoo_buzz_quote_preview(limit: int = 5):
                 x for x in (source.get("items") or [])
                 if x.get("keyword_relevant")
                 and x.get("strong_enough")
+                and not x.get("is_reply")
                 and (
                     x.get("source_type") == "yahoo_popular_post"
                     or (
@@ -3567,7 +3574,7 @@ def yahoo_buzz_quote_preview(limit: int = 5):
                 "best_quote_target": best,
                 "comment_template": comment["template"],
                 "comment_preview": comment["text"],
-                "ready_for_quote_test": bool(best and best.get("tweet_id") and best.get("strong_enough")),
+                "ready_for_quote_test": bool(best and best.get("tweet_id") and best.get("strong_enough") and not best.get("is_reply")),
             })
 
     return {
@@ -3742,6 +3749,7 @@ def yahoo_buzz_quote_test_one(keyword: str = "", confirm: str = ""):
             x for x in (source.get("items") or [])
             if x.get("keyword_relevant")
             and x.get("strong_enough")
+            and not x.get("is_reply")
             and (
                 x.get("source_type") == "yahoo_popular_post"
                 or (
