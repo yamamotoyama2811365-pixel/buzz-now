@@ -52,7 +52,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.26.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.27.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2629,23 +2629,9 @@ def _build_social_post_text(row) -> str:
     )
 
 
-def _social_candidate_rows(c, limit: int = 20):
-    """Normal BUZZ NOW X candidates aligned with the visible TOP ranking.
-
-    The public ranking UI uses /api/traffic-ranking and sorts by:
-      traffic_potential DESC -> confidence DESC -> pageviews DESC.
-
-    V35.24 used a different hidden candidate pool, so topics such as
-    那須川天心 / 織田裕二 could post even when they were not visible in TOP,
-    while visible TOP items with Confidence=30 were silently excluded.
-
-    V35.26 fixes that mismatch:
-      - candidate order matches the visible TOP ranking
-      - Pre-Buzz / Traffic remain signal gates
-      - low-confidence topics are allowed only in cautious "signal detected" mode
-      - no factual causal claim is made when confidence is low
-    """
-    limit = max(1, min(int(limit), 100))
+def _visible_top_rows(c, limit: int = 10):
+    """Return the exact same ordering used by /api/traffic-ranking and the visible TOP list."""
+    limit = max(1, min(int(limit), 50))
     return c.execute("""
         SELECT
             t.id,t.keyword,t.slug,t.category,t.pre_buzz_score,t.buzz_score,t.acceleration,
@@ -2673,15 +2659,39 @@ def _social_candidate_rows(c, limit: int = 20):
         LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
         LEFT JOIN confidence_state cf ON cf.trend_id=t.id
         LEFT JOIN propagation_state ps ON ps.trend_id=t.id
-        WHERE t.pre_buzz_score>=?
-          AND COALESCE(tt.traffic_potential,0)>=?
-          AND t.status NOT LIKE '%%下降%%'
         ORDER BY
           COALESCE(tt.traffic_potential,0) DESC,
           COALESCE(cf.confidence_score,0) DESC,
           COALESCE(tt.pageviews,0) DESC
         LIMIT ?
-    """, (SOCIAL_MIN_PREBUZZ, SOCIAL_MIN_TRAFFIC, limit)).fetchall()
+    """, (limit,)).fetchall()
+
+
+def _social_candidate_rows(c, limit: int = 10):
+    """Choose normal X candidates ONLY from the current visible TOP10.
+
+    Critical V35.27 fix:
+    V35.26 applied eligibility filters BEFORE LIMIT, so when some visible TOP10
+    rows were ineligible, lower-ranked topics could slide upward into the social
+    candidate list. That is how a topic outside the user's visible TOP10 could post.
+
+    Now:
+      1) freeze the exact visible TOP10 first
+      2) apply posting eligibility inside that frozen TOP10
+      3) never reach rank 11+
+    """
+    visible = _visible_top_rows(c, limit=min(max(1, int(limit)), 10))
+    candidates = []
+
+    for row in visible:
+        pre_ok = float(row["pre_buzz_score"] or 0) >= SOCIAL_MIN_PREBUZZ
+        traffic_ok = float(row["traffic_potential"] or 0) >= SOCIAL_MIN_TRAFFIC
+        status_ok = "下降" not in str(row["status"] or "")
+
+        if pre_ok and traffic_ok and status_ok:
+            candidates.append(row)
+
+    return candidates
 
 
 def _social_post_allowed(c, row, now_dt):
@@ -2737,7 +2747,7 @@ def auto_post_social(c, ts: str):
         return result
 
     now_dt = _parse_iso_datetime(ts) or datetime.now(timezone.utc)
-    candidates = _social_candidate_rows(c, limit=30)
+    candidates = _social_candidate_rows(c, limit=10)
 
     for row in candidates:
         if result["sent"] >= max(0, SOCIAL_MAX_POSTS_PER_RUN):
@@ -4985,19 +4995,40 @@ def social_send_test_post():
 
 @app.get("/api/social/why-not")
 def social_why_not(limit: int = 10):
-    limit = max(1, min(int(limit), 30))
+    """Show the actual visible TOP order and posting eligibility without rank compression."""
+    limit = max(1, min(int(limit), 10))
     now_dt = datetime.now(timezone.utc)
 
     with db() as c:
-        rows = _social_candidate_rows(c, limit=limit)
+        rows = _visible_top_rows(c, limit=limit)
         items = []
-        for rank, row in enumerate(rows, start=1):
+
+        for visible_rank, row in enumerate(rows, start=1):
+            pre_ok = float(row["pre_buzz_score"] or 0) >= SOCIAL_MIN_PREBUZZ
+            traffic_ok = float(row["traffic_potential"] or 0) >= SOCIAL_MIN_TRAFFIC
+            status_ok = "下降" not in str(row["status"] or "")
+            signal_ok = pre_ok and traffic_ok and status_ok
+
             allowed, cooldown_reason = _social_post_allowed(c, row, now_dt)
             confidence = float(row["confidence_score"] or 0)
-            mode = "confirmed_reason" if confidence >= SOCIAL_MIN_CONFIDENCE else "cautious_signal_only"
+            mode = (
+                "confirmed_reason"
+                if confidence >= SOCIAL_MIN_CONFIDENCE
+                else "cautious_signal_only"
+            )
+
+            blocked = []
+            if not pre_ok:
+                blocked.append(f"Pre-Buzz<{SOCIAL_MIN_PREBUZZ:g}")
+            if not traffic_ok:
+                blocked.append(f"Traffic<{SOCIAL_MIN_TRAFFIC:g}")
+            if not status_ok:
+                blocked.append("下降中")
+            if signal_ok and not allowed:
+                blocked.append(cooldown_reason)
 
             items.append({
-                "rank": rank,
+                "visible_rank": visible_rank,
                 "keyword": row["keyword"],
                 "pre_buzz_score": round(float(row["pre_buzz_score"] or 0), 1),
                 "traffic_potential": round(float(row["traffic_potential"] or 0), 1),
@@ -5006,14 +5037,17 @@ def social_why_not(limit: int = 10):
                 "pageviews": int(row["pageviews"] or 0),
                 "first_source": row["first_source"],
                 "post_mode": mode,
-                "post_now_ok": bool(allowed),
-                "blocked_by": "" if allowed else cooldown_reason,
+                "inside_visible_top10": True,
+                "signal_gate_ok": signal_ok,
+                "post_now_ok": bool(signal_ok and allowed),
+                "blocked_by": blocked,
             })
 
     return {
         "ok": True,
         "version": APP_VERSION,
-        "ranking_alignment": "same default order as visible TOP: traffic -> confidence -> pageviews",
+        "ranking_alignment": "exact visible TOP first; posting filters applied only after TOP10 is frozen",
+        "social_candidate_scope": "visible TOP10 only; rank 11+ can never auto-post",
         "low_confidence_policy": "post signal only; do not assert the event as fact",
         "daily_cap": SOCIAL_DAILY_CAP,
         "global_cooldown_minutes": SOCIAL_GLOBAL_COOLDOWN_MINUTES,
