@@ -25,11 +25,20 @@ from PIL import Image, ImageDraw, ImageFont
 BASE = Path(__file__).resolve().parent.parent
 DB_PATH = BASE / "buzznow.db"
 SITE_URL = os.getenv("SITE_URL", "http://localhost:8000").rstrip("/")
+
+# Yahoo!リアルタイム検索を使う無料の Buzzing Now 候補収集。
+# 公開HTMLで取得できる順位だけを使い、X APIは使わない。
+YAHOO_BUZZ_ENABLED = os.getenv("YAHOO_BUZZ_ENABLED", "true").lower() == "true"
+YAHOO_BUZZ_RANK_MIN = max(1, int(os.getenv("YAHOO_BUZZ_RANK_MIN", "30")))
+YAHOO_BUZZ_RANK_MAX = max(YAHOO_BUZZ_RANK_MIN, int(os.getenv("YAHOO_BUZZ_RANK_MAX", "80")))
+YAHOO_BUZZ_FALLBACK_COUNT = max(1, min(int(os.getenv("YAHOO_BUZZ_FALLBACK_COUNT", "10")), 30))
+
+
 SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.12.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.13.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2710,11 +2719,165 @@ def auto_post_social(c, ts: str):
     return result
 
 
+
+def _ensure_yahoo_buzz_tables(c):
+    c.execute("""
+      CREATE TABLE IF NOT EXISTS yahoo_buzz_candidates(
+        id BIGSERIAL PRIMARY KEY,
+        keyword TEXT NOT NULL,
+        rank INTEGER NOT NULL,
+        source_url TEXT NOT NULL,
+        detected_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        UNIQUE(keyword, rank)
+      )
+    """)
+
+
+def _strip_html_text(value: str) -> str:
+    from html import unescape
+    value = re.sub(r"<script\b[^>]*>.*?</script>", " ", value, flags=re.I | re.S)
+    value = re.sub(r"<style\b[^>]*>.*?</style>", " ", value, flags=re.I | re.S)
+    value = re.sub(r"<[^>]+>", " ", value)
+    value = unescape(value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _parse_yahoo_realtime_ranks(html_text: str):
+    """Parse rank/keyword pairs from Yahoo!リアルタイム検索 public HTML.
+    No private endpoint/API is used.
+    """
+    pairs = []
+    seen = set()
+
+    # Anchor text on the public page commonly renders as "1キーワード", "11 キーワード".
+    for m in re.finditer(r"<a\b[^>]*>(.*?)</a>", html_text, flags=re.I | re.S):
+        label = _strip_html_text(m.group(1))
+        mm = re.match(r"^\s*(\d{1,3})\s*(.+?)\s*$", label)
+        if not mm:
+            continue
+        rank = int(mm.group(1))
+        keyword = mm.group(2).strip()
+        if rank < 1 or rank > 100 or not keyword or len(keyword) > 80:
+            continue
+        key = (rank, keyword)
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append({"rank": rank, "keyword": keyword})
+
+    pairs.sort(key=lambda x: x["rank"])
+    return pairs
+
+
+def collect_yahoo_realtime_buzz(c, ts: str):
+    """Free Buzzing Now discovery from Yahoo!リアルタイム検索 public page.
+    Stores candidates only. It never posts to X.
+    """
+    if not YAHOO_BUZZ_ENABLED:
+        return {"ok": False, "reason": "YAHOO_BUZZ_ENABLED=false", "count": 0}
+
+    url = "https://search.yahoo.co.jp/realtime"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; BUZZ-NOW/1.0; +https://buzz-now.onrender.com)",
+        "Accept-Language": "ja,en;q=0.8",
+    }
+
+    try:
+        with httpx.Client(timeout=15.0, follow_redirects=True, headers=headers) as client:
+            r = client.get(url)
+            r.raise_for_status()
+            ranks = _parse_yahoo_realtime_ranks(r.text)
+
+        if not ranks:
+            return {"ok": False, "reason": "No ranks found in public HTML", "count": 0}
+
+        # Ideal window is 30-80 as requested. Public HTML may expose fewer ranks.
+        selected = [
+            x for x in ranks
+            if YAHOO_BUZZ_RANK_MIN <= x["rank"] <= YAHOO_BUZZ_RANK_MAX
+        ]
+
+        # Safe fallback: use the lowest-ranked portion that is actually visible publicly.
+        # Example: if only 1-20 are exposed, use 11-20 rather than the already-saturated top 10.
+        fallback_used = False
+        if not selected:
+            fallback_used = True
+            selected = ranks[-YAHOO_BUZZ_FALLBACK_COUNT:]
+
+        _ensure_yahoo_buzz_tables(c)
+        c.execute("UPDATE yahoo_buzz_candidates SET active=0")
+
+        stored = 0
+        for item in selected:
+            kw = item["keyword"]
+            rank = int(item["rank"])
+            c.execute("""
+              INSERT INTO yahoo_buzz_candidates(
+                keyword,rank,source_url,detected_at,last_seen_at,active
+              ) VALUES(?,?,?,?,?,1)
+              ON CONFLICT(keyword,rank) DO UPDATE SET
+                source_url=excluded.source_url,
+                last_seen_at=excluded.last_seen_at,
+                active=1
+            """, (kw, rank, url, ts, ts))
+            stored += 1
+
+        return {
+            "ok": True,
+            "count": stored,
+            "public_rank_count": len(ranks),
+            "min_public_rank": min(x["rank"] for x in ranks),
+            "max_public_rank": max(x["rank"] for x in ranks),
+            "requested_window": [YAHOO_BUZZ_RANK_MIN, YAHOO_BUZZ_RANK_MAX],
+            "fallback_used": fallback_used,
+            "selected": selected,
+        }
+
+    except Exception as exc:
+        logger.exception("Yahoo realtime Buzzing Now collection failed")
+        return {"ok": False, "reason": str(exc)[:220], "count": 0}
+
+
+@app.get("/api/buzzing-now/yahoo-status")
+def yahoo_buzz_status():
+    with db() as c:
+        _ensure_yahoo_buzz_tables(c)
+        rows = c.execute("""
+          SELECT keyword,rank,source_url,detected_at,last_seen_at,active
+          FROM yahoo_buzz_candidates
+          WHERE active=1
+          ORDER BY rank ASC
+          LIMIT 50
+        """).fetchall()
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "source": "Yahoo!リアルタイム検索 public HTML",
+        "x_api_used": False,
+        "items": [dict(r) for r in rows],
+    }
+
+
+@app.get("/api/buzzing-now/yahoo-collect-preview")
+def yahoo_buzz_collect_preview():
+    """Manual test. Reads Yahoo public page and stores candidates; never posts to X."""
+    ts = now_iso()
+    with db() as c:
+        result = collect_yahoo_realtime_buzz(c, ts)
+        c.commit()
+    result["posted_to_x"] = False
+    result["x_api_used"] = False
+    return result
+
+
 def collect_real_sources():
     ts=now_iso()
     with db() as c:
         g=collect_google_trends(c,ts)
         w=collect_wikimedia(c,ts)
+        yahoo_buzz=collect_yahoo_realtime_buzz(c,ts)
         news_count=collect_fast_news(c,ts,limit=6)
         refresh_confidence(c,ts)
         refresh_propagation(c,ts)
@@ -2735,6 +2898,7 @@ def collect_real_sources():
     return {
         "google_trends": g,
         "wikimedia": w,
+        "yahoo_buzzing_now": yahoo_buzz,
         "news": news_count,
         "total": g + w,
         "social": social_result,
