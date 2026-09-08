@@ -33,13 +33,14 @@ YAHOO_BUZZ_RANK_MIN = max(1, int(os.getenv("YAHOO_BUZZ_RANK_MIN", "30")))
 YAHOO_BUZZ_RANK_MAX = max(YAHOO_BUZZ_RANK_MIN, int(os.getenv("YAHOO_BUZZ_RANK_MAX", "80")))
 YAHOO_BUZZ_FALLBACK_COUNT = max(1, min(int(os.getenv("YAHOO_BUZZ_FALLBACK_COUNT", "10")), 30))
 YAHOO_BUZZ_PROMOTE_LIMIT = max(1, min(int(os.getenv("YAHOO_BUZZ_PROMOTE_LIMIT", "5")), 10))
+YAHOO_QUOTE_SCAN_LIMIT = max(1, min(int(os.getenv("YAHOO_QUOTE_SCAN_LIMIT", "8")), 20))
 
 
 SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.15.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.16.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3073,6 +3074,288 @@ def yahoo_buzz_articles(limit: int = 20):
         "version": APP_VERSION,
         "items": items,
     }
+
+
+
+def _parse_compact_count(value: str) -> int:
+    value = str(value or "").strip().replace(",", "")
+    if not value:
+        return 0
+    multiplier = 1
+    if value.endswith("万"):
+        multiplier = 10000
+        value = value[:-1]
+    elif value.endswith("千"):
+        multiplier = 1000
+        value = value[:-1]
+    try:
+        return int(float(value) * multiplier)
+    except Exception:
+        return 0
+
+
+def _metric_from_text(label: str, plain: str) -> int:
+    patterns = [
+        rf"{re.escape(label)}\s*([0-9][0-9,\.]*[万千]?)",
+        rf"{re.escape(label)}[^0-9]{{0,12}}([0-9][0-9,\.]*[万千]?)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, plain, flags=re.I)
+        if m:
+            return _parse_compact_count(m.group(1))
+    return 0
+
+
+def _extract_yahoo_tweet_candidates(html_text: str, keyword: str):
+    """Find public Yahoo realtime tweet-detail/X status identifiers.
+    This does not call X API.
+    """
+    from html import unescape
+
+    raw = unescape(html_text or "")
+    found = {}
+    patterns = [
+        r'/realtime/search/tweet/([0-9]{8,25})',
+        r'https?://(?:www\.)?(?:x\.com|twitter\.com)/[^/"\'<>\s]+/status/([0-9]{8,25})',
+        r'https?%3A%2F%2F(?:www\.)?(?:x\.com|twitter\.com)%2F[^%/"\'<>\s]+%2Fstatus%2F([0-9]{8,25})',
+    ]
+
+    for pattern in patterns:
+        for m in re.finditer(pattern, raw, flags=re.I):
+            tweet_id = m.group(1)
+            if tweet_id in found:
+                continue
+
+            left = max(0, m.start() - 2400)
+            right = min(len(raw), m.end() + 2400)
+            context_html = raw[left:right]
+            plain = _strip_html_text(context_html)
+
+            likes = _metric_from_text("いいね数", plain)
+            reposts = max(
+                _metric_from_text("リポスト数", plain),
+                _metric_from_text("リツイート数", plain),
+            )
+            replies = _metric_from_text("返信数", plain)
+
+            # A free, Yahoo-derived engagement proxy. We deliberately do not
+            # pretend this is X impressions.
+            engagement_score = likes + reposts * 2 + replies
+
+            keyword_pos = plain.find(keyword)
+            if keyword_pos >= 0:
+                s = max(0, keyword_pos - 180)
+                e = min(len(plain), keyword_pos + len(keyword) + 420)
+                snippet = plain[s:e]
+            else:
+                snippet = plain[:600]
+
+            found[tweet_id] = {
+                "tweet_id": tweet_id,
+                "tweet_url": f"https://x.com/i/web/status/{tweet_id}",
+                "likes": likes,
+                "reposts": reposts,
+                "replies": replies,
+                "engagement_score": engagement_score,
+                "snippet": snippet[:700],
+            }
+
+    items = list(found.values())
+    items.sort(
+        key=lambda x: (x["engagement_score"], x["likes"], x["reposts"]),
+        reverse=True,
+    )
+    return items
+
+
+def _fetch_yahoo_quote_candidates(keyword: str):
+    """Fetch the public Yahoo realtime search page for one keyword and find
+    possible original X posts to quote. No X API is used.
+    """
+    url = "https://search.yahoo.co.jp/realtime/search"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; BUZZ-NOW/1.0; +https://buzz-now.onrender.com)",
+        "Accept-Language": "ja,en;q=0.8",
+    }
+    try:
+        with httpx.Client(timeout=15.0, follow_redirects=True, headers=headers) as client:
+            r = client.get(url, params={"p": keyword, "rkf": "1"})
+            r.raise_for_status()
+        items = _extract_yahoo_tweet_candidates(r.text, keyword)
+        return {
+            "ok": True,
+            "search_url": str(r.url),
+            "count": len(items),
+            "items": items[:YAHOO_QUOTE_SCAN_LIMIT],
+        }
+    except Exception as exc:
+        logger.exception("Yahoo quote-candidate fetch failed keyword=%s", keyword)
+        return {
+            "ok": False,
+            "search_url": f"{url}?p={quote(keyword)}&rkf=1",
+            "count": 0,
+            "items": [],
+            "reason": str(exc)[:220],
+        }
+
+
+def _sns_detective_preview_text(keyword: str, rank: int, detail_url: str, why_now: str = ""):
+    """Safe deterministic preview. AI personality comes after source-post
+    extraction is confirmed.
+    """
+    hook = ""
+    if why_now:
+        m = re.search(r'「([^」]{6,70})」', why_now)
+        if m:
+            hook = m.group(1).strip()
+
+    lines = [
+        "🚨 BUZZNOW SNS捜査官｜バズり中",
+        f"これ、かなり伸びてる。「{keyword}」がリアルタイムで上昇中。",
+    ]
+    if hook:
+        lines.append(f"背景を追うと「{hook[:55]}」周辺の動きも確認。")
+    else:
+        lines.append("関連する公開情報も追跡中。")
+    lines.append(f"なぜ今話題？ → {detail_url}")
+    return "\n".join(lines)
+
+
+@app.get("/api/buzzing-now/quote-preview")
+def yahoo_buzz_quote_preview(limit: int = 5):
+    """SAFE preview only.
+    - reads Yahoo public pages
+    - finds possible original X post IDs
+    - creates the SNS detective text preview
+    - NEVER sends anything to Buffer or X
+    """
+    limit = max(1, min(int(limit), 10))
+    previews = []
+
+    with db() as c:
+        rows = c.execute("""
+          SELECT
+            y.keyword,
+            y.rank,
+            t.id AS trend_id,
+            t.slug,
+            t.status,
+            t.why_now
+          FROM yahoo_buzz_candidates y
+          JOIN trends t ON t.keyword=y.keyword
+          WHERE y.active=1
+            AND t.status='🔥 バズり中'
+          ORDER BY y.rank ASC
+          LIMIT ?
+        """, (limit,)).fetchall()
+
+        for row in rows:
+            quality = _buzzing_now_quality(c, row["trend_id"])
+            if not quality["qualified"]:
+                continue
+
+            keyword = row["keyword"]
+            detail_url = f"{SITE_URL}/trend/{row['slug']}"
+            source = _fetch_yahoo_quote_candidates(keyword)
+            best = source["items"][0] if source.get("items") else None
+
+            previews.append({
+                "keyword": keyword,
+                "rank": int(row["rank"]),
+                "detail_url": detail_url,
+                "quality": quality,
+                "source_search": source,
+                "best_quote_target": best,
+                "comment_preview": _sns_detective_preview_text(
+                    keyword,
+                    int(row["rank"]),
+                    detail_url,
+                    row["why_now"] or "",
+                ),
+                "ready_for_quote_test": bool(best and best.get("tweet_id")),
+            })
+
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "posted_to_x": False,
+        "x_api_used": False,
+        "buffer_used": False,
+        "items": previews,
+    }
+
+
+def _send_to_buffer_quote_post(tweet_id: str, comment: str, mode: str = "shareNow") -> dict:
+    """Buffer supports X retweet metadata with an optional comment.
+    Kept unused by automatic jobs in V35.16; a later manual test endpoint can
+    call this once quote-target quality is confirmed.
+    """
+    if not BUFFER_API_KEY:
+        return {"ok": False, "reason": "BUFFER_API_KEY is not configured"}
+    if not BUFFER_CHANNEL_ID:
+        return {"ok": False, "reason": "BUFFER_CHANNEL_ID is not configured"}
+    tweet_id = re.sub(r"\D", "", str(tweet_id or ""))
+    if not tweet_id:
+        return {"ok": False, "reason": "tweet_id missing"}
+
+    query = (
+        "mutation CreateBuzzNowQuotePost { createPost(input: { "
+        + "text: " + _graphql_string(comment) + " "
+        + "channelId: " + _graphql_string(BUFFER_CHANNEL_ID) + " "
+        + "schedulingType: automatic "
+        + "mode: " + mode + " "
+        + "metadata: { twitter: { retweet: { "
+        + "id: " + _graphql_string(tweet_id) + " "
+        + "comment: " + _graphql_string(comment) + " "
+        + "} } } "
+        + "}) { "
+        + "... on PostActionSuccess { post { id text status } } "
+        + "... on MutationError { message } "
+        + "} }"
+    )
+
+    try:
+        response = httpx.post(
+            BUFFER_API_URL,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {BUFFER_API_KEY}",
+            },
+            json={"query": query},
+            timeout=45.0,
+        )
+        try:
+            body = response.json()
+        except Exception:
+            body = {"raw": response.text[:1000]}
+
+        if response.status_code != 200:
+            return {
+                "ok": False,
+                "status_code": response.status_code,
+                "reason": "Buffer HTTP error",
+                "response": body,
+            }
+        if isinstance(body, dict) and body.get("errors"):
+            return {
+                "ok": False,
+                "status_code": 200,
+                "reason": "Buffer GraphQL error",
+                "response": body,
+            }
+
+        result = ((body or {}).get("data") or {}).get("createPost")
+        if not result:
+            return {"ok": False, "reason": "Buffer returned no createPost result", "response": body}
+        if result.get("message"):
+            return {"ok": False, "reason": result["message"], "response": body}
+        post = result.get("post")
+        if post and post.get("id"):
+            return {"ok": True, "post_id": post["id"], "post": post}
+        return {"ok": False, "reason": "Buffer did not return a post id", "response": body}
+    except Exception as exc:
+        logger.exception("Direct Buffer quote post failed")
+        return {"ok": False, "reason": str(exc)[:500]}
 
 
 @app.get("/api/buzzing-now/yahoo-status")
