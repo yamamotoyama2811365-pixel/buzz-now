@@ -32,17 +32,27 @@ YAHOO_BUZZ_ENABLED = os.getenv("YAHOO_BUZZ_ENABLED", "true").lower() == "true"
 YAHOO_BUZZ_RANK_MIN = max(1, int(os.getenv("YAHOO_BUZZ_RANK_MIN", "30")))
 YAHOO_BUZZ_RANK_MAX = max(YAHOO_BUZZ_RANK_MIN, int(os.getenv("YAHOO_BUZZ_RANK_MAX", "80")))
 YAHOO_BUZZ_FALLBACK_COUNT = max(1, min(int(os.getenv("YAHOO_BUZZ_FALLBACK_COUNT", "10")), 30))
-YAHOO_BUZZ_PROMOTE_LIMIT = max(1, min(int(os.getenv("YAHOO_BUZZ_PROMOTE_LIMIT", "5")), 10))
+YAHOO_BUZZ_PROMOTE_LIMIT = max(1, min(int(os.getenv("YAHOO_BUZZ_PROMOTE_LIMIT", "10")), 10))
 YAHOO_QUOTE_SCAN_LIMIT = max(1, min(int(os.getenv("YAHOO_QUOTE_SCAN_LIMIT", "8")), 20))
 YAHOO_QUOTE_MIN_LIKES = max(0, int(os.getenv("YAHOO_QUOTE_MIN_LIKES", "300")))
 YAHOO_QUOTE_MIN_REPOSTS = max(0, int(os.getenv("YAHOO_QUOTE_MIN_REPOSTS", "50")))
+# V35.24: production automatic Buzzing Now quote-posting via Buffer -> X.
+# Enabled by default because this build is the production implementation requested.
+# Safety rails keep volume low and prevent duplicate / rapid-fire posts.
+YAHOO_QUOTE_AUTO_ENABLED = os.getenv("YAHOO_QUOTE_AUTO_ENABLED", "true").lower() == "true"
+YAHOO_QUOTE_AUTO_MIN_LIKES = max(0, int(os.getenv("YAHOO_QUOTE_AUTO_MIN_LIKES", "1000")))
+YAHOO_QUOTE_AUTO_MIN_REPOSTS = max(0, int(os.getenv("YAHOO_QUOTE_AUTO_MIN_REPOSTS", "150")))
+YAHOO_QUOTE_DAILY_CAP = max(1, int(os.getenv("YAHOO_QUOTE_DAILY_CAP", "6")))
+YAHOO_QUOTE_GLOBAL_COOLDOWN_MINUTES = max(0, int(os.getenv("YAHOO_QUOTE_GLOBAL_COOLDOWN_MINUTES", "60")))
+YAHOO_QUOTE_KEYWORD_COOLDOWN_HOURS = max(0, int(os.getenv("YAHOO_QUOTE_KEYWORD_COOLDOWN_HOURS", "24")))
+YAHOO_QUOTE_MAX_PER_RUN = max(1, min(int(os.getenv("YAHOO_QUOTE_MAX_PER_RUN", "1")), 3))
 
 
 SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.23.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.24.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -4022,6 +4032,273 @@ def yahoo_buzz_quote_test_one(keyword: str = "", confirm: str = ""):
         }
 
 
+def _parse_iso_dt(value: str):
+    value = str(value or "").strip()
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def auto_quote_yahoo_buzzing_now():
+    """Production Buzzing Now -> X quote-post automation.
+
+    Flow:
+      Yahoo realtime candidate
+      -> BUZZ NOW article / fresh-source gate
+      -> exact Yahoo tweet-detail verification
+      -> strong non-reply X post
+      -> SNS detective comment
+      -> Buffer quote-post to X
+
+    Safety:
+      - max N per run (default 1)
+      - daily cap (default 6)
+      - global cooldown (default 60 min)
+      - keyword cooldown (default 24 h)
+      - exact tweet-detail verification required
+      - no replies
+      - duplicate tweet_id blocked forever
+      - stronger engagement threshold for automatic posting
+    """
+    result = {
+        "ok": True,
+        "version": APP_VERSION,
+        "enabled": YAHOO_QUOTE_AUTO_ENABLED,
+        "posted_count": 0,
+        "posts": [],
+        "skipped": [],
+        "errors": [],
+    }
+
+    if not YAHOO_QUOTE_AUTO_ENABLED:
+        result["reason"] = "YAHOO_QUOTE_AUTO_ENABLED=false"
+        return result
+
+    if not BUFFER_API_KEY or not BUFFER_CHANNEL_ID:
+        result["ok"] = False
+        result["reason"] = "Buffer is not configured"
+        return result
+
+    now_dt = datetime.now(timezone.utc)
+    today_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    global_cutoff = now_dt - timedelta(minutes=YAHOO_QUOTE_GLOBAL_COOLDOWN_MINUTES)
+    keyword_cutoff = now_dt - timedelta(hours=YAHOO_QUOTE_KEYWORD_COOLDOWN_HOURS)
+
+    with db() as c:
+        _ensure_yahoo_buzz_tables(c)
+        _ensure_quote_post_log(c)
+
+        # Daily cap.
+        sent_today = c.execute(
+            "SELECT COUNT(*) AS n FROM buzzing_quote_posts WHERE sent_at >= ? AND status='sent'",
+            (today_start.isoformat(),),
+        ).fetchone()
+        daily_count = int(sent_today["n"] if sent_today else 0)
+        if daily_count >= YAHOO_QUOTE_DAILY_CAP:
+            result["reason"] = "daily_cap_reached"
+            result["daily_count"] = daily_count
+            return result
+
+        # Global quote-post cooldown.
+        latest = c.execute("""
+          SELECT sent_at
+          FROM buzzing_quote_posts
+          WHERE status='sent'
+          ORDER BY sent_at DESC
+          LIMIT 1
+        """).fetchone()
+        if latest:
+            latest_dt = _parse_iso_dt(latest["sent_at"])
+            if latest_dt and latest_dt > global_cutoff:
+                result["reason"] = "global_cooldown"
+                result["latest_sent_at"] = latest["sent_at"]
+                return result
+
+        rows = c.execute("""
+          SELECT
+            y.keyword,
+            y.rank,
+            t.id AS trend_id,
+            t.slug,
+            t.status
+          FROM yahoo_buzz_candidates y
+          JOIN trends t ON t.keyword=y.keyword
+          WHERE y.active=1
+            AND t.status='🔥 バズり中'
+          ORDER BY y.rank ASC
+          LIMIT 10
+        """).fetchall()
+
+        for row in rows:
+            if result["posted_count"] >= YAHOO_QUOTE_MAX_PER_RUN:
+                break
+
+            keyword = str(row["keyword"] or "").strip()
+            if not keyword:
+                continue
+
+            # Same keyword cannot be pushed repeatedly every ranking refresh.
+            recent_keyword = c.execute("""
+              SELECT sent_at,tweet_id
+              FROM buzzing_quote_posts
+              WHERE keyword=? AND status='sent' AND sent_at >= ?
+              ORDER BY sent_at DESC
+              LIMIT 1
+            """, (keyword, keyword_cutoff.isoformat())).fetchone()
+            if recent_keyword:
+                result["skipped"].append({
+                    "keyword": keyword,
+                    "reason": "keyword_cooldown",
+                    "previous_tweet_id": recent_keyword["tweet_id"],
+                    "previous_sent_at": recent_keyword["sent_at"],
+                })
+                continue
+
+            quality = _buzzing_now_quality(c, row["trend_id"])
+            if not quality["qualified"]:
+                result["skipped"].append({
+                    "keyword": keyword,
+                    "reason": "fresh_source_quality_gate_failed",
+                })
+                continue
+
+            source = _fetch_yahoo_quote_candidates(keyword)
+            eligible = [
+                x for x in (source.get("items") or [])
+                if x.get("detail_verified")
+                and x.get("detail_keyword_relevant")
+                and x.get("metric_verified")
+                and x.get("strong_enough")
+                and not x.get("detail_is_reply")
+                and (
+                    int(x.get("likes") or 0) >= YAHOO_QUOTE_AUTO_MIN_LIKES
+                    or int(x.get("reposts") or 0) >= YAHOO_QUOTE_AUTO_MIN_REPOSTS
+                )
+            ]
+
+            if not eligible:
+                result["skipped"].append({
+                    "keyword": keyword,
+                    "reason": "no_auto_grade_quote_target",
+                    "source_mode": source.get("source_mode"),
+                })
+                continue
+
+            target = eligible[0]
+
+            duplicate = c.execute(
+                "SELECT id,buffer_post_id,sent_at FROM buzzing_quote_posts WHERE tweet_id=? LIMIT 1",
+                (target["tweet_id"],),
+            ).fetchone()
+            if duplicate:
+                result["skipped"].append({
+                    "keyword": keyword,
+                    "reason": "duplicate_tweet_blocked",
+                    "tweet_id": target["tweet_id"],
+                })
+                continue
+
+            detail_url = f"{SITE_URL}/trend/{row['slug']}"
+            comment = _sns_detective_comment(keyword, detail_url, target)
+
+            send_result = _send_to_buffer_quote_post(
+                target["tweet_id"],
+                comment["text"],
+                mode="shareNow",
+            )
+
+            if not send_result.get("ok"):
+                result["errors"].append({
+                    "keyword": keyword,
+                    "tweet_id": target["tweet_id"],
+                    "reason": "buffer_quote_post_failed",
+                    "buffer_result": send_result,
+                })
+                continue
+
+            ts = now_iso()
+            c.execute("""
+              INSERT INTO buzzing_quote_posts(
+                keyword,tweet_id,tweet_url,comment_text,comment_template,
+                buffer_post_id,status,sent_at
+              ) VALUES(?,?,?,?,?,?,?,?)
+            """, (
+                keyword,
+                target["tweet_id"],
+                target["tweet_url"],
+                comment["text"],
+                comment["template"],
+                str(send_result.get("post_id") or ""),
+                "sent",
+                ts,
+            ))
+            c.commit()
+
+            result["posted_count"] += 1
+            result["posts"].append({
+                "keyword": keyword,
+                "rank": int(row["rank"]),
+                "tweet_id": target["tweet_id"],
+                "tweet_url": target["tweet_url"],
+                "likes": int(target.get("likes") or 0),
+                "reposts": int(target.get("reposts") or 0),
+                "comment_template": comment["template"],
+                "comment_text": comment["text"],
+                "detail_url": detail_url,
+                "buffer_post_id": str(send_result.get("post_id") or ""),
+            })
+
+    if result["posted_count"] == 0 and not result.get("reason"):
+        result["reason"] = "no_qualified_post_this_run"
+
+    return result
+
+
+@app.get("/api/buzzing-now/auto-status")
+def yahoo_buzz_auto_status():
+    with db() as c:
+        _ensure_quote_post_log(c)
+        rows = c.execute("""
+          SELECT keyword,tweet_id,tweet_url,comment_template,buffer_post_id,status,sent_at
+          FROM buzzing_quote_posts
+          ORDER BY sent_at DESC
+          LIMIT 20
+        """).fetchall()
+
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "auto_enabled": YAHOO_QUOTE_AUTO_ENABLED,
+        "daily_cap": YAHOO_QUOTE_DAILY_CAP,
+        "global_cooldown_minutes": YAHOO_QUOTE_GLOBAL_COOLDOWN_MINUTES,
+        "keyword_cooldown_hours": YAHOO_QUOTE_KEYWORD_COOLDOWN_HOURS,
+        "auto_min_likes": YAHOO_QUOTE_AUTO_MIN_LIKES,
+        "auto_min_reposts": YAHOO_QUOTE_AUTO_MIN_REPOSTS,
+        "recent_posts": [dict(r) for r in rows],
+    }
+
+
+@app.get("/api/buzzing-now/run-now")
+def yahoo_buzz_run_now():
+    """Manual production run using the same flow as the scheduled collector.
+    This CAN post one qualifying quote to X.
+    """
+    promote = promote_yahoo_buzz_candidates(limit=YAHOO_BUZZ_PROMOTE_LIMIT)
+    quote_result = auto_quote_yahoo_buzzing_now()
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "promote": promote,
+        "quote": quote_result,
+    }
+
+
 @app.get("/api/buzzing-now/yahoo-status")
 def yahoo_buzz_status():
     with db() as c:
@@ -4055,32 +4332,41 @@ def yahoo_buzz_collect_preview():
 
 
 def collect_real_sources():
-    ts=now_iso()
+    ts = now_iso()
+
+    # Phase 1: normal data refresh. Commit first so Yahoo candidates are visible
+    # to the promotion/quote phase even when db() uses a separate connection.
     with db() as c:
-        g=collect_google_trends(c,ts)
-        w=collect_wikimedia(c,ts)
-        yahoo_buzz=collect_yahoo_realtime_buzz(c,ts)
-        news_count=collect_fast_news(c,ts,limit=6)
-        refresh_confidence(c,ts)
-        refresh_propagation(c,ts)
-        refresh_monetization(c,ts)
+        g = collect_google_trends(c, ts)
+        w = collect_wikimedia(c, ts)
+        yahoo_buzz = collect_yahoo_realtime_buzz(c, ts)
+        news_count = collect_fast_news(c, ts, limit=6)
+        refresh_confidence(c, ts)
+        refresh_propagation(c, ts)
+        refresh_monetization(c, ts)
         snapshot_v9_sources(c, ts)
         refresh_v9_velocity(c, ts)
-        # V13: refresh Traffic Potential and today's predicted PV from real signals.
         refresh_real_traffic_forecast(c, ts)
-        # V15: answer-check forecasts against the newly collected state, then
-        # create fresh +3h forecasts. This now runs in REAL_DATA_MODE too.
         evaluate_predictions(c, ts)
         create_predictions(c, ts)
         cautiously_tune_model(c)
-        # V30: after all real-data scores are refreshed, publish at most the
-        # configured number of qualifying topics to Make -> Buffer -> X.
+
+        # Existing Pre-Buzz own-post automation remains unchanged.
         social_result = auto_post_social(c, ts)
         c.commit()
+
+    # Phase 2: Yahoo Buzzing Now automation.
+    # All active candidates are article-checked first, then at most one strong
+    # exact-verified X post is quote-posted through Buffer.
+    yahoo_promote = promote_yahoo_buzz_candidates(limit=YAHOO_BUZZ_PROMOTE_LIMIT)
+    yahoo_quote = auto_quote_yahoo_buzzing_now()
+
     return {
         "google_trends": g,
         "wikimedia": w,
         "yahoo_buzzing_now": yahoo_buzz,
+        "yahoo_promote": yahoo_promote,
+        "yahoo_quote": yahoo_quote,
         "news": news_count,
         "total": g + w,
         "social": social_result,
