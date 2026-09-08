@@ -42,7 +42,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.18.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.19.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3108,13 +3108,57 @@ def _metric_from_text(label: str, plain: str) -> int:
     return 0
 
 
+
+def _extract_yahoo_card_metrics(raw_html: str, tweet_id: str):
+    """Read Yahoo's public click-metadata for a specific tweet card.
+
+    Yahoo embeds fields like:
+      twid:<id>;reply:<n>;retweet:<n>;like:<n>;quote:<n>
+    in data-cl-params. This is much more reliable than scraping visible metric
+    labels because some search-result layouts omit those labels.
+    """
+    from html import unescape
+
+    raw = unescape(raw_html or "")
+    tweet_id = re.sub(r"\D", "", str(tweet_id or ""))
+    if not tweet_id:
+        return {"reply": 0, "retweet": 0, "like": 0, "quote": 0, "verified": False}
+
+    best = {"reply": 0, "retweet": 0, "like": 0, "quote": 0, "verified": False}
+
+    # Search only metadata fragments explicitly bound to this tweet id.
+    for m in re.finditer(rf"twid:{re.escape(tweet_id)};", raw, flags=re.I):
+        frag = raw[m.start(): min(len(raw), m.start() + 1200)]
+
+        def grab(name):
+            mm = re.search(rf"(?:^|;){name}:(\d+)", frag, flags=re.I)
+            return int(mm.group(1)) if mm else 0
+
+        current = {
+            "reply": grab("reply"),
+            "retweet": grab("retweet"),
+            "like": grab("like"),
+            "quote": grab("quote"),
+            "verified": True,
+        }
+
+        # Keep the strongest rendering if the same tweet appears more than once.
+        if (
+            current["like"] + current["retweet"] * 2 + current["reply"] + current["quote"] * 2
+            >
+            best["like"] + best["retweet"] * 2 + best["reply"] + best["quote"] * 2
+        ):
+            best = current
+
+    return best
+
+
 def _extract_yahoo_tweet_candidates(html_text: str, keyword: str):
-    """Find ONLY keyword-relevant X posts from Yahoo realtime public HTML.
+    """Find keyword-relevant X posts from Yahoo realtime public HTML.
 
-    V35.16 could accidentally pick Yahoo's page-wide "人気ポスト" cards that
-    were unrelated to the searched keyword. V35.17 applies a strict local
-    relevance gate before a tweet can become a quote candidate.
-
+    V35.19 reads Yahoo's own public tweet-card metadata (reply/retweet/like/quote)
+    when present, so strong posts can be identified even when visible labels are
+    not rendered in the HTML text.
     No X API is used.
     """
     from html import unescape
@@ -3135,15 +3179,10 @@ def _extract_yahoo_tweet_candidates(html_text: str, keyword: str):
             if tweet_id in found:
                 continue
 
-            # Keep the window local to the candidate card. The previous
-            # implementation used a wide context and could absorb unrelated
-            # page-wide popular posts.
-            left = max(0, m.start() - 1800)
-            right = min(len(raw), m.end() + 1800)
+            left = max(0, m.start() - 2200)
+            right = min(len(raw), m.end() + 3200)
             context_html = raw[left:right]
 
-            # If slicing started in the middle of an HTML/SVG tag, discard that
-            # broken leading fragment so SVG path data cannot leak into snippets.
             first_gt = context_html.find(">")
             first_lt = context_html.find("<")
             if first_gt >= 0 and (first_lt < 0 or first_gt < first_lt):
@@ -3152,45 +3191,52 @@ def _extract_yahoo_tweet_candidates(html_text: str, keyword: str):
             plain = _strip_html_text(context_html)
             plain_norm = normalize_match_key(plain)
 
-            # CRITICAL: a quote candidate MUST contain the searched keyword in
-            # its own local card/context. Page-wide popular posts are ignored.
             if not keyword_norm or keyword_norm not in plain_norm:
                 continue
 
-            # Locate the keyword in human-readable text for a clean snippet.
             keyword_pos = plain.find(keyword)
             if keyword_pos < 0:
                 keyword_pos = plain.casefold().find(str(keyword).casefold())
             if keyword_pos < 0:
-                # Normalized match succeeded but exact text may differ slightly.
-                # Keep a compact local sample rather than a page-wide block.
                 keyword_pos = min(len(plain) // 2, 500)
 
-            s = max(0, keyword_pos - 220)
-            e = min(len(plain), keyword_pos + len(keyword) + 520)
+            s = max(0, keyword_pos - 240)
+            e = min(len(plain), keyword_pos + len(keyword) + 650)
             focused = plain[s:e]
 
-            # Metrics must also come from the keyword-local segment first.
-            likes = _metric_from_text("いいね数", focused)
-            reposts = max(
-                _metric_from_text("リポスト数", focused),
-                _metric_from_text("リツイート数", focused),
-            )
-            replies = _metric_from_text("返信数", focused)
+            # First choice: exact public metadata attached to this tweet card.
+            meta = _extract_yahoo_card_metrics(context_html, tweet_id)
 
-            # If Yahoo renders the metric just outside the focused segment,
-            # allow the local card context as a fallback, but never the full page.
-            if likes == 0:
-                likes = _metric_from_text("いいね数", plain)
-            if reposts == 0:
+            likes = int(meta.get("like") or 0)
+            reposts = int(meta.get("retweet") or 0)
+            replies = int(meta.get("reply") or 0)
+            quotes = int(meta.get("quote") or 0)
+
+            # Fallback for layouts that only render human-visible metric labels.
+            if not meta.get("verified"):
+                likes = _metric_from_text("いいね数", focused)
                 reposts = max(
-                    _metric_from_text("リポスト数", plain),
-                    _metric_from_text("リツイート数", plain),
+                    _metric_from_text("リポスト数", focused),
+                    _metric_from_text("リツイート数", focused),
                 )
-            if replies == 0:
-                replies = _metric_from_text("返信数", plain)
+                replies = _metric_from_text("返信数", focused)
+                quotes = _metric_from_text("引用数", focused)
 
-            engagement_score = likes + reposts * 2 + replies
+                if likes == 0:
+                    likes = _metric_from_text("いいね数", plain)
+                if reposts == 0:
+                    reposts = max(
+                        _metric_from_text("リポスト数", plain),
+                        _metric_from_text("リツイート数", plain),
+                    )
+                if replies == 0:
+                    replies = _metric_from_text("返信数", plain)
+
+            engagement_score = likes + reposts * 2 + replies + quotes * 2
+            strong_enough = (
+                likes >= YAHOO_QUOTE_MIN_LIKES
+                or reposts >= YAHOO_QUOTE_MIN_REPOSTS
+            )
 
             found[tweet_id] = {
                 "tweet_id": tweet_id,
@@ -3198,14 +3244,24 @@ def _extract_yahoo_tweet_candidates(html_text: str, keyword: str):
                 "likes": likes,
                 "reposts": reposts,
                 "replies": replies,
+                "quotes": quotes,
                 "engagement_score": engagement_score,
                 "keyword_relevant": True,
-                "snippet": focused[:700],
+                "metric_verified": bool(meta.get("verified")),
+                "source_type": "yahoo_keyword_search",
+                "strong_enough": strong_enough,
+                "snippet": focused[:850],
             }
 
     items = list(found.values())
     items.sort(
-        key=lambda x: (x["engagement_score"], x["likes"], x["reposts"]),
+        key=lambda x: (
+            bool(x.get("strong_enough")),
+            bool(x.get("metric_verified")),
+            x["engagement_score"],
+            x["likes"],
+            x["reposts"],
+        ),
         reverse=True,
     )
     return items
@@ -3327,9 +3383,13 @@ def _extract_yahoo_popular_keyword_posts(html_text: str, keyword: str):
 
 
 def _fetch_yahoo_quote_candidates(keyword: str):
-    """Fetch Yahoo realtime public search page and prefer keyword-relevant
-    「人気ポスト」 candidates. Falls back to ordinary relevant results only
-    for diagnosis; fallback items are not auto-ready for quote testing.
+    """Fetch Yahoo realtime public search page.
+
+    Priority:
+      1) keyword-relevant posts from a detected 人気ポスト section
+      2) keyword-relevant search cards with Yahoo metadata-verified engagement
+      3) weak ordinary results for diagnosis only
+
     No X API is used.
     """
     url = "https://search.yahoo.co.jp/realtime/search"
@@ -3343,18 +3403,27 @@ def _fetch_yahoo_quote_candidates(keyword: str):
             r.raise_for_status()
 
         popular_items = _extract_yahoo_popular_keyword_posts(r.text, keyword)
+        keyword_items = _extract_yahoo_tweet_candidates(r.text, keyword)
 
-        if popular_items:
+        popular_strong = [
+            x for x in popular_items
+            if x.get("keyword_relevant") and x.get("strong_enough")
+        ]
+        verified_strong = [
+            x for x in keyword_items
+            if x.get("keyword_relevant")
+            and x.get("metric_verified")
+            and x.get("strong_enough")
+        ]
+
+        if popular_strong:
             items = popular_items[:YAHOO_QUOTE_SCAN_LIMIT]
             source_mode = "popular_posts"
+        elif verified_strong:
+            items = keyword_items[:YAHOO_QUOTE_SCAN_LIMIT]
+            source_mode = "keyword_search_metric_verified"
         else:
-            # Keep this only so we can see whether Yahoo had relevant ordinary posts.
-            # These are NOT considered quote-ready when engagement is unknown/zero.
-            fallback = _extract_yahoo_tweet_candidates(r.text, keyword)
-            for item in fallback:
-                item["source_type"] = "ordinary_search_result"
-                item["strong_enough"] = False
-            items = fallback[:YAHOO_QUOTE_SCAN_LIMIT]
+            items = keyword_items[:YAHOO_QUOTE_SCAN_LIMIT]
             source_mode = "ordinary_fallback"
 
         return {
@@ -3362,6 +3431,7 @@ def _fetch_yahoo_quote_candidates(keyword: str):
             "search_url": str(r.url),
             "source_mode": source_mode,
             "popular_count": len(popular_items),
+            "verified_strong_count": len(verified_strong),
             "count": len(items),
             "items": items,
         }
@@ -3372,6 +3442,7 @@ def _fetch_yahoo_quote_candidates(keyword: str):
             "search_url": f"{url}?p={quote(keyword)}&rkf=1",
             "source_mode": "error",
             "popular_count": 0,
+            "verified_strong_count": 0,
             "count": 0,
             "items": [],
             "reason": str(exc)[:220],
@@ -3438,9 +3509,15 @@ def yahoo_buzz_quote_preview(limit: int = 5):
             source = _fetch_yahoo_quote_candidates(keyword)
             eligible = [
                 x for x in (source.get("items") or [])
-                if x.get("source_type") == "yahoo_popular_post"
-                and x.get("keyword_relevant")
+                if x.get("keyword_relevant")
                 and x.get("strong_enough")
+                and (
+                    x.get("source_type") == "yahoo_popular_post"
+                    or (
+                        x.get("source_type") == "yahoo_keyword_search"
+                        and x.get("metric_verified")
+                    )
+                )
             ]
             best = eligible[0] if eligible else None
 
