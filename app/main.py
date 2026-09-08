@@ -42,7 +42,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.21.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.22.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -3238,7 +3238,7 @@ def _extract_yahoo_tweet_candidates(html_text: str, keyword: str):
                 or reposts >= YAHOO_QUOTE_MIN_REPOSTS
             )
 
-            is_reply = bool(re.search(r"(?:^|\\s)返信先[:：]", focused[:260]))
+            is_reply = bool(re.search(r"返信先\s*[:：]", focused[:320]))
 
             found[tweet_id] = {
                 "tweet_id": tweet_id,
@@ -3359,7 +3359,7 @@ def _extract_yahoo_popular_keyword_posts(html_text: str, keyword: str):
             or reposts >= YAHOO_QUOTE_MIN_REPOSTS
         )
 
-        is_reply = bool(re.search(r"(?:^|\\s)返信先[:：]", focused[:260]))
+        is_reply = bool(re.search(r"返信先\s*[:：]", focused[:320]))
 
         results[tweet_id] = {
             "tweet_id": tweet_id,
@@ -3388,21 +3388,155 @@ def _extract_yahoo_popular_keyword_posts(html_text: str, keyword: str):
     return items
 
 
+
+def _meta_content(raw_html: str, keys):
+    """Extract content from matching meta tags regardless of attribute order."""
+    from html import unescape
+    raw = raw_html or ""
+    wanted = {str(x).lower() for x in keys}
+
+    for tag in re.findall(r"<meta\b[^>]*>", raw, flags=re.I):
+        attrs = {}
+        for m in re.finditer(
+            r"([:\w-]+)\s*=\s*(?:\"([^\"]*)\"|'([^']*)')",
+            tag,
+            flags=re.I | re.S,
+        ):
+            attrs[m.group(1).lower()] = unescape(
+                m.group(2) if m.group(2) is not None else m.group(3)
+            )
+
+        tag_key = (
+            attrs.get("property")
+            or attrs.get("name")
+            or attrs.get("itemprop")
+            or ""
+        ).lower()
+
+        if tag_key in wanted and attrs.get("content"):
+            return re.sub(r"\s+", " ", attrs["content"]).strip()
+
+    return ""
+
+
+def _verify_yahoo_tweet_detail(candidate: dict, keyword: str):
+    """Bind candidate ID to Yahoo's exact public tweet-detail page before quoting.
+
+    Search-result HTML can place neighboring tweet text near the same tweet ID.
+    This exact-page verification prevents that neighbor text from becoming a
+    quote target. No X API is used.
+    """
+    tweet_id = re.sub(r"\D", "", str((candidate or {}).get("tweet_id") or ""))
+    if not tweet_id:
+        return {
+            **(candidate or {}),
+            "detail_verified": False,
+            "detail_reason": "tweet_id_missing",
+        }
+
+    url = f"https://search.yahoo.co.jp/realtime/search/tweet/{tweet_id}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; BUZZ-NOW/1.0; +https://buzz-now.onrender.com)",
+        "Accept-Language": "ja,en;q=0.8",
+    }
+
+    try:
+        with httpx.Client(timeout=15.0, follow_redirects=True, headers=headers) as client:
+            r = client.get(url)
+            r.raise_for_status()
+
+        raw = r.text
+        plain = _strip_html_text(raw)
+        keyword_norm = normalize_match_key(keyword)
+
+        exact_text = _meta_content(
+            raw,
+            ("og:description", "twitter:description", "description"),
+        )
+
+        if not exact_text or keyword_norm not in normalize_match_key(exact_text):
+            pos = plain.find(keyword)
+            if pos >= 0:
+                exact_text = plain[
+                    max(0, pos - 320):
+                    min(len(plain), pos + len(keyword) + 850)
+                ]
+
+        exact_text = re.sub(r"\s+", " ", exact_text or "").strip()
+        exact_norm = normalize_match_key(exact_text)
+
+        detail_keyword_relevant = bool(
+            keyword_norm and exact_norm and keyword_norm in exact_norm
+        )
+
+        detail_is_reply = bool(
+            re.search(r"返信先\s*[:：]", exact_text[:500])
+            or re.search(r"in_reply_to=", raw, flags=re.I)
+        )
+
+        meta = _extract_yahoo_card_metrics(raw, tweet_id)
+        updated = dict(candidate or {})
+
+        if meta.get("verified"):
+            updated["likes"] = int(meta.get("like") or updated.get("likes") or 0)
+            updated["reposts"] = int(meta.get("retweet") or updated.get("reposts") or 0)
+            updated["replies"] = int(meta.get("reply") or updated.get("replies") or 0)
+            updated["quotes"] = int(meta.get("quote") or updated.get("quotes") or 0)
+            updated["engagement_score"] = (
+                updated["likes"]
+                + updated["reposts"] * 2
+                + updated["replies"]
+                + updated["quotes"] * 2
+            )
+            updated["metric_verified"] = True
+
+        updated["detail_url"] = str(r.url)
+        updated["detail_verified"] = bool(detail_keyword_relevant and exact_text)
+        updated["detail_keyword_relevant"] = detail_keyword_relevant
+        updated["detail_is_reply"] = detail_is_reply
+        updated["is_reply"] = detail_is_reply
+        updated["detail_snippet"] = exact_text[:1000]
+
+        if exact_text:
+            updated["snippet"] = exact_text[:850]
+
+        updated["strong_enough"] = bool(
+            int(updated.get("likes") or 0) >= YAHOO_QUOTE_MIN_LIKES
+            or int(updated.get("reposts") or 0) >= YAHOO_QUOTE_MIN_REPOSTS
+        )
+
+        updated["detail_reason"] = (
+            "exact_tweet_detail_verified"
+            if updated["detail_verified"]
+            else "exact_tweet_keyword_not_confirmed"
+        )
+        return updated
+
+    except Exception as exc:
+        logger.exception("Yahoo tweet-detail verification failed tweet_id=%s", tweet_id)
+        updated = dict(candidate or {})
+        updated.update({
+            "detail_verified": False,
+            "detail_keyword_relevant": False,
+            "detail_is_reply": True,
+            "is_reply": True,
+            "detail_url": url,
+            "detail_reason": str(exc)[:220],
+        })
+        return updated
+
+
+
 def _fetch_yahoo_quote_candidates(keyword: str):
-    """Fetch Yahoo realtime public search page.
-
-    Priority:
-      1) keyword-relevant posts from a detected 人気ポスト section
-      2) keyword-relevant search cards with Yahoo metadata-verified engagement
-      3) weak ordinary results for diagnosis only
-
-    No X API is used.
+    """Fetch Yahoo realtime public search page, then verify strong candidates
+    against their exact Yahoo tweet-detail page. No X API is used.
     """
     url = "https://search.yahoo.co.jp/realtime/search"
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; BUZZ-NOW/1.0; +https://buzz-now.onrender.com)",
         "Accept-Language": "ja,en;q=0.8",
     }
+
     try:
         with httpx.Client(timeout=15.0, follow_redirects=True, headers=headers) as client:
             r = client.get(url, params={"p": keyword, "rkf": "1"})
@@ -3411,26 +3545,64 @@ def _fetch_yahoo_quote_candidates(keyword: str):
         popular_items = _extract_yahoo_popular_keyword_posts(r.text, keyword)
         keyword_items = _extract_yahoo_tweet_candidates(r.text, keyword)
 
-        popular_strong = [
-            x for x in popular_items
-            if x.get("keyword_relevant") and x.get("strong_enough")
-        ]
+        merged = {}
+        for item in popular_items + keyword_items:
+            tid = item.get("tweet_id")
+            if not tid:
+                continue
+            old = merged.get(tid)
+            if old is None or int(item.get("engagement_score") or 0) > int(old.get("engagement_score") or 0):
+                merged[tid] = item
+
+        discovered = list(merged.values())
+        discovered.sort(
+            key=lambda x: (
+                bool(x.get("strong_enough")),
+                bool(x.get("metric_verified")),
+                int(x.get("engagement_score") or 0),
+            ),
+            reverse=True,
+        )
+
+        verified = []
+        strong_checked = 0
+
+        for item in discovered:
+            if item.get("strong_enough") and item.get("metric_verified") and strong_checked < 3:
+                verified.append(_verify_yahoo_tweet_detail(item, keyword))
+                strong_checked += 1
+            else:
+                weak = dict(item)
+                weak.setdefault("detail_verified", False)
+                weak.setdefault("detail_reason", "not_strong_enough_for_detail_check")
+                verified.append(weak)
+
+        verified.sort(
+            key=lambda x: (
+                bool(x.get("detail_verified")),
+                bool(x.get("strong_enough")),
+                not bool(x.get("detail_is_reply")),
+                int(x.get("engagement_score") or 0),
+            ),
+            reverse=True,
+        )
+
         verified_strong = [
-            x for x in keyword_items
-            if x.get("keyword_relevant")
+            x for x in verified
+            if x.get("detail_verified")
+            and x.get("detail_keyword_relevant")
+            and not x.get("detail_is_reply")
             and x.get("metric_verified")
             and x.get("strong_enough")
         ]
 
-        if popular_strong:
-            items = popular_items[:YAHOO_QUOTE_SCAN_LIMIT]
-            source_mode = "popular_posts"
-        elif verified_strong:
-            items = keyword_items[:YAHOO_QUOTE_SCAN_LIMIT]
-            source_mode = "keyword_search_metric_verified"
-        else:
-            items = keyword_items[:YAHOO_QUOTE_SCAN_LIMIT]
-            source_mode = "ordinary_fallback"
+        source_mode = (
+            "exact_tweet_detail_verified"
+            if verified_strong
+            else "no_exact_quote_target"
+        )
+
+        items = verified[:YAHOO_QUOTE_SCAN_LIMIT]
 
         return {
             "ok": True,
@@ -3441,6 +3613,7 @@ def _fetch_yahoo_quote_candidates(keyword: str):
             "count": len(items),
             "items": items,
         }
+
     except Exception as exc:
         logger.exception("Yahoo quote-candidate fetch failed keyword=%s", keyword)
         return {
@@ -3550,16 +3723,11 @@ def yahoo_buzz_quote_preview(limit: int = 5):
             source = _fetch_yahoo_quote_candidates(keyword)
             eligible = [
                 x for x in (source.get("items") or [])
-                if x.get("keyword_relevant")
+                if x.get("detail_verified")
+                and x.get("detail_keyword_relevant")
+                and x.get("metric_verified")
                 and x.get("strong_enough")
-                and not x.get("is_reply")
-                and (
-                    x.get("source_type") == "yahoo_popular_post"
-                    or (
-                        x.get("source_type") == "yahoo_keyword_search"
-                        and x.get("metric_verified")
-                    )
-                )
+                and not x.get("detail_is_reply")
             ]
             best = eligible[0] if eligible else None
 
@@ -3574,7 +3742,7 @@ def yahoo_buzz_quote_preview(limit: int = 5):
                 "best_quote_target": best,
                 "comment_template": comment["template"],
                 "comment_preview": comment["text"],
-                "ready_for_quote_test": bool(best and best.get("tweet_id") and best.get("strong_enough") and not best.get("is_reply")),
+                "ready_for_quote_test": bool(best and best.get("tweet_id") and best.get("detail_verified") and best.get("strong_enough") and not best.get("detail_is_reply")),
             })
 
     return {
@@ -3747,16 +3915,11 @@ def yahoo_buzz_quote_test_one(keyword: str = "", confirm: str = ""):
         source = _fetch_yahoo_quote_candidates(keyword)
         eligible = [
             x for x in (source.get("items") or [])
-            if x.get("keyword_relevant")
+            if x.get("detail_verified")
+            and x.get("detail_keyword_relevant")
+            and x.get("metric_verified")
             and x.get("strong_enough")
-            and not x.get("is_reply")
-            and (
-                x.get("source_type") == "yahoo_popular_post"
-                or (
-                    x.get("source_type") == "yahoo_keyword_search"
-                    and x.get("metric_verified")
-                )
-            )
+            and not x.get("detail_is_reply")
         ]
 
         if not eligible:
