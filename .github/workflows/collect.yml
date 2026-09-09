@@ -17,4 +17,4 @@ jobs:
     steps:
       - name: Trigger background collection
         run: |
-          curl             --fail             --silent             --show-error             --connect-timeout 10             --max-time 20             "https://buzz-now.onrender.com/api/collect-now-browser"
+          curl             --fail             --silent             --show-error             --connect-timeout 10             --max-time 20             "https://buzz-now-1.onrender.com/api/collect-now-browser"
