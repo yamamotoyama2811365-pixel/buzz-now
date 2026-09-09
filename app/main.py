@@ -63,7 +63,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.38.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.39.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -78,12 +78,13 @@ BUFFER_CHANNEL_ID = os.getenv("BUFFER_CHANNEL_ID", "6a9a680a065799be4686e3d9").s
 BUFFER_API_URL = "https://api.buffer.com"
 SOCIAL_TEST_ENABLED = os.getenv("SOCIAL_TEST_ENABLED", "false").lower() == "true"
 
-# V35.38: Threads via the same Buffer account. The channel id is auto-discovered
-# from the connected Threads profile, so no extra secret/id needs to be copied.
+# V35.39: confirmed Threads channel and single production posting service.
+BUFFER_THREADS_CHANNEL_ID = os.getenv("BUFFER_THREADS_CHANNEL_ID", "6aa172decd8b9c702c382ea4").strip()
+THREADS_SERVICE_ID = os.getenv("THREADS_SERVICE_ID", "srv-dagj4sn40ujc73fe66bg").strip()
 THREADS_AUTO_ENABLED = os.getenv("THREADS_AUTO_ENABLED", "true").lower() == "true"
 THREADS_CHANNEL_HANDLE = os.getenv("THREADS_CHANNEL_HANDLE", "buzz_now_of").strip().lower()
-THREADS_DAILY_CAP = max(1, int(os.getenv("THREADS_DAILY_CAP", "8")))
-THREADS_GLOBAL_COOLDOWN_MINUTES = max(0, int(os.getenv("THREADS_GLOBAL_COOLDOWN_MINUTES", "90")))
+THREADS_DAILY_CAP = max(0, int(os.getenv("THREADS_DAILY_CAP", "5")))
+THREADS_GLOBAL_COOLDOWN_MINUTES = max(1, int(os.getenv("THREADS_GLOBAL_COOLDOWN_MINUTES", "180")))
 THREADS_KEYWORD_COOLDOWN_HOURS = max(0, int(os.getenv("THREADS_KEYWORD_COOLDOWN_HOURS", "72")))
 THREADS_MAX_POSTS_PER_RUN = max(1, min(int(os.getenv("THREADS_MAX_POSTS_PER_RUN", "1")), 3))
 
@@ -2722,13 +2723,38 @@ def _social_candidate_rows(c, limit: int = 20):
     )).fetchall()
 
 
+def _ensure_threads_tables(c):
+    script = """
+        CREATE TABLE IF NOT EXISTS threads_posts(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trend_id INTEGER NOT NULL,
+            keyword TEXT NOT NULL,
+            pre_buzz_score REAL NOT NULL DEFAULT 0,
+            traffic_potential REAL NOT NULL DEFAULT 0,
+            post_text TEXT NOT NULL,
+            buffer_status INTEGER NOT NULL DEFAULT 0,
+            buffer_post_id TEXT NOT NULL DEFAULT '',
+            posted_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_threads_posts_trend_time
+            ON threads_posts(trend_id, posted_at);
+        CREATE INDEX IF NOT EXISTS idx_threads_posts_posted_at
+            ON threads_posts(posted_at);
+
+    """
+    for statement in script.split(';'):
+        if statement.strip():
+            c.execute(statement)
+
+
 def _build_threads_post_text(row) -> str:
     """Threads-specific copy: compact, conversational, and cautious."""
-    keyword = str(row["keyword"]).strip()
+    keyword = str(row["keyword"]).strip()[:80]
     pre = int(round(float(row["pre_buzz_score"] or 0)))
     traffic = int(round(float(row["traffic_potential"] or 0)))
     reason = _social_reason_from_row(row, keyword)
-    detail_url = _social_short_url(row["id"])
+    detail_url = (SOCIAL_PUBLIC_BASE_URL + _social_detail_path(row["slug"])
+                  + "?utm_source=threads&utm_medium=social&utm_campaign=prebuzz")
     return (
         f"いま「{keyword}」の話題シグナルが上昇中。\n"
         f"{reason}\n"
@@ -2740,14 +2766,14 @@ def _build_threads_post_text(row) -> str:
 def _threads_post_allowed(c, row, now_dt):
     daily_cutoff = (now_dt - timedelta(hours=24)).isoformat()
     daily_count = c.execute(
-        "SELECT COUNT(*) AS n FROM threads_posts WHERE buffer_status=1 AND posted_at>=?",
+        "SELECT COUNT(*) AS n FROM threads_posts WHERE posted_at>=?",
         (daily_cutoff,),
     ).fetchone()["n"]
     if int(daily_count or 0) >= THREADS_DAILY_CAP:
         return False, "daily_cap"
 
     last_any = c.execute(
-        "SELECT posted_at FROM threads_posts WHERE buffer_status=1 ORDER BY id DESC LIMIT 1"
+        "SELECT posted_at FROM threads_posts ORDER BY id DESC LIMIT 1"
     ).fetchone()
     if last_any:
         last_dt = _parse_iso_datetime(last_any["posted_at"])
@@ -2755,7 +2781,7 @@ def _threads_post_allowed(c, row, now_dt):
             return False, "global_cooldown"
 
     last_same = c.execute(
-        "SELECT posted_at FROM threads_posts WHERE buffer_status=1 AND trend_id=? ORDER BY id DESC LIMIT 1",
+        "SELECT posted_at FROM threads_posts WHERE trend_id=? ORDER BY id DESC LIMIT 1",
         (row["id"],),
     ).fetchone()
     if last_same:
@@ -2795,62 +2821,12 @@ def _buffer_graphql(query: str) -> dict:
 
 def _discover_threads_buffer_channel(c, refresh: bool = False) -> dict:
     """Find the connected Buffer Threads channel and cache its id in system_state."""
-    cache_key = "threads_buffer_channel_id"
-    if not refresh:
-        cached = c.execute("SELECT value FROM system_state WHERE key=?", (cache_key,)).fetchone()
-        if cached and str(cached["value"] or "").strip():
-            return {"ok": True, "channel_id": str(cached["value"]).strip(), "cached": True}
-
-    org_res = _buffer_graphql(
-        "query GetOrganizations { account { organizations { id name } } }"
-    )
-    if not org_res.get("ok"):
-        return org_res
-    orgs = (((org_res.get("data") or {}).get("account") or {}).get("organizations") or [])
-    all_threads = []
-    for org in orgs:
-        org_id = str(org.get("id") or "").strip()
-        if not org_id:
-            continue
-        query = (
-            "query GetChannels { channels(input: { organizationId: "
-            + _graphql_string(org_id)
-            + " }) { id name displayName service } }"
-        )
-        ch_res = _buffer_graphql(query)
-        if not ch_res.get("ok"):
-            continue
-        for ch in (ch_res.get("data") or {}).get("channels") or []:
-            service = str(ch.get("service") or "").lower()
-            if "thread" not in service:
-                continue
-            item = {
-                "id": str(ch.get("id") or "").strip(),
-                "name": str(ch.get("name") or "").strip(),
-                "displayName": str(ch.get("displayName") or "").strip(),
-                "service": service,
-            }
-            if item["id"]:
-                all_threads.append(item)
-
-    if not all_threads:
-        return {"ok": False, "reason": "No Threads channel found in Buffer"}
-
-    target = THREADS_CHANNEL_HANDLE.replace("@", "").lower()
-    chosen = None
-    for ch in all_threads:
-        hay = " ".join([ch["name"], ch["displayName"]]).replace("@", "").lower()
-        if target and target in hay:
-            chosen = ch
-            break
-    if chosen is None:
-        chosen = all_threads[0]
-
-    c.execute(
-        "INSERT INTO system_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        (cache_key, chosen["id"]),
-    )
-    return {"ok": True, "channel_id": chosen["id"], "cached": False, "channel": chosen}
+    if not BUFFER_THREADS_CHANNEL_ID:
+        return {"ok": False, "reason": "Threads channel id missing"}
+    if BUFFER_THREADS_CHANNEL_ID == BUFFER_CHANNEL_ID:
+        return {"ok": False, "reason": "Threads channel must differ from X"}
+    return {"ok": True, "channel_id": BUFFER_THREADS_CHANNEL_ID, "cached": False,
+            "source": "confirmed_channel"}
 
 
 def _send_to_buffer_channel(channel_id: str, post_text: str, image_url: str = "", mode: str = "shareNow") -> dict:
@@ -2886,77 +2862,85 @@ def _send_to_buffer_channel(channel_id: str, post_text: str, image_url: str = ""
     return {"ok": False, "reason": "Buffer did not return a post id", "response": body}
 
 
-def auto_post_threads(c, ts: str, force_channel_refresh: bool = False):
-    result = {
-        "enabled": THREADS_AUTO_ENABLED,
-        "sent": 0,
-        "skipped": [],
-        "errors": [],
-    }
+def auto_post_threads():
+    """Persist each attempt before sending, with separate collector transactions."""
+    result = {'enabled': THREADS_AUTO_ENABLED, 'sent': 0, 'skipped': [], 'errors': []}
     if not THREADS_AUTO_ENABLED:
-        result["reason"] = "THREADS_AUTO_ENABLED=false"
-        return result
+        return {**result, 'reason': 'disabled'}
+    if os.getenv('RENDER_SERVICE_ID') and os.getenv('RENDER_SERVICE_ID') != THREADS_SERVICE_ID:
+        return {**result, 'reason': 'not_primary_service'}
     if not BUFFER_API_KEY:
-        result["reason"] = "BUFFER_API_KEY missing"
-        return result
-
-    channel = _discover_threads_buffer_channel(c, refresh=force_channel_refresh)
-    if not channel.get("ok"):
-        result["reason"] = channel.get("reason", "threads_channel_not_found")
-        result["channel_lookup"] = channel
-        return result
-    channel_id = channel["channel_id"]
-    result["channel_id_suffix"] = channel_id[-6:]
-
-    now_dt = _parse_iso_datetime(ts) or datetime.now(timezone.utc)
-    candidates = _social_candidate_rows(c, limit=30)
-    for row in candidates:
-        if result["sent"] >= THREADS_MAX_POSTS_PER_RUN:
-            break
-        allowed, reason = _threads_post_allowed(c, row, now_dt)
-        if not allowed:
-            result["skipped"].append({"keyword": row["keyword"], "reason": reason})
-            continue
-
-        post_text = _build_threads_post_text(row)
-        image_url = ""
-        try:
-            image_result = _ensure_social_ai_image(c, row, ts)
-            if image_result.get("ok"):
-                image_url = image_result.get("image_url", "")
-                if image_url:
-                    _prewarm_social_jpeg(row["id"])
-        except Exception as image_exc:
-            logger.exception("Threads social image failed for %s", row["keyword"])
-            result["errors"].append({"keyword": row["keyword"], "image_error": str(image_exc)[:200]})
-
-        send_result = _send_to_buffer_channel(channel_id, post_text, image_url, "shareNow")
-        ok = bool(send_result.get("ok"))
-        c.execute(
-            """
-            INSERT INTO threads_posts(
-                trend_id,keyword,pre_buzz_score,traffic_potential,
-                post_text,buffer_status,buffer_post_id,posted_at
-            ) VALUES(?,?,?,?,?,?,?,?)
-            """,
-            (
-                row["id"], row["keyword"], float(row["pre_buzz_score"] or 0),
-                float(row["traffic_potential"] or 0), post_text, 1 if ok else 0,
-                str(send_result.get("post_id") or ""), ts,
-            ),
-        )
-        if ok:
-            result["sent"] += 1
-            result["last_keyword"] = row["keyword"]
-            result["last_post_id"] = send_result.get("post_id")
-            logger.info("V35.38 Threads auto-post sent: %s", row["keyword"])
+        return {**result, 'reason': 'BUFFER_API_KEY missing'}
+    c = None
+    try:
+        c = db()
+        if isinstance(c, PostgresConnection):
+            locked = c.execute('SELECT pg_try_advisory_xact_lock(35390001) AS locked').fetchone()['locked']
+            if not locked:
+                return {**result, 'reason': 'another_run_in_progress'}
         else:
-            result["errors"].append({
-                "keyword": row["keyword"],
-                "error": send_result.get("reason", "Buffer returned not-ok"),
-            })
-
-    return result
+            c.execute('BEGIN IMMEDIATE')
+        _ensure_threads_tables(c)
+        channel = _discover_threads_buffer_channel(c)
+        if not channel.get('ok'):
+            c.commit()
+            return {**result, 'reason': channel.get('reason')}
+        channel_id = channel['channel_id']
+        now = datetime.now(timezone.utc)
+        ts = now.isoformat()
+        chosen = None
+        for row in _social_candidate_rows(c, limit=30):
+            allowed, reason = _threads_post_allowed(c, row, now)
+            if not allowed:
+                result['skipped'].append({'keyword': row['keyword'], 'reason': reason})
+                continue
+            if not str(row['reason_title'] or '').strip():
+                continue
+            text = _build_threads_post_text(row)
+            if len(text) > 500:
+                continue
+            chosen = dict(row)
+            break
+        if chosen is None:
+            c.commit()
+            return {**result, 'reason': 'no_eligible_candidate'}
+        # Existing images are already committed and publicly fetchable by Buffer.
+        cached = c.execute('SELECT trend_id FROM social_images WHERE trend_id=?', (chosen['id'],)).fetchone()
+        image_url = _social_image_url(chosen['id']) if cached else ''
+        claim = c.execute('''INSERT INTO threads_posts
+            (trend_id,keyword,pre_buzz_score,traffic_potential,post_text,buffer_status,buffer_post_id,posted_at)
+            VALUES(?,?,?,?,?,-1,'',?) RETURNING id''',
+            (chosen['id'], chosen['keyword'], float(chosen['pre_buzz_score'] or 0),
+             float(chosen['traffic_potential'] or 0), text, ts)).fetchone()['id']
+        c.commit()
+        c.close()
+        c = None
+        response = _send_to_buffer_channel(channel_id, text, image_url, 'shareNow')
+        accepted = bool(response.get('ok'))
+        history = db()
+        try:
+            history.execute('UPDATE threads_posts SET buffer_status=?,buffer_post_id=? WHERE id=?',
+                            (1 if accepted else 0, str(response.get('post_id') or ''), claim))
+            history.commit()
+        finally:
+            history.close()
+        if accepted:
+            logger.info('V35.39 Threads Buffer accepted: %s post_id=%s', chosen['keyword'], response.get('post_id'))
+        else:
+            logger.warning('V35.39 Threads Buffer outcome unknown or failed: %s', response.get('reason'))
+            result['errors'].append({'keyword': chosen['keyword'], 'error': response.get('reason', 'Buffer response unknown')})
+        return {**result, 'sent': int(accepted), 'accepted': int(accepted),
+                'last_keyword': chosen['keyword'], 'last_post_id': response.get('post_id'),
+                'status': 'buffer_accepted' if accepted else 'unknown_or_failed'}
+    except Exception:
+        logger.exception('V35.39 Threads failed; collector data remains committed')
+        return {**result, 'reason': 'threads_error_check_logs'}
+    finally:
+        if c is not None:
+            try:
+                c.rollback()
+            finally:
+                c.close()
 
 
 def _social_post_allowed(c, row, now_dt):
@@ -4886,10 +4870,10 @@ def collect_real_sources():
         # Existing Pre-Buzz own-post automation remains unchanged.
         social_result = auto_post_social(c, ts)
 
-        # V35.38: the same Pre-Buzz pool also feeds Threads with Threads-specific copy.
-        # It has separate cooldown/deduplication history, so it never interferes with X.
-        threads_result = auto_post_threads(c, ts)
         c.commit()
+
+    # Commit X/collector data first; a Threads failure cannot roll it back.
+    threads_result = auto_post_threads()
 
     # Phase 2: Yahoo Buzzing Now automation.
     # All active candidates are article-checked first, then at most one strong
@@ -5793,9 +5777,11 @@ def generate_social_image_only(trend_id: int):
     }
 
 
+@app.get("/api/social/threads-status")
 @app.get("/api/threads/status")
 def threads_status():
     with db() as c:
+        _ensure_threads_tables(c)
         channel = _discover_threads_buffer_channel(c, refresh=False) if BUFFER_API_KEY else {"ok": False, "reason": "BUFFER_API_KEY missing"}
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         sent_24h = c.execute(
@@ -5810,6 +5796,9 @@ def threads_status():
         "ok": bool(channel.get("ok")),
         "version": APP_VERSION,
         "enabled": THREADS_AUTO_ENABLED,
+        "runtime_eligible": not os.getenv("RENDER_SERVICE_ID") or os.getenv("RENDER_SERVICE_ID") == THREADS_SERVICE_ID,
+        "channel_id": BUFFER_THREADS_CHANNEL_ID,
+        "note": "sent_last_24h means Buffer acceptance, not verified Threads publication",
         "handle": THREADS_CHANNEL_HANDLE,
         "channel_found": bool(channel.get("ok")),
         "channel_id_suffix": str(channel.get("channel_id") or "")[-6:],
@@ -5825,9 +5814,7 @@ def threads_status():
 @app.get("/api/threads/run-now")
 def threads_run_now():
     ts = now_iso()
-    with db() as c:
-        result = auto_post_threads(c, ts, force_channel_refresh=True)
-        c.commit()
+    result = auto_post_threads()
     return {"ok": result.get("sent", 0) > 0, "version": APP_VERSION, "threads": result}
 
 
@@ -6658,3 +6645,4 @@ def create_or_update_trend(
 @app.get("/google9854439bbecd0905.html", response_class=PlainTextResponse)
 def google_site_verification():
     return "google-site-verification: google9854439bbecd0905.html"
+
