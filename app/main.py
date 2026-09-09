@@ -61,7 +61,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.33.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.34.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -93,7 +93,7 @@ OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2").strip()
 SOCIAL_AI_IMAGE_ENABLED = os.getenv("SOCIAL_AI_IMAGE_ENABLED", "false").lower() == "true"
 
 # X/SNS landing ad gate. The gate activates only when an i-mobile ad tag exists.
-IMOBILE_X_GATE_ENABLED = env_bool("IMOBILE_X_GATE_ENABLED", True)
+IMOBILE_X_GATE_ENABLED = os.getenv("IMOBILE_X_GATE_ENABLED", "true").lower() == "true"
 IMOBILE_X_GATE_HTML = os.getenv("IMOBILE_X_GATE_HTML", "").strip()
 IMOBILE_X_GATE_SECONDS = max(0, min(int(os.getenv("IMOBILE_X_GATE_SECONDS", "3")), 10))
 IMOBILE_X_GATE_COOLDOWN_MINUTES = max(1, int(os.getenv("IMOBILE_X_GATE_COOLDOWN_MINUTES", "60")))
