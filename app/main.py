@@ -63,7 +63,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.41.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.42.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2741,14 +2741,14 @@ def _build_threads_post_text(row) -> str:
 def _threads_post_allowed(c, row, now_dt):
     daily_cutoff = (now_dt - timedelta(hours=24)).isoformat()
     daily_count = c.execute(
-        "SELECT COUNT(*) AS n FROM threads_posts WHERE posted_at>=?",
+        "SELECT COUNT(*) AS n FROM threads_posts WHERE buffer_status<>2 AND posted_at>=?",
         (daily_cutoff,),
     ).fetchone()["n"]
     if int(daily_count or 0) >= THREADS_DAILY_CAP:
         return False, "daily_cap"
 
     last_any = c.execute(
-        "SELECT posted_at FROM threads_posts ORDER BY id DESC LIMIT 1"
+        "SELECT posted_at FROM threads_posts WHERE buffer_status<>2 ORDER BY id DESC LIMIT 1"
     ).fetchone()
     if last_any:
         last_dt = _parse_iso_datetime(last_any["posted_at"])
@@ -2756,7 +2756,7 @@ def _threads_post_allowed(c, row, now_dt):
             return False, "global_cooldown"
 
     last_same = c.execute(
-        "SELECT posted_at FROM threads_posts WHERE trend_id=? ORDER BY id DESC LIMIT 1",
+        "SELECT posted_at FROM threads_posts WHERE buffer_status<>2 AND trend_id=? ORDER BY id DESC LIMIT 1",
         (row["id"],),
     ).fetchone()
     if last_same:
@@ -2767,7 +2767,54 @@ def _threads_post_allowed(c, row, now_dt):
     return True, "ok"
 
 
+
+def _buffer_backoff_state():
+    with db() as connection:
+        row = connection.execute("SELECT value FROM system_state WHERE key='buffer_rate_limit'").fetchone()
+    if not row:
+        return {}
+    try:
+        return json.loads(row["value"])
+    except (TypeError, ValueError):
+        return {}
+
+
+def _buffer_pause():
+    state = _buffer_backoff_state()
+    until = _parse_iso_datetime(state.get("retry_at", ""))
+    if until and until > datetime.now(timezone.utc):
+        return {"ok": False, "reason": "buffer_rate_limited", "status_code": 429, **state}
+    return None
+
+
+def _record_buffer_rate_limit(response, body):
+    from email.utils import parsedate_to_datetime
+    now = datetime.now(timezone.utc)
+    header = response.headers.get("retry-after", "")
+    try:
+        seconds = max(1, int(header))
+    except (ValueError, TypeError):
+        try:
+            seconds = max(1, int((parsedate_to_datetime(header) - now).total_seconds()))
+        except (ValueError, TypeError, OverflowError):
+            seconds = 3600
+    errors = body.get("errors") or [] if isinstance(body, dict) else []
+    first = errors[0] if errors and isinstance(errors[0], dict) else {}
+    extensions = first.get("extensions") or {}
+    state = {"retry_at": (now + timedelta(seconds=seconds)).isoformat(),
+             "retry_after_seconds": seconds, "window": str(extensions.get("window", "unknown"))[:40]}
+    with db() as connection:
+        connection.execute("INSERT INTO system_state(key,value) VALUES('buffer_rate_limit',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                           (json.dumps(state),))
+        connection.commit()
+    logger.warning("Buffer rate limited window=%s retry_at=%s", state["window"], state["retry_at"])
+    return {"ok": False, "reason": "buffer_rate_limited", "status_code": 429, **state}
+
+
 def _buffer_graphql(query: str) -> dict:
+    pause = _buffer_pause()
+    if pause:
+        return pause
     if not BUFFER_API_KEY:
         return {"ok": False, "reason": "BUFFER_API_KEY is not configured"}
     try:
@@ -2784,6 +2831,8 @@ def _buffer_graphql(query: str) -> dict:
             body = response.json()
         except Exception:
             body = {"raw": response.text[:1000]}
+        if response.status_code == 429:
+            return _record_buffer_rate_limit(response, body)
         if response.status_code != 200:
             return {"ok": False, "reason": "Buffer HTTP error", "status_code": response.status_code, "response": body}
         if isinstance(body, dict) and body.get("errors"):
@@ -2846,6 +2895,9 @@ def auto_post_threads():
         return {**result, 'reason': 'not_primary_service'}
     if not BUFFER_API_KEY:
         return {**result, 'reason': 'BUFFER_API_KEY missing'}
+    pause = _buffer_pause()
+    if pause:
+        return {**result, **pause}
     c = None
     try:
         c = db()
@@ -2895,7 +2947,7 @@ def auto_post_threads():
         history = db()
         try:
             history.execute('UPDATE threads_posts SET buffer_status=?,buffer_post_id=? WHERE id=?',
-                            (1 if accepted else 0, str(response.get('post_id') or ''), claim))
+                            (1 if accepted else (2 if response.get('status_code') == 429 else 0), str(response.get('post_id') or ''), claim))
             history.commit()
         finally:
             history.close()
@@ -2970,6 +3022,9 @@ def auto_post_social(c, ts: str):
         result["reason"] = "buffer_not_configured"
         return result
 
+    pause = _buffer_pause()
+    if pause:
+        return {**result, **pause}
     now_dt = _parse_iso_datetime(ts) or datetime.now(timezone.utc)
     candidates = _social_candidate_rows(c, limit=30)
 
@@ -3045,6 +3100,9 @@ def auto_post_social(c, ts: str):
                     "keyword": row["keyword"],
                     "error": buffer_result.get("reason", "Buffer returned not-ok"),
                 })
+                if buffer_result.get("status_code") == 429:
+                    result["retry_at"] = buffer_result.get("retry_at")
+                    break
         except Exception as exc:
             logger.exception("V33 Buffer direct auto-post failed for %s", row["keyword"])
             result["errors"].append({"keyword": row["keyword"], "error": str(exc)[:300]})
@@ -5867,8 +5925,12 @@ def threads_channels_debug():
 
 
 @app.get("/api/social/buffer-status")
-def social_buffer_status():
+def social_buffer_status(probe: bool = False):
+    check = _buffer_graphql("query { __typename }") if probe else None
+    state = _buffer_backoff_state()
     return {
+        "rate_limit": state,
+        "probe": {key: check.get(key) for key in ("ok", "reason", "status_code", "retry_at", "window")} if check else None,
         "ok": True,
         "version": APP_VERSION,
         "buffer_api_key_configured": bool(BUFFER_API_KEY),
