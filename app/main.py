@@ -26,6 +26,14 @@ BASE = Path(__file__).resolve().parent.parent
 DB_PATH = BASE / "buzznow.db"
 SITE_URL = os.getenv("SITE_URL", "http://localhost:8000").rstrip("/")
 
+# V35.32: IndexNow real-time search-engine notification.
+# The key is public by design and is hosted at /<key>.txt for ownership verification.
+INDEXNOW_ENABLED = os.getenv("INDEXNOW_ENABLED", "true").lower() == "true"
+INDEXNOW_ENDPOINT = os.getenv("INDEXNOW_ENDPOINT", "https://api.indexnow.org/IndexNow").strip()
+INDEXNOW_KEY = os.getenv("INDEXNOW_KEY", "241b7052dc46c7cfd0e0769d27a385aa").strip()
+INDEXNOW_BATCH_LIMIT = max(1, min(int(os.getenv("INDEXNOW_BATCH_LIMIT", "100")), 500))
+INDEXNOW_LOOKBACK_MINUTES = max(30, int(os.getenv("INDEXNOW_LOOKBACK_MINUTES", "90")))
+
 # Yahoo!リアルタイム検索を使う無料の Buzzing Now 候補収集。
 # 公開HTMLで取得できる順位だけを使い、X APIは使わない。
 YAHOO_BUZZ_ENABLED = os.getenv("YAHOO_BUZZ_ENABLED", "true").lower() == "true"
@@ -53,7 +61,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.31.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.33.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2313,8 +2321,13 @@ def _parse_iso_datetime(value: str):
         return None
 
 
+def _social_detail_path(slug: str) -> str:
+    """Same-host canonical detail path used by short-link redirects."""
+    return f"/trend/{quote(str(slug), safe='-_%')}"
+
+
 def _social_detail_url(slug: str) -> str:
-    return f"{SITE_URL}/trend/{quote(str(slug), safe='-_%')}"
+    return f"{SITE_URL}{_social_detail_path(slug)}"
 
 
 def _social_short_url(trend_id: int) -> str:
@@ -4471,6 +4484,121 @@ def yahoo_buzz_collect_preview():
     return result
 
 
+
+def _indexnow_key_location() -> str:
+    return f"{SITE_URL}/{INDEXNOW_KEY}.txt"
+
+
+def _indexnow_recent_urls(limit: int = None, lookback_minutes: int = None):
+    """Return recently added/updated canonical URLs for IndexNow."""
+    limit = limit or INDEXNOW_BATCH_LIMIT
+    lookback_minutes = lookback_minutes or INDEXNOW_LOOKBACK_MINUTES
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)
+
+    with db() as c:
+        rows = c.execute("""
+            SELECT id,slug,updated_at
+            FROM trends
+            WHERE is_indexable=1
+            ORDER BY updated_at DESC
+            LIMIT ?
+        """, (max(limit * 3, limit),)).fetchall()
+
+    urls = []
+    for row in rows:
+        raw_updated = str(row["updated_at"] or "").strip()
+        try:
+            dt = datetime.fromisoformat(raw_updated.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+
+        if dt < cutoff:
+            continue
+
+        slug = str(row["slug"] or "").strip()
+        if not slug:
+            continue
+
+        encoded_slug = quote(slug, safe="-._~")
+        urls.append(f"{SITE_URL}/trend/{encoded_slug}")
+
+        if len(urls) >= limit:
+            break
+
+    # Homepage changes whenever the active trend set changes.
+    if urls:
+        urls.insert(0, f"{SITE_URL}/")
+
+    return list(dict.fromkeys(urls))
+
+
+def submit_indexnow(urls=None):
+    """Notify IndexNow about newly added or updated BUZZ NOW pages."""
+    if not INDEXNOW_ENABLED:
+        return {"ok": False, "skipped": True, "reason": "disabled", "submitted": 0}
+
+    if not SITE_URL.startswith("http"):
+        return {"ok": False, "skipped": True, "reason": "invalid_site_url", "submitted": 0}
+
+    urls = urls or _indexnow_recent_urls()
+    urls = [u for u in urls if str(u).startswith(SITE_URL + "/") or str(u) == SITE_URL]
+
+    if not urls:
+        return {"ok": True, "skipped": True, "reason": "no_recent_urls", "submitted": 0}
+
+    host = urlparse(SITE_URL).netloc
+    payload = {
+        "host": host,
+        "key": INDEXNOW_KEY,
+        "keyLocation": _indexnow_key_location(),
+        "urlList": urls[:INDEXNOW_BATCH_LIMIT + 1],
+    }
+
+    try:
+        with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+            response = client.post(
+                INDEXNOW_ENDPOINT,
+                json=payload,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+            )
+
+        accepted = response.status_code in (200, 202)
+
+        if accepted:
+            try:
+                with db() as c:
+                    c.execute("""
+                        INSERT INTO system_state(key,value)
+                        VALUES('indexnow_last_submit_at',?)
+                        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                    """, (now_iso(),))
+                    c.execute("""
+                        INSERT INTO system_state(key,value)
+                        VALUES('indexnow_last_status',?)
+                        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                    """, (str(response.status_code),))
+                    c.commit()
+            except Exception:
+                logger.exception("IndexNow state save failed")
+
+        return {
+            "ok": accepted,
+            "status_code": response.status_code,
+            "submitted": len(payload["urlList"]),
+            "sample_urls": payload["urlList"][:5],
+        }
+    except Exception as exc:
+        logger.exception("IndexNow submission failed")
+        return {
+            "ok": False,
+            "status_code": None,
+            "submitted": 0,
+            "error": str(exc)[:300],
+        }
+
+
 def collect_real_sources():
     ts = now_iso()
 
@@ -4501,6 +4629,9 @@ def collect_real_sources():
     yahoo_promote = promote_yahoo_buzz_candidates(limit=YAHOO_BUZZ_PROMOTE_LIMIT)
     yahoo_quote = auto_quote_yahoo_buzzing_now()
 
+    # Notify participating search engines immediately after new/updated pages exist.
+    indexnow_result = submit_indexnow()
+
     return {
         "google_trends": g,
         "wikimedia": w,
@@ -4510,6 +4641,7 @@ def collect_real_sources():
         "news": news_count,
         "total": g + w,
         "social": social_result,
+        "indexnow": indexnow_result,
     }
 
 
@@ -5573,11 +5705,17 @@ def social_ai_image_status(trend_id: int):
 
 @app.get("/t/{trend_id}", response_class=HTMLResponse)
 def social_short_link(trend_id: int, request: Request):
-    """X/SNS short link.
+    """Durable X/SNS short link.
 
-    When an i-mobile tag is configured, first-time visitors see a short
-    ad-support screen. They can continue to the canonical trend page without
-    clicking the ad. A cookie suppresses the gate for the configured cooldown.
+    V35.33 deliberately makes old posted URLs resilient:
+    1) use the original trend id when it still exists;
+    2) if that id disappeared after collection/update, recover the keyword from
+       social_posts and resolve the newest current trend with the same keyword;
+    3) if no current trend survives, send the visitor to the homepage instead
+       of returning a dead 404.
+
+    Redirects use a same-host relative path, so a bad SITE_URL environment value
+    cannot break the click-through.
     """
     with db() as c:
         row = c.execute(
@@ -5585,26 +5723,50 @@ def social_short_link(trend_id: int, request: Request):
             (trend_id,)
         ).fetchone()
 
+        recovered_from_social_post = False
+
+        if not row:
+            posted = c.execute("""
+                SELECT keyword
+                FROM social_posts
+                WHERE trend_id=?
+                ORDER BY posted_at DESC, id DESC
+                LIMIT 1
+            """, (trend_id,)).fetchone()
+
+            if posted and posted["keyword"]:
+                row = c.execute("""
+                    SELECT id,keyword,slug
+                    FROM trends
+                    WHERE keyword=?
+                      AND is_indexable=1
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT 1
+                """, (posted["keyword"],)).fetchone()
+                recovered_from_social_post = bool(row)
+
+    # Never strand an X visitor on a JSON 404 page.
     if not row:
-        raise HTTPException(404, "Trend not found")
+        return RedirectResponse(url="/", status_code=302)
 
-    detail_url = _social_detail_url(row["slug"])
+    detail_path = _social_detail_path(row["slug"])
 
-    # No ad tag yet -> preserve the old direct redirect behavior.
+    # No i-mobile tag yet -> direct same-host redirect.
     if not IMOBILE_X_GATE_ENABLED or not IMOBILE_X_GATE_HTML:
-        return RedirectResponse(url=detail_url, status_code=307)
+        return RedirectResponse(url=detail_path, status_code=302)
 
     gate_cookie = request.cookies.get("buzznow_x_gate_seen", "")
     if gate_cookie == "1":
-        return RedirectResponse(url=detail_url, status_code=307)
+        return RedirectResponse(url=detail_path, status_code=302)
 
     response = templates.TemplateResponse(request, "x_gate.html", {
         "request": request,
         "keyword": row["keyword"],
-        "detail_url": detail_url,
+        "detail_url": detail_path,
         "imobile_ad_html": IMOBILE_X_GATE_HTML,
         "gate_seconds": IMOBILE_X_GATE_SECONDS,
         "site_name": SITE_NAME,
+        "recovered_from_social_post": recovered_from_social_post,
     })
 
     response.set_cookie(
@@ -5616,6 +5778,67 @@ def social_short_link(trend_id: int, request: Request):
         samesite="lax",
     )
     return response
+
+
+@app.get("/api/social/link-check")
+def social_link_check(limit: int = 20):
+    """Check whether recent X short URLs can resolve without making external HTTP calls."""
+    limit = max(1, min(int(limit), 100))
+
+    with db() as c:
+        posts = c.execute("""
+            SELECT id,trend_id,keyword,posted_at,make_status
+            FROM social_posts
+            WHERE make_status=1
+            ORDER BY posted_at DESC, id DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+
+        items = []
+        healthy = 0
+
+        for post in posts:
+            row = c.execute(
+                "SELECT id,keyword,slug FROM trends WHERE id=?",
+                (post["trend_id"],)
+            ).fetchone()
+
+            recovered = False
+            if not row:
+                row = c.execute("""
+                    SELECT id,keyword,slug
+                    FROM trends
+                    WHERE keyword=?
+                      AND is_indexable=1
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT 1
+                """, (post["keyword"],)).fetchone()
+                recovered = bool(row)
+
+            resolvable = bool(row)
+            if resolvable:
+                healthy += 1
+
+            items.append({
+                "trend_id_in_x_url": post["trend_id"],
+                "keyword": post["keyword"],
+                "short_url": _social_short_url(post["trend_id"]),
+                "resolvable": resolvable,
+                "recovered_by_keyword": recovered,
+                "resolved_trend_id": row["id"] if row else None,
+                "resolved_path": _social_detail_path(row["slug"]) if row else "/",
+                "posted_at": post["posted_at"],
+            })
+
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "strategy": "durable /t/{id}: id -> keyword recovery -> homepage fallback",
+        "checked": len(items),
+        "resolvable": healthy,
+        "all_resolvable": healthy == len(items),
+        "items": items,
+    }
 
 
 @app.get("/api/x-gate/status")
@@ -5957,6 +6180,60 @@ def runtime_info():
         "real_data_mode": REAL_DATA_MODE,
         "real_data_interval_minutes": REAL_DATA_INTERVAL_MINUTES,
         "adsense_enabled": ADSENSE_ENABLED, "affiliate_enabled": AFFILIATE_ENABLED
+    }
+
+
+
+@app.get(f"/{INDEXNOW_KEY}.txt", response_class=PlainTextResponse)
+def indexnow_key_file():
+    return PlainTextResponse(
+        content=INDEXNOW_KEY,
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@app.get("/api/indexnow/status")
+def indexnow_status():
+    last_submit = ""
+    last_status = ""
+    try:
+        with db() as c:
+            row = c.execute(
+                "SELECT value FROM system_state WHERE key='indexnow_last_submit_at'"
+            ).fetchone()
+            if row:
+                last_submit = row["value"]
+
+            row = c.execute(
+                "SELECT value FROM system_state WHERE key='indexnow_last_status'"
+            ).fetchone()
+            if row:
+                last_status = row["value"]
+    except Exception:
+        pass
+
+    pending_urls = _indexnow_recent_urls(limit=10)
+
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "enabled": INDEXNOW_ENABLED,
+        "endpoint": INDEXNOW_ENDPOINT,
+        "key_file_url": _indexnow_key_location(),
+        "last_submit_at": last_submit,
+        "last_status_code": last_status,
+        "recent_url_count_preview": len(pending_urls),
+        "recent_urls_preview": pending_urls[:5],
+        "automatic": "runs after every normal collection cycle",
+    }
+
+
+@app.get("/api/indexnow/run-now")
+def indexnow_run_now():
+    return {
+        "version": APP_VERSION,
+        "result": submit_indexnow(),
     }
 
 
