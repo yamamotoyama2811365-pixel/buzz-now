@@ -32,6 +32,7 @@ YAHOO_BUZZ_ENABLED = os.getenv("YAHOO_BUZZ_ENABLED", "true").lower() == "true"
 YAHOO_BUZZ_RANK_MIN = max(1, int(os.getenv("YAHOO_BUZZ_RANK_MIN", "30")))
 YAHOO_BUZZ_RANK_MAX = max(YAHOO_BUZZ_RANK_MIN, int(os.getenv("YAHOO_BUZZ_RANK_MAX", "80")))
 YAHOO_BUZZ_FALLBACK_COUNT = max(1, min(int(os.getenv("YAHOO_BUZZ_FALLBACK_COUNT", "10")), 30))
+YAHOO_NEW_FACE_HOURS = max(1, int(os.getenv("YAHOO_NEW_FACE_HOURS", "12")))
 YAHOO_BUZZ_PROMOTE_LIMIT = max(1, min(int(os.getenv("YAHOO_BUZZ_PROMOTE_LIMIT", "10")), 10))
 YAHOO_QUOTE_SCAN_LIMIT = max(1, min(int(os.getenv("YAHOO_QUOTE_SCAN_LIMIT", "8")), 20))
 YAHOO_QUOTE_MIN_LIKES = max(0, int(os.getenv("YAHOO_QUOTE_MIN_LIKES", "300")))
@@ -42,7 +43,7 @@ YAHOO_QUOTE_MIN_REPOSTS = max(0, int(os.getenv("YAHOO_QUOTE_MIN_REPOSTS", "50"))
 YAHOO_QUOTE_AUTO_ENABLED = os.getenv("YAHOO_QUOTE_AUTO_ENABLED", "true").lower() == "true"
 YAHOO_QUOTE_AUTO_MIN_LIKES = max(0, int(os.getenv("YAHOO_QUOTE_AUTO_MIN_LIKES", "1000")))
 YAHOO_QUOTE_AUTO_MIN_REPOSTS = max(0, int(os.getenv("YAHOO_QUOTE_AUTO_MIN_REPOSTS", "150")))
-YAHOO_QUOTE_DAILY_CAP = max(1, int(os.getenv("YAHOO_QUOTE_DAILY_CAP", "6")))
+YAHOO_QUOTE_DAILY_CAP = max(1, int(os.getenv("YAHOO_QUOTE_DAILY_CAP", "5")))
 YAHOO_QUOTE_GLOBAL_COOLDOWN_MINUTES = max(0, int(os.getenv("YAHOO_QUOTE_GLOBAL_COOLDOWN_MINUTES", "60")))
 YAHOO_QUOTE_KEYWORD_COOLDOWN_HOURS = max(0, int(os.getenv("YAHOO_QUOTE_KEYWORD_COOLDOWN_HOURS", "24")))
 YAHOO_QUOTE_MAX_PER_RUN = max(1, min(int(os.getenv("YAHOO_QUOTE_MAX_PER_RUN", "1")), 3))
@@ -52,7 +53,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.28.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.29.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -74,7 +75,7 @@ SOCIAL_MIN_TRAFFIC = float(os.getenv("SOCIAL_MIN_TRAFFIC", "70"))
 SOCIAL_MIN_CONFIDENCE = float(os.getenv("SOCIAL_MIN_CONFIDENCE", "50"))
 SOCIAL_KEYWORD_COOLDOWN_HOURS = int(os.getenv("SOCIAL_KEYWORD_COOLDOWN_HOURS", "72"))
 SOCIAL_GLOBAL_COOLDOWN_MINUTES = int(os.getenv("SOCIAL_GLOBAL_COOLDOWN_MINUTES", "60"))
-SOCIAL_DAILY_CAP = int(os.getenv("SOCIAL_DAILY_CAP", "8"))
+SOCIAL_DAILY_CAP = int(os.getenv("SOCIAL_DAILY_CAP", "10"))
 SOCIAL_MAX_POSTS_PER_RUN = int(os.getenv("SOCIAL_MAX_POSTS_PER_RUN", "1"))
 
 # V30.5: AI visual for social posts.
@@ -2951,6 +2952,47 @@ def collect_yahoo_realtime_buzz(c, ts: str):
 
 
 
+
+def _search_intent_priority(keyword: str, why_now: str = "", category: str = "") -> int:
+    """Heuristic search-intent priority for PV.
+    Higher = more likely to generate search traffic.
+    """
+    k = str(keyword or "").strip()
+    ctx = f"{k} {why_now or ''} {category or ''}".lower()
+
+    score = 0
+
+    # Strong traffic categories: people, incidents, TV, products, sports, entertainment.
+    strong_terms = [
+        "逮捕","事件","事故","食中毒","炎上","死去","結婚","離婚","不倫","謝罪",
+        "ドラマ","映画","番組","放送","出演","最終回","打ち切り",
+        "発売","新商品","限定","予約","価格","値上げ",
+        "試合","先発","優勝","移籍","引退","選手","監督",
+        "俳優","女優","アイドル","芸人","歌手","声優","タレント","snow man","sixTONES",
+    ]
+    for term in strong_terms:
+        if term.lower() in ctx:
+            score += 3
+
+    # Japanese personal-name-ish strings often search well.
+    if re.fullmatch(r"[一-龠々〆ヵヶぁ-んァ-ヶー]{3,12}", k):
+        score += 2
+
+    # Weak/noisy tokens.
+    if len(k) <= 2:
+        score -= 4
+    if re.fullmatch(r"[A-Za-z0-9]{1,4}", k):
+        score -= 4
+    if any(x in k for x in ("案", "草", "もうええわ", "体調良くなった")):
+        score -= 3
+
+    return score
+
+
+def _is_searchable_buzz_topic(keyword: str, why_now: str = "", category: str = "") -> bool:
+    return _search_intent_priority(keyword, why_now, category) >= 1
+
+
 def _yahoo_rank_signal_score(rank: int) -> float:
     """Convert a Yahoo realtime rank into a BUZZ NOW signal score.
     Lower rank number = stronger signal. Keeps 30-80 useful without pretending
@@ -3028,8 +3070,17 @@ def promote_yahoo_buzz_candidates(limit: int = None):
           FROM yahoo_buzz_candidates
           WHERE active=1
           ORDER BY rank ASC
-          LIMIT ?
-        """, (limit,)).fetchall()
+          LIMIT 20
+        """).fetchall()
+
+        # Prefer likely search-traffic topics rather than meaningless short/internal phrases.
+        rows = sorted(
+            rows,
+            key=lambda r: (
+                -_search_intent_priority(r["keyword"]),
+                int(r["rank"] or 100),
+            )
+        )[:limit]
 
         for row in rows:
             keyword = _clean_keyword(row["keyword"])
@@ -4594,6 +4645,58 @@ def home(request: Request):
     })
 
 
+
+def _seo_trend_title(keyword: str, status: str = "", why_now: str = "") -> str:
+    keyword = str(keyword or "").strip()
+    status = str(status or "")
+    if "バズり中" in status:
+        return f"{keyword}が話題なのはなぜ？現在の関連ニュースと急上昇理由を解説"
+    return f"{keyword}とは？なぜ話題？最新の急上昇理由・関連ニュースを解説"
+
+
+def _trend_related_rows(c, trend_id: int, keyword: str, category: str, limit: int = 5):
+    return c.execute("""
+      SELECT id,keyword,slug,status,pre_buzz_score,buzz_score,acceleration,category
+      FROM trends
+      WHERE id<>?
+        AND is_indexable=1
+        AND (
+          category=?
+          OR keyword LIKE ?
+        )
+      ORDER BY
+        pre_buzz_score DESC,
+        acceleration DESC,
+        buzz_score DESC
+      LIMIT ?
+    """, (
+        trend_id,
+        category or "",
+        f"%{keyword[:4]}%" if keyword else "%",
+        limit,
+    )).fetchall()
+
+
+def _trend_top_now_rows(c, limit: int = 5):
+    return c.execute("""
+      SELECT id,keyword,slug,status,pre_buzz_score,buzz_score,acceleration
+      FROM trends
+      WHERE is_indexable=1
+      ORDER BY buzz_score DESC, acceleration DESC, updated_at DESC
+      LIMIT ?
+    """, (limit,)).fetchall()
+
+
+def _trend_prebuzz_rows(c, limit: int = 5):
+    return c.execute("""
+      SELECT id,keyword,slug,status,pre_buzz_score,buzz_score,acceleration
+      FROM trends
+      WHERE is_indexable=1
+      ORDER BY pre_buzz_score DESC, acceleration DESC, updated_at DESC
+      LIMIT ?
+    """, (limit,)).fetchall()
+
+
 @app.get("/trend/{slug}", response_class=HTMLResponse)
 def trend_detail(slug: str, request: Request):
     with db() as c:
@@ -4639,10 +4742,21 @@ def trend_detail(slug: str, request: Request):
             f"Pre-Buzz Score・Buzz Score・関連キーワード・情報源から整理。"
         )
     canonical = f"{SITE_URL}/trend/{trend['slug']}"
+    seo_title = _seo_trend_title(trend["keyword"], trend["status"], trend["why_now"])
+    related_rows = _trend_related_rows(c, trend["id"], trend["keyword"], trend["category"], 5)
+    top_now_rows = _trend_top_now_rows(c, 5)
+    prebuzz_rows = _trend_prebuzz_rows(c, 5)
+    og_image_url = _social_image_url(trend["id"])
+
 
     return templates.TemplateResponse(request, "trend.html", {
         "request": request,
         "trend": trend,
+            "seo_title": seo_title,
+            "og_image_url": og_image_url,
+            "related_rows": related_rows,
+            "top_now_rows": top_now_rows,
+            "prebuzz_rows": prebuzz_rows,
         "related": related,
         "sources": sources,
         "site_name": SITE_NAME,
