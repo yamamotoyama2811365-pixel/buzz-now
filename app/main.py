@@ -53,7 +53,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.29.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.30.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2602,25 +2602,15 @@ def _build_social_post_text(row) -> str:
     keyword = str(row["keyword"]).strip()
     pre = int(round(float(row["pre_buzz_score"] or 0)))
     traffic = int(round(float(row["traffic_potential"] or 0)))
-    confidence = int(round(float(row["confidence_score"] or 0))) if "confidence_score" in row.keys() else 0
-    first_source = str(row["first_source"] or "").strip() if "first_source" in row.keys() else ""
-    detail_url = _social_short_url(row["id"])
-
-    # Low-confidence ranking topics are allowed to post, but ONLY as signal reports.
-    # Example: 「こめお 食中毒」 must not be turned into a factual allegation.
-    if confidence < SOCIAL_MIN_CONFIDENCE:
-        source_line = f"{first_source}で" if first_source else "公開データ上で"
-        return (
-            "🚨 BUZZNOW SNS捜査官｜検索シグナル急上昇\n"
-            f"いま「{keyword}」という検索ワードが上昇中。\n"
-            f"{source_line}動きを検知。現時点では関連情報を確認中です。\n"
-            f"Pre-Buzz：{pre} / Traffic：{traffic} / Confidence：{confidence}\n"
-            f"追跡ページ → {detail_url}"
-        )
-
     status = str(row["status"] or "急上昇")
-    status_plain = re.sub(r"^[^ぁ-んァ-ヶ一-龠A-Za-z0-9]+\s*", "", status).strip() or "急上昇"
+    status_plain = re.sub(
+        r"^[^ぁ-んァ-ヶ一-龠A-Za-z0-9]+\s*",
+        "",
+        status,
+    ).strip() or "急上昇"
+    detail_url = _social_short_url(row["id"])
     reason = _social_reason_from_row(row, keyword)
+
     return (
         f"🚨 BUZZNOW SNS捜査官｜{status_plain}を検知\n"
         f"いま「{keyword}」がバズり中。\n"
@@ -2630,16 +2620,22 @@ def _build_social_post_text(row) -> str:
     )
 
 
-def _visible_top_rows(c, limit: int = 10):
-    """Return the exact same ordering used by /api/traffic-ranking and the visible TOP list."""
-    limit = max(1, min(int(limit), 50))
+def _social_candidate_rows(c, limit: int = 20):
+    """NORMAL BUZZ NOW X candidate selection.
+
+    V35.30 restores the original Pre-Buzz strategy:
+      - do NOT follow the visible TOP ranking
+      - prioritize "about to buzz" signals before they become obvious
+      - require Pre-Buzz / Traffic / Confidence gates
+      - rank by Pre-Buzz strength first
+
+    Buzzing Now quote-posting remains a separate flow for already-viral topics.
+    """
+    limit = max(1, min(int(limit), 100))
     return c.execute("""
         SELECT
             t.id,t.keyword,t.slug,t.category,t.pre_buzz_score,t.buzz_score,t.acceleration,
             t.status,t.why_now,t.updated_at,
-            COALESCE(tt.impressions,0) AS impressions,
-            COALESCE(tt.clicks,0) AS clicks,
-            COALESCE(tt.pageviews,0) AS pageviews,
             COALESCE(tt.traffic_potential,0) AS traffic_potential,
             COALESCE(cf.confidence_score,0) AS confidence_score,
             COALESCE(cf.source_count,0) AS source_count,
@@ -2660,39 +2656,24 @@ def _visible_top_rows(c, limit: int = 10):
         LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
         LEFT JOIN confidence_state cf ON cf.trend_id=t.id
         LEFT JOIN propagation_state ps ON ps.trend_id=t.id
+        WHERE t.is_indexable=1
+          AND t.pre_buzz_score>=?
+          AND COALESCE(tt.traffic_potential,0)>=?
+          AND COALESCE(cf.confidence_score,0)>=?
+          AND t.status NOT LIKE '%%下降%%'
         ORDER BY
+          t.pre_buzz_score DESC,
           COALESCE(tt.traffic_potential,0) DESC,
           COALESCE(cf.confidence_score,0) DESC,
-          COALESCE(tt.pageviews,0) DESC
+          t.acceleration DESC,
+          t.updated_at DESC
         LIMIT ?
-    """, (limit,)).fetchall()
-
-
-def _social_candidate_rows(c, limit: int = 10):
-    """Choose normal X candidates ONLY from the current visible TOP10.
-
-    Critical V35.27 fix:
-    V35.26 applied eligibility filters BEFORE LIMIT, so when some visible TOP10
-    rows were ineligible, lower-ranked topics could slide upward into the social
-    candidate list. That is how a topic outside the user's visible TOP10 could post.
-
-    Now:
-      1) freeze the exact visible TOP10 first
-      2) apply posting eligibility inside that frozen TOP10
-      3) never reach rank 11+
-    """
-    visible = _visible_top_rows(c, limit=min(max(1, int(limit)), 10))
-    candidates = []
-
-    for row in visible:
-        pre_ok = float(row["pre_buzz_score"] or 0) >= SOCIAL_MIN_PREBUZZ
-        traffic_ok = float(row["traffic_potential"] or 0) >= SOCIAL_MIN_TRAFFIC
-        status_ok = "下降" not in str(row["status"] or "")
-
-        if pre_ok and traffic_ok and status_ok:
-            candidates.append(row)
-
-    return candidates
+    """, (
+        SOCIAL_MIN_PREBUZZ,
+        SOCIAL_MIN_TRAFFIC,
+        SOCIAL_MIN_CONFIDENCE,
+        limit,
+    )).fetchall()
 
 
 def _social_post_allowed(c, row, now_dt):
@@ -2748,7 +2729,7 @@ def auto_post_social(c, ts: str):
         return result
 
     now_dt = _parse_iso_datetime(ts) or datetime.now(timezone.utc)
-    candidates = _social_candidate_rows(c, limit=10)
+    candidates = _social_candidate_rows(c, limit=30)
 
     for row in candidates:
         if result["sent"] >= max(0, SOCIAL_MAX_POSTS_PER_RUN):
@@ -2765,13 +2746,12 @@ def auto_post_social(c, ts: str):
         # If image generation is disabled or fails, posting safely falls back to text+link.
         image_result = {"ok": False, "reason": "not_attempted"}
         try:
-            confidence = float(row["confidence_score"] or 0)
-            if confidence < SOCIAL_MIN_CONFIDENCE:
-                image_result = _ensure_social_safe_card(c, row, ts)
-            else:
-                image_result = _ensure_social_ai_image(c, row, ts)
+            # NORMAL BUZZ NOW returns to the approved AI context-image design.
+            # The fixed BUZZ NOW overlays / typography remain handled by the
+            # existing social-image generator.
+            image_result = _ensure_social_ai_image(c, row, ts)
         except Exception as image_exc:
-            logger.exception("V35.26 social image failed for %s", row["keyword"])
+            logger.exception("V35.30 AI social image failed for %s", row["keyword"])
             image_result = {"ok": False, "reason": str(image_exc)[:300]}
 
         payload = {
@@ -5116,60 +5096,43 @@ def social_send_test_post():
 
 @app.get("/api/social/why-not")
 def social_why_not(limit: int = 10):
-    """Show the actual visible TOP order and posting eligibility without rank compression."""
-    limit = max(1, min(int(limit), 10))
+    """Show NORMAL BUZZ NOW's Pre-Buzz X candidates and posting blockers."""
+    limit = max(1, min(int(limit), 30))
     now_dt = datetime.now(timezone.utc)
 
     with db() as c:
-        rows = _visible_top_rows(c, limit=limit)
+        rows = _social_candidate_rows(c, limit=limit)
         items = []
 
-        for visible_rank, row in enumerate(rows, start=1):
-            pre_ok = float(row["pre_buzz_score"] or 0) >= SOCIAL_MIN_PREBUZZ
-            traffic_ok = float(row["traffic_potential"] or 0) >= SOCIAL_MIN_TRAFFIC
-            status_ok = "下降" not in str(row["status"] or "")
-            signal_ok = pre_ok and traffic_ok and status_ok
-
+        for candidate_rank, row in enumerate(rows, start=1):
             allowed, cooldown_reason = _social_post_allowed(c, row, now_dt)
-            confidence = float(row["confidence_score"] or 0)
-            mode = (
-                "confirmed_reason"
-                if confidence >= SOCIAL_MIN_CONFIDENCE
-                else "cautious_signal_only"
-            )
-
-            blocked = []
-            if not pre_ok:
-                blocked.append(f"Pre-Buzz<{SOCIAL_MIN_PREBUZZ:g}")
-            if not traffic_ok:
-                blocked.append(f"Traffic<{SOCIAL_MIN_TRAFFIC:g}")
-            if not status_ok:
-                blocked.append("下降中")
-            if signal_ok and not allowed:
-                blocked.append(cooldown_reason)
 
             items.append({
-                "visible_rank": visible_rank,
+                "candidate_rank": candidate_rank,
                 "keyword": row["keyword"],
                 "pre_buzz_score": round(float(row["pre_buzz_score"] or 0), 1),
                 "traffic_potential": round(float(row["traffic_potential"] or 0), 1),
-                "confidence_score": round(confidence, 1),
+                "confidence_score": round(float(row["confidence_score"] or 0), 1),
                 "confidence_label": row["confidence_label"],
-                "pageviews": int(row["pageviews"] or 0),
+                "acceleration": round(float(row["acceleration"] or 0), 2),
                 "first_source": row["first_source"],
-                "post_mode": mode,
-                "inside_visible_top10": True,
-                "signal_gate_ok": signal_ok,
-                "post_now_ok": bool(signal_ok and allowed),
-                "blocked_by": blocked,
+                "image_mode": "ai_context_visual",
+                "post_now_ok": bool(allowed),
+                "blocked_by": "" if allowed else cooldown_reason,
             })
 
     return {
         "ok": True,
         "version": APP_VERSION,
-        "ranking_alignment": "exact visible TOP first; posting filters applied only after TOP10 is frozen",
-        "social_candidate_scope": "visible TOP10 only; rank 11+ can never auto-post",
-        "low_confidence_policy": "post signal only; do not assert the event as fact",
+        "normal_x_strategy": "Pre-Buzz discovery; independent from visible TOP ranking",
+        "buzzing_now_strategy": "separate Yahoo/X viral quote-post flow",
+        "normal_image_mode": "AI contextual background + approved BUZZ NOW overlay",
+        "selection_rule": {
+            "min_pre_buzz": SOCIAL_MIN_PREBUZZ,
+            "min_traffic_potential": SOCIAL_MIN_TRAFFIC,
+            "min_confidence_score": SOCIAL_MIN_CONFIDENCE,
+            "order": "pre_buzz -> traffic -> confidence -> acceleration",
+        },
         "daily_cap": SOCIAL_DAILY_CAP,
         "global_cooldown_minutes": SOCIAL_GLOBAL_COOLDOWN_MINUTES,
         "items": items,
