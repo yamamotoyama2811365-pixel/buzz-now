@@ -34,8 +34,34 @@
       gtag('config', 'G-XQG0VE9TSS');
     </script>
 
+<style>
+.reading-next{padding:18px;border:1px solid #465261;border-radius:16px;background:#101820}
+.reading-next h2{font-size:19px;margin:0 0 12px;color:#fff}
+.reading-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.reading-link{display:flex;justify-content:space-between;align-items:center;gap:12px;min-height:48px;padding:12px 14px;background:#1b2834;border:1px solid #526375;border-radius:10px;color:#fff;text-decoration:none;overflow-wrap:anywhere}
+.reading-link:hover,.reading-link:focus-visible{border-color:#ffda39;outline:2px solid #ffda39;outline-offset:2px}
+.reading-link span:last-child{color:#ffda39}
+@media(max-width:540px){.reading-grid{grid-template-columns:1fr}}
+</style>
 </head>
 <body>
+
+{% macro next_links(rows, heading, placement, maximum=5) %}
+{% set choices = rows|rejectattr('id', 'equalto', trend['id'])|list %}
+{% if choices %}
+<section class="section reading-next" aria-label="{{ heading }}">
+  <h2>{{ heading }}</h2>
+  <div class="reading-grid">
+  {% for item in choices[:maximum] %}
+    <a class="reading-link" href="/trend/{{ item['slug']|urlencode }}" data-reading-placement="{{ placement }}">
+      <span>{{ item['keyword'] }}</span><span aria-hidden="true">→</span>
+    </a>
+  {% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endmacro %}
+
 <div class="wrap page">
   <header class="top">
     <a class="brand" href="/">● BUZZ NOW</a>
@@ -47,6 +73,7 @@
     <h1>{{ trend['keyword'] }}とは？<br>なぜ今話題？</h1>
     <p class="desc">{{ trend['summary'] }}</p>
 
+    {{ next_links(related_rows or top_now_rows, 'あわせて読みたい話題', 'article_top', 3) }}
     <div class="metrics">
       <div class="metric"><span>PRE-BUZZ</span><b>{{ trend['pre_buzz_score']|round|int }}</b></div>
       <div class="metric"><span>BUZZ SCORE</span><b>{{ trend['buzz_score']|round|int }}</b></div>
@@ -195,6 +222,10 @@
       </div>
     </section>
 
+    {{ next_links(related_rows, '関連する話題を読む', 'article_bottom_related') }}
+    {{ next_links(top_now_rows, '今、話題のキーワード', 'article_bottom_now') }}
+    {{ next_links(prebuzz_rows, '次にバズりそうなキーワード', 'article_bottom_prebuzz') }}
+    <a class="reading-link" href="/" data-reading-placement="article_bottom_home">話題の一覧を見る <span aria-hidden="true">→</span></a>
     <p class="notice">
       最終更新：{{ trend['updated_at'] }}<br>
       BUZZ NOWはトレンドの注目度を整理するサービスです。掲載内容は情報源の紹介・要約を中心とし、事実関係の最終確認は元情報をご確認ください。
@@ -306,7 +337,17 @@ try{
     document.getElementById('trafficHistory').textContent='交通データの取得に失敗しました';
   }
 })();
-setInterval(()=>location.reload(),30000);
+// Record an internal-navigation event without delaying the link.
+document.addEventListener('click', function(event) {
+  const link = event.target.closest('a[data-reading-placement]');
+  if (link && typeof gtag === 'function') {
+    gtag('event', 'internal_navigation', {
+      link_url: link.href,
+      placement: link.dataset.readingPlacement,
+      transport_type: 'beacon'
+    });
+  }
+});
 </script>
 
 {% if affiliate_enabled and affiliate_script_url %}
