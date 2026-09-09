@@ -53,7 +53,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.30.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.31.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -83,6 +83,12 @@ SOCIAL_MAX_POSTS_PER_RUN = int(os.getenv("SOCIAL_MAX_POSTS_PER_RUN", "1"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2").strip()
 SOCIAL_AI_IMAGE_ENABLED = os.getenv("SOCIAL_AI_IMAGE_ENABLED", "false").lower() == "true"
+
+# X/SNS landing ad gate. The gate activates only when an i-mobile ad tag exists.
+IMOBILE_X_GATE_ENABLED = env_bool("IMOBILE_X_GATE_ENABLED", True)
+IMOBILE_X_GATE_HTML = os.getenv("IMOBILE_X_GATE_HTML", "").strip()
+IMOBILE_X_GATE_SECONDS = max(0, min(int(os.getenv("IMOBILE_X_GATE_SECONDS", "3")), 10))
+IMOBILE_X_GATE_COOLDOWN_MINUTES = max(1, int(os.getenv("IMOBILE_X_GATE_COOLDOWN_MINUTES", "60")))
 SOCIAL_AI_IMAGE_QUALITY = os.getenv("SOCIAL_AI_IMAGE_QUALITY", "low").strip()
 
 # V19: article discovery / WHY NOW enrichment
@@ -5565,14 +5571,66 @@ def social_ai_image_status(trend_id: int):
     }
 
 
-@app.get("/t/{trend_id}")
-def social_short_link(trend_id: int):
-    """Short mobile-safe URL for social posts; redirects to the canonical trend page."""
+@app.get("/t/{trend_id}", response_class=HTMLResponse)
+def social_short_link(trend_id: int, request: Request):
+    """X/SNS short link.
+
+    When an i-mobile tag is configured, first-time visitors see a short
+    ad-support screen. They can continue to the canonical trend page without
+    clicking the ad. A cookie suppresses the gate for the configured cooldown.
+    """
     with db() as c:
-        row = c.execute("SELECT slug FROM trends WHERE id=?", (trend_id,)).fetchone()
+        row = c.execute(
+            "SELECT id,keyword,slug FROM trends WHERE id=?",
+            (trend_id,)
+        ).fetchone()
+
     if not row:
         raise HTTPException(404, "Trend not found")
-    return RedirectResponse(url=_social_detail_url(row["slug"]), status_code=307)
+
+    detail_url = _social_detail_url(row["slug"])
+
+    # No ad tag yet -> preserve the old direct redirect behavior.
+    if not IMOBILE_X_GATE_ENABLED or not IMOBILE_X_GATE_HTML:
+        return RedirectResponse(url=detail_url, status_code=307)
+
+    gate_cookie = request.cookies.get("buzznow_x_gate_seen", "")
+    if gate_cookie == "1":
+        return RedirectResponse(url=detail_url, status_code=307)
+
+    response = templates.TemplateResponse(request, "x_gate.html", {
+        "request": request,
+        "keyword": row["keyword"],
+        "detail_url": detail_url,
+        "imobile_ad_html": IMOBILE_X_GATE_HTML,
+        "gate_seconds": IMOBILE_X_GATE_SECONDS,
+        "site_name": SITE_NAME,
+    })
+
+    response.set_cookie(
+        key="buzznow_x_gate_seen",
+        value="1",
+        max_age=IMOBILE_X_GATE_COOLDOWN_MINUTES * 60,
+        httponly=False,
+        secure=True,
+        samesite="lax",
+    )
+    return response
+
+
+@app.get("/api/x-gate/status")
+def x_gate_status():
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "enabled": IMOBILE_X_GATE_ENABLED,
+        "ad_tag_configured": bool(IMOBILE_X_GATE_HTML),
+        "active": bool(IMOBILE_X_GATE_ENABLED and IMOBILE_X_GATE_HTML),
+        "display_seconds": IMOBILE_X_GATE_SECONDS,
+        "cooldown_minutes": IMOBILE_X_GATE_COOLDOWN_MINUTES,
+        "entry_route": "/t/{trend_id}",
+        "message": "X流入初回に広告協力画面を表示。広告クリックは不要で、記事へ進めます。",
+    }
 
 
 @app.get("/api/social/candidates")
