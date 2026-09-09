@@ -63,7 +63,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.37.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.38.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -77,6 +77,15 @@ BUFFER_API_KEY = os.getenv("BUFFER_API_KEY", "").strip()
 BUFFER_CHANNEL_ID = os.getenv("BUFFER_CHANNEL_ID", "6a9a680a065799be4686e3d9").strip()
 BUFFER_API_URL = "https://api.buffer.com"
 SOCIAL_TEST_ENABLED = os.getenv("SOCIAL_TEST_ENABLED", "false").lower() == "true"
+
+# V35.38: Threads via the same Buffer account. The channel id is auto-discovered
+# from the connected Threads profile, so no extra secret/id needs to be copied.
+THREADS_AUTO_ENABLED = os.getenv("THREADS_AUTO_ENABLED", "true").lower() == "true"
+THREADS_CHANNEL_HANDLE = os.getenv("THREADS_CHANNEL_HANDLE", "buzz_now_of").strip().lower()
+THREADS_DAILY_CAP = max(1, int(os.getenv("THREADS_DAILY_CAP", "8")))
+THREADS_GLOBAL_COOLDOWN_MINUTES = max(0, int(os.getenv("THREADS_GLOBAL_COOLDOWN_MINUTES", "90")))
+THREADS_KEYWORD_COOLDOWN_HOURS = max(0, int(os.getenv("THREADS_KEYWORD_COOLDOWN_HOURS", "72")))
+THREADS_MAX_POSTS_PER_RUN = max(1, min(int(os.getenv("THREADS_MAX_POSTS_PER_RUN", "1")), 3))
 
 # V30: production X auto-posting via Make -> Buffer -> X
 SOCIAL_AUTO_ENABLED = os.getenv("SOCIAL_AUTO_ENABLED", "false").lower() == "true"
@@ -260,6 +269,22 @@ def init_db():
             ON social_posts(trend_id, posted_at);
         CREATE INDEX IF NOT EXISTS idx_social_posts_posted_at
             ON social_posts(posted_at);
+
+        CREATE TABLE IF NOT EXISTS threads_posts(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trend_id INTEGER NOT NULL,
+            keyword TEXT NOT NULL,
+            pre_buzz_score REAL NOT NULL DEFAULT 0,
+            traffic_potential REAL NOT NULL DEFAULT 0,
+            post_text TEXT NOT NULL,
+            buffer_status INTEGER NOT NULL DEFAULT 0,
+            buffer_post_id TEXT NOT NULL DEFAULT '',
+            posted_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_threads_posts_trend_time
+            ON threads_posts(trend_id, posted_at);
+        CREATE INDEX IF NOT EXISTS idx_threads_posts_posted_at
+            ON threads_posts(posted_at);
 
         CREATE TABLE IF NOT EXISTS social_images(
             trend_id INTEGER PRIMARY KEY,
@@ -2697,6 +2722,243 @@ def _social_candidate_rows(c, limit: int = 20):
     )).fetchall()
 
 
+def _build_threads_post_text(row) -> str:
+    """Threads-specific copy: compact, conversational, and cautious."""
+    keyword = str(row["keyword"]).strip()
+    pre = int(round(float(row["pre_buzz_score"] or 0)))
+    traffic = int(round(float(row["traffic_potential"] or 0)))
+    reason = _social_reason_from_row(row, keyword)
+    detail_url = _social_short_url(row["id"])
+    return (
+        f"いま「{keyword}」の話題シグナルが上昇中。\n"
+        f"{reason}\n"
+        f"Pre-Buzz：{pre} / Traffic：{traffic}\n"
+        f"なぜ今？ → {detail_url}"
+    )
+
+
+def _threads_post_allowed(c, row, now_dt):
+    daily_cutoff = (now_dt - timedelta(hours=24)).isoformat()
+    daily_count = c.execute(
+        "SELECT COUNT(*) AS n FROM threads_posts WHERE buffer_status=1 AND posted_at>=?",
+        (daily_cutoff,),
+    ).fetchone()["n"]
+    if int(daily_count or 0) >= THREADS_DAILY_CAP:
+        return False, "daily_cap"
+
+    last_any = c.execute(
+        "SELECT posted_at FROM threads_posts WHERE buffer_status=1 ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if last_any:
+        last_dt = _parse_iso_datetime(last_any["posted_at"])
+        if last_dt and now_dt - last_dt < timedelta(minutes=THREADS_GLOBAL_COOLDOWN_MINUTES):
+            return False, "global_cooldown"
+
+    last_same = c.execute(
+        "SELECT posted_at FROM threads_posts WHERE buffer_status=1 AND trend_id=? ORDER BY id DESC LIMIT 1",
+        (row["id"],),
+    ).fetchone()
+    if last_same:
+        last_dt = _parse_iso_datetime(last_same["posted_at"])
+        if last_dt and now_dt - last_dt < timedelta(hours=THREADS_KEYWORD_COOLDOWN_HOURS):
+            return False, "keyword_cooldown"
+
+    return True, "ok"
+
+
+def _buffer_graphql(query: str) -> dict:
+    if not BUFFER_API_KEY:
+        return {"ok": False, "reason": "BUFFER_API_KEY is not configured"}
+    try:
+        response = httpx.post(
+            BUFFER_API_URL,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {BUFFER_API_KEY}",
+            },
+            json={"query": query},
+            timeout=45.0,
+        )
+        try:
+            body = response.json()
+        except Exception:
+            body = {"raw": response.text[:1000]}
+        if response.status_code != 200:
+            return {"ok": False, "reason": "Buffer HTTP error", "status_code": response.status_code, "response": body}
+        if isinstance(body, dict) and body.get("errors"):
+            return {"ok": False, "reason": "Buffer GraphQL error", "response": body}
+        return {"ok": True, "data": (body or {}).get("data") or {}, "response": body}
+    except Exception as exc:
+        logger.exception("Buffer GraphQL request failed")
+        return {"ok": False, "reason": str(exc)[:500]}
+
+
+def _discover_threads_buffer_channel(c, refresh: bool = False) -> dict:
+    """Find the connected Buffer Threads channel and cache its id in system_state."""
+    cache_key = "threads_buffer_channel_id"
+    if not refresh:
+        cached = c.execute("SELECT value FROM system_state WHERE key=?", (cache_key,)).fetchone()
+        if cached and str(cached["value"] or "").strip():
+            return {"ok": True, "channel_id": str(cached["value"]).strip(), "cached": True}
+
+    org_res = _buffer_graphql(
+        "query GetOrganizations { account { organizations { id name } } }"
+    )
+    if not org_res.get("ok"):
+        return org_res
+    orgs = (((org_res.get("data") or {}).get("account") or {}).get("organizations") or [])
+    all_threads = []
+    for org in orgs:
+        org_id = str(org.get("id") or "").strip()
+        if not org_id:
+            continue
+        query = (
+            "query GetChannels { channels(input: { organizationId: "
+            + _graphql_string(org_id)
+            + " }) { id name displayName service } }"
+        )
+        ch_res = _buffer_graphql(query)
+        if not ch_res.get("ok"):
+            continue
+        for ch in (ch_res.get("data") or {}).get("channels") or []:
+            service = str(ch.get("service") or "").lower()
+            if "thread" not in service:
+                continue
+            item = {
+                "id": str(ch.get("id") or "").strip(),
+                "name": str(ch.get("name") or "").strip(),
+                "displayName": str(ch.get("displayName") or "").strip(),
+                "service": service,
+            }
+            if item["id"]:
+                all_threads.append(item)
+
+    if not all_threads:
+        return {"ok": False, "reason": "No Threads channel found in Buffer"}
+
+    target = THREADS_CHANNEL_HANDLE.replace("@", "").lower()
+    chosen = None
+    for ch in all_threads:
+        hay = " ".join([ch["name"], ch["displayName"]]).replace("@", "").lower()
+        if target and target in hay:
+            chosen = ch
+            break
+    if chosen is None:
+        chosen = all_threads[0]
+
+    c.execute(
+        "INSERT INTO system_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (cache_key, chosen["id"]),
+    )
+    return {"ok": True, "channel_id": chosen["id"], "cached": False, "channel": chosen}
+
+
+def _send_to_buffer_channel(channel_id: str, post_text: str, image_url: str = "", mode: str = "shareNow") -> dict:
+    if not channel_id:
+        return {"ok": False, "reason": "Buffer channel id missing"}
+    assets = ""
+    if image_url:
+        assets = "assets: [{ image: { url: " + _graphql_string(image_url) + " } }] "
+    query = (
+        "mutation CreateBuzzNowPost { createPost(input: { "
+        + "text: " + _graphql_string(post_text) + " "
+        + "channelId: " + _graphql_string(channel_id) + " "
+        + "schedulingType: automatic "
+        + "mode: " + mode + " "
+        + assets
+        + "}) { "
+        + "... on PostActionSuccess { post { id text status assets { id mimeType } } } "
+        + "... on MutationError { message } "
+        + "} }"
+    )
+    res = _buffer_graphql(query)
+    if not res.get("ok"):
+        return res
+    body = res.get("response") or {}
+    result = ((body.get("data") or {}).get("createPost")) if isinstance(body, dict) else None
+    if not result:
+        return {"ok": False, "reason": "Buffer returned no createPost result", "response": body}
+    if result.get("message"):
+        return {"ok": False, "reason": result["message"], "response": body}
+    post = result.get("post")
+    if post and post.get("id"):
+        return {"ok": True, "post_id": post["id"], "post": post}
+    return {"ok": False, "reason": "Buffer did not return a post id", "response": body}
+
+
+def auto_post_threads(c, ts: str, force_channel_refresh: bool = False):
+    result = {
+        "enabled": THREADS_AUTO_ENABLED,
+        "sent": 0,
+        "skipped": [],
+        "errors": [],
+    }
+    if not THREADS_AUTO_ENABLED:
+        result["reason"] = "THREADS_AUTO_ENABLED=false"
+        return result
+    if not BUFFER_API_KEY:
+        result["reason"] = "BUFFER_API_KEY missing"
+        return result
+
+    channel = _discover_threads_buffer_channel(c, refresh=force_channel_refresh)
+    if not channel.get("ok"):
+        result["reason"] = channel.get("reason", "threads_channel_not_found")
+        result["channel_lookup"] = channel
+        return result
+    channel_id = channel["channel_id"]
+    result["channel_id_suffix"] = channel_id[-6:]
+
+    now_dt = _parse_iso_datetime(ts) or datetime.now(timezone.utc)
+    candidates = _social_candidate_rows(c, limit=30)
+    for row in candidates:
+        if result["sent"] >= THREADS_MAX_POSTS_PER_RUN:
+            break
+        allowed, reason = _threads_post_allowed(c, row, now_dt)
+        if not allowed:
+            result["skipped"].append({"keyword": row["keyword"], "reason": reason})
+            continue
+
+        post_text = _build_threads_post_text(row)
+        image_url = ""
+        try:
+            image_result = _ensure_social_ai_image(c, row, ts)
+            if image_result.get("ok"):
+                image_url = image_result.get("image_url", "")
+                if image_url:
+                    _prewarm_social_jpeg(row["id"])
+        except Exception as image_exc:
+            logger.exception("Threads social image failed for %s", row["keyword"])
+            result["errors"].append({"keyword": row["keyword"], "image_error": str(image_exc)[:200]})
+
+        send_result = _send_to_buffer_channel(channel_id, post_text, image_url, "shareNow")
+        ok = bool(send_result.get("ok"))
+        c.execute(
+            """
+            INSERT INTO threads_posts(
+                trend_id,keyword,pre_buzz_score,traffic_potential,
+                post_text,buffer_status,buffer_post_id,posted_at
+            ) VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (
+                row["id"], row["keyword"], float(row["pre_buzz_score"] or 0),
+                float(row["traffic_potential"] or 0), post_text, 1 if ok else 0,
+                str(send_result.get("post_id") or ""), ts,
+            ),
+        )
+        if ok:
+            result["sent"] += 1
+            result["last_keyword"] = row["keyword"]
+            result["last_post_id"] = send_result.get("post_id")
+            logger.info("V35.38 Threads auto-post sent: %s", row["keyword"])
+        else:
+            result["errors"].append({
+                "keyword": row["keyword"],
+                "error": send_result.get("reason", "Buffer returned not-ok"),
+            })
+
+    return result
+
+
 def _social_post_allowed(c, row, now_dt):
     # Daily safety cap.
     daily_cutoff = (now_dt - timedelta(hours=24)).isoformat()
@@ -4623,6 +4885,10 @@ def collect_real_sources():
 
         # Existing Pre-Buzz own-post automation remains unchanged.
         social_result = auto_post_social(c, ts)
+
+        # V35.38: the same Pre-Buzz pool also feeds Threads with Threads-specific copy.
+        # It has separate cooldown/deduplication history, so it never interferes with X.
+        threads_result = auto_post_threads(c, ts)
         c.commit()
 
     # Phase 2: Yahoo Buzzing Now automation.
@@ -4643,6 +4909,7 @@ def collect_real_sources():
         "news": news_count,
         "total": g + w,
         "social": social_result,
+        "threads": threads_result,
         "indexnow": indexnow_result,
     }
 
@@ -5112,55 +5379,9 @@ def _graphql_string(value: str) -> str:
 
 
 def _send_to_buffer_direct(post_text: str, image_url: str = "", mode: str = "shareNow") -> dict:
-    if not BUFFER_API_KEY:
-        return {"ok": False, "reason": "BUFFER_API_KEY is not configured"}
     if not BUFFER_CHANNEL_ID:
         return {"ok": False, "reason": "BUFFER_CHANNEL_ID is not configured"}
-
-    assets = ""
-    if image_url:
-        assets = "assets: [{ image: { url: " + _graphql_string(image_url) + " } }] "
-
-    query = (
-        "mutation CreateBuzzNowPost { createPost(input: { "
-        + "text: " + _graphql_string(post_text) + " "
-        + "channelId: " + _graphql_string(BUFFER_CHANNEL_ID) + " "
-        + "schedulingType: automatic "
-        + "mode: " + mode + " "
-        + assets
-        + "}) { "
-        + "... on PostActionSuccess { post { id text status assets { id mimeType } } } "
-        + "... on MutationError { message } "
-        + "} }"
-    )
-    try:
-        response = httpx.post(
-            BUFFER_API_URL,
-            headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {BUFFER_API_KEY}"},
-            json={"query": query},
-            timeout=45.0,
-        )
-        try:
-            body = response.json()
-        except Exception:
-            body = {"raw": response.text[:1000]}
-        if response.status_code != 200:
-            return {"ok": False, "status_code": response.status_code, "reason": "Buffer HTTP error", "response": body}
-        if isinstance(body, dict) and body.get("errors"):
-            return {"ok": False, "status_code": 200, "reason": "Buffer GraphQL error", "response": body}
-        result = ((body or {}).get("data") or {}).get("createPost") if isinstance(body, dict) else None
-        if not result:
-            return {"ok": False, "reason": "Buffer returned no createPost result", "response": body}
-        if result.get("message"):
-            return {"ok": False, "reason": result["message"], "response": body}
-        post = result.get("post")
-        if post and post.get("id"):
-            return {"ok": True, "post_id": post["id"], "post": post}
-        return {"ok": False, "reason": "Buffer did not return a post id", "response": body}
-    except Exception as exc:
-        logger.exception("Direct Buffer post failed")
-        return {"ok": False, "reason": str(exc)[:500]}
+    return _send_to_buffer_channel(BUFFER_CHANNEL_ID, post_text, image_url, mode)
 
 
 def _send_to_make(payload: dict) -> dict:
@@ -5570,6 +5791,70 @@ def generate_social_image_only(trend_id: int):
         "cached": bool(result.get("cached")),
         "reason": result.get("reason", ""),
     }
+
+
+@app.get("/api/threads/status")
+def threads_status():
+    with db() as c:
+        channel = _discover_threads_buffer_channel(c, refresh=False) if BUFFER_API_KEY else {"ok": False, "reason": "BUFFER_API_KEY missing"}
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        sent_24h = c.execute(
+            "SELECT COUNT(*) AS n FROM threads_posts WHERE buffer_status=1 AND posted_at>=?",
+            (cutoff,),
+        ).fetchone()["n"]
+        last_post = c.execute(
+            "SELECT keyword,buffer_post_id,posted_at FROM threads_posts WHERE buffer_status=1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        c.commit()
+    return {
+        "ok": bool(channel.get("ok")),
+        "version": APP_VERSION,
+        "enabled": THREADS_AUTO_ENABLED,
+        "handle": THREADS_CHANNEL_HANDLE,
+        "channel_found": bool(channel.get("ok")),
+        "channel_id_suffix": str(channel.get("channel_id") or "")[-6:],
+        "sent_last_24h": int(sent_24h or 0),
+        "daily_cap": THREADS_DAILY_CAP,
+        "global_cooldown_minutes": THREADS_GLOBAL_COOLDOWN_MINUTES,
+        "keyword_cooldown_hours": THREADS_KEYWORD_COOLDOWN_HOURS,
+        "last_post": dict(last_post) if last_post else None,
+        "channel_lookup_reason": channel.get("reason", "ok"),
+    }
+
+
+@app.get("/api/threads/run-now")
+def threads_run_now():
+    ts = now_iso()
+    with db() as c:
+        result = auto_post_threads(c, ts, force_channel_refresh=True)
+        c.commit()
+    return {"ok": result.get("sent", 0) > 0, "version": APP_VERSION, "threads": result}
+
+
+@app.get("/api/threads/channels")
+def threads_channels_debug():
+    """Safe diagnostic: returns Buffer channel names/services but never the API key."""
+    if not BUFFER_API_KEY:
+        return {"ok": False, "version": APP_VERSION, "reason": "BUFFER_API_KEY missing"}
+    org_res = _buffer_graphql("query GetOrganizations { account { organizations { id name } } }")
+    if not org_res.get("ok"):
+        return {"ok": False, "version": APP_VERSION, "reason": org_res.get("reason")}
+    orgs = (((org_res.get("data") or {}).get("account") or {}).get("organizations") or [])
+    items = []
+    for org in orgs:
+        org_id = str(org.get("id") or "")
+        q = "query GetChannels { channels(input: { organizationId: " + _graphql_string(org_id) + " }) { id name displayName service } }"
+        res = _buffer_graphql(q)
+        if not res.get("ok"):
+            continue
+        for ch in (res.get("data") or {}).get("channels") or []:
+            items.append({
+                "name": ch.get("name"),
+                "displayName": ch.get("displayName"),
+                "service": ch.get("service"),
+                "id_suffix": str(ch.get("id") or "")[-6:],
+            })
+    return {"ok": True, "version": APP_VERSION, "channels": items}
 
 
 @app.get("/api/social/buffer-status")
