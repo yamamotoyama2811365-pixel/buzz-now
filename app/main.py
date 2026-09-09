@@ -63,7 +63,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.36.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.37.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -4853,6 +4853,12 @@ def trend_detail(slug: str, request: Request):
             except Exception as e:
                 logger.warning("detail news enrichment failed slug=%s: %s", slug, e)
 
+        # V35.37: PostgreSQL connections are closed when leaving `with db()`.
+        # Fetch all rows needed by the template before the connection closes.
+        related_rows = _trend_related_rows(c, trend["id"], trend["keyword"], trend["category"], 5)
+        top_now_rows = _trend_top_now_rows(c, 5)
+        prebuzz_rows = _trend_prebuzz_rows(c, 5)
+
     title = f"{trend['keyword']}とは？なぜ今話題？｜{SITE_NAME}"
     why_text = " ".join(str(trend["why_now"] or "").split())
     description = (why_text[:145] + "…") if len(why_text) > 145 else why_text
@@ -4863,9 +4869,6 @@ def trend_detail(slug: str, request: Request):
         )
     canonical = f"{SITE_URL}/trend/{trend['slug']}"
     seo_title = _seo_trend_title(trend["keyword"], trend["status"], trend["why_now"])
-    related_rows = _trend_related_rows(c, trend["id"], trend["keyword"], trend["category"], 5)
-    top_now_rows = _trend_top_now_rows(c, 5)
-    prebuzz_rows = _trend_prebuzz_rows(c, 5)
     og_image_url = _social_image_url(trend["id"])
 
 
