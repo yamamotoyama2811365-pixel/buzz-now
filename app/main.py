@@ -63,7 +63,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.39.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.40.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -125,6 +125,26 @@ logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO),
 logger=logging.getLogger("buzz-now")
 
 app = FastAPI(title=SITE_NAME)
+
+# One production origin; keep the legacy service only for permanent redirects.
+PRIMARY_SITE_URL = "https://buzz-now-1.onrender.com"
+LEGACY_SERVICE = os.getenv("RENDER_SERVICE_ID", "") == "srv-daa321mk1f9s73fbjfcg"
+
+@app.middleware("http")
+async def canonical_origin(request: Request, call_next):
+    path = request.url.path
+    # Keep Render health checks and Google ownership verification local.
+    verification = bool(re.fullmatch(r"/google[a-zA-Z0-9]+\.html", path))
+    if (LEGACY_SERVICE or request.url.hostname == "buzz-now.onrender.com") and path != "/health" and not verification:
+        raw_path = request.scope.get("raw_path", b"/").decode("ascii")
+        query = request.scope.get("query_string", b"").decode("ascii")
+        target = PRIMARY_SITE_URL + raw_path + (("?" + query) if query else "")
+        return RedirectResponse(target, status_code=308)
+    response = await call_next(request)
+    if path == "/":
+        response.headers["Link"] = '<' + PRIMARY_SITE_URL + '/>; rel="canonical"'
+    return response
+
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 
@@ -4848,6 +4868,8 @@ def submit_indexnow(urls=None):
 
 
 def collect_real_sources():
+    if LEGACY_SERVICE:
+        return {"skipped": "legacy_redirect_service"}
     ts = now_iso()
 
     # Phase 1: normal data refresh. Commit first so Yahoo candidates are visible
@@ -4970,6 +4992,8 @@ scheduler = BackgroundScheduler()
 
 @app.on_event("startup")
 def startup():
+    if LEGACY_SERVICE:
+        return
     # V35: PostgreSQL is already initialized. Do not block Render startup on DB DDL.
     # init_db() remains available for explicit maintenance, but is not run here.
 
