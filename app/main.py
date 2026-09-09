@@ -25,6 +25,8 @@ from PIL import Image, ImageDraw, ImageFont
 BASE = Path(__file__).resolve().parent.parent
 DB_PATH = BASE / "buzznow.db"
 SITE_URL = os.getenv("SITE_URL", "http://localhost:8000").rstrip("/")
+# V35.36: X/Threads public links must never fall back to the retired Render hostname.
+SOCIAL_PUBLIC_BASE_URL = os.getenv("SOCIAL_PUBLIC_BASE_URL", "https://buzz-now-1.onrender.com").rstrip("/")
 
 # V35.32: IndexNow real-time search-engine notification.
 # The key is public by design and is hosted at /<key>.txt for ownership verification.
@@ -61,7 +63,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.34.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.36.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2331,11 +2333,11 @@ def _social_detail_url(slug: str) -> str:
 
 
 def _social_short_url(trend_id: int) -> str:
-    return f"{SITE_URL}/t/{int(trend_id)}"
+    return f"{SOCIAL_PUBLIC_BASE_URL}/t/{int(trend_id)}"
 
 
 def _social_image_url(trend_id: int) -> str:
-    return f"{SITE_URL}/social-image/{int(trend_id)}.jpg"
+    return f"{SOCIAL_PUBLIC_BASE_URL}/social-image/{int(trend_id)}.jpg"
 
 
 def _build_ai_visual_prompt(row) -> str:
@@ -2573,7 +2575,7 @@ def _build_social_card_png(row) -> bytes:
     draw.text((842, 438), "CONFIDENCE", font=label_font, fill=(160, 169, 184))
     draw.text((842, 484), str(confidence), font=score_font, fill=(255, 255, 255))
 
-    draw.text((86, 594), "buzz-now.onrender.com", font=small_font, fill=(125, 135, 150))
+    draw.text((86, 594), urlparse(SOCIAL_PUBLIC_BASE_URL).netloc, font=small_font, fill=(125, 135, 150))
 
     out = BytesIO()
     img.save(out, format="PNG", optimize=True)
@@ -5304,6 +5306,7 @@ def social_status():
         ).fetchone()["n"]
     return {
         "version": APP_VERSION,
+        "social_public_base_url": SOCIAL_PUBLIC_BASE_URL,
         "production_social_route": "buffer-direct",
         "buffer_api_key_configured": bool(BUFFER_API_KEY),
         "buffer_channel_id_configured": bool(BUFFER_CHANNEL_ID),
