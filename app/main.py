@@ -63,7 +63,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.40.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.41.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -2628,119 +2628,83 @@ def _build_social_card_png(row) -> bytes:
     return out.getvalue()
 
 
+
+def _usable_news_headline(title, keyword=""):
+    """Use a complete, attributable headline; never delete the person's name."""
+    title = re.sub(r"\s+", " ", str(title or "")).strip()
+    title = re.sub(r"\s+[|｜]\s+[^|｜]{1,40}$", "", title).strip()
+    if not 12 <= len(title) <= 90 or "…" in title or "..." in title:
+        return ""
+    if title[-1:] in ("、", "：", ":", "「", "『"):
+        return ""
+    normalized = lambda text: re.sub(r"\s+", "", unicodedata.normalize("NFKC", text)).casefold()
+    if keyword and normalized(keyword) not in normalized(title):
+        return ""
+    return title
+
+
 def _social_reason_from_row(row, keyword: str) -> str:
-    """Create one short, cautious X reason line from an actually collected article title."""
     try:
-        keys = set(row.keys())
-    except Exception:
-        keys = set()
+        title = _usable_news_headline(row["reason_title"], keyword)
+    except (KeyError, IndexError):
+        title = ""
+    if title:
+        return f"関連報道：{title}"
+    label = f"「{keyword}」" if len(keyword) <= 40 else "このキーワード"
+    return f"{label}の関連情報を確認中。注目の原因はまだ特定できていません。"
 
-    title = str(row["reason_title"] or "").strip() if "reason_title" in keys else ""
-    if not title:
-        return "関連報道の増加が要因か。"
-
-    # Basic cleanup.
-    title = re.sub(r"\s+", " ", title)
-    title = re.sub(r"\s*[|｜]\s*[^|｜]{1,40}$", "", title).strip()
-    title = re.sub(r"\s*[-–—]\s*[^-–—]{1,35}$", "", title).strip()
-    title = re.sub(r"(?:\.\.\.|…)+\s*$", "", title).strip()
-
-    # Prefer the leading news hook before an ellipsis; titles are often feed-truncated.
-    hook = re.split(r"(?:\.\.\.|…)", title, maxsplit=1)[0].strip()
-    if len(hook) < 8:
-        hook = title
-
-    # Avoid repeating the buzzword itself in the reason line.
-    hook = hook.replace(keyword, "").strip(" 　「」『』:：-–—|｜・")
-    hook = re.sub(r"(?:\.\.\.|…)+\s*$", "", hook).strip()
-
-    # Remove a dangling Japanese quote particle when feed truncation ends on it.
-    hook = re.sub(r"(?:と|が|を|に|で|へ|は)$", "", hook).strip()
-
-    if len(hook) > 34:
-        hook = hook[:34].rstrip("、。・:：-–— ")
-    if not hook:
-        return "関連報道の増加が要因か。"
-
-    # Make clear this is an inferred trigger from coverage, not an asserted fact.
-    return f"「{hook}」などの関連記事が要因か。"
 
 def _build_social_post_text(row) -> str:
-    keyword = str(row["keyword"]).strip()
-    pre = int(round(float(row["pre_buzz_score"] or 0)))
-    traffic = int(round(float(row["traffic_potential"] or 0)))
-    status = str(row["status"] or "急上昇")
-    status_plain = re.sub(
-        r"^[^ぁ-んァ-ヶ一-龠A-Za-z0-9]+\s*",
-        "",
-        status,
-    ).strip() or "急上昇"
-    detail_url = _social_short_url(row["id"])
-    reason = _social_reason_from_row(row, keyword)
+    reason = _social_reason_from_row(row, str(row["keyword"]))
+    url = (SOCIAL_PUBLIC_BASE_URL + _social_detail_path(row["slug"])
+           + "?utm_source=x&utm_medium=social&utm_campaign=prebuzz&utm_content=news_context_v1")
+    return f"BUZZ NOW｜話題をチェック\n{reason}\n背景・出典を確認 ↓\n{url}"
 
-    return (
-        f"🚨 BUZZNOW SNS捜査官｜{status_plain}を検知\n"
-        f"いま「{keyword}」がバズり中。\n"
-        f"{reason}\n"
-        f"シグナル上昇 / Pre-Buzz：{pre} / Traffic：{traffic}\n"
-        f"なぜ今話題？ → {detail_url}"
-    )
 
 
 def _social_candidate_rows(c, limit: int = 20):
-    """NORMAL BUZZ NOW X candidate selection.
-
-    V35.30 restores the original Pre-Buzz strategy:
-      - do NOT follow the visible TOP ranking
-      - prioritize "about to buzz" signals before they become obvious
-      - require Pre-Buzz / Traffic / Confidence gates
-      - rank by Pre-Buzz strength first
-
-    Buzzing Now quote-posting remains a separate flow for already-viral topics.
-    """
+    """Rank source-backed topics inside a bounded pool of existing signal candidates."""
     limit = max(1, min(int(limit), 100))
-    return c.execute("""
-        SELECT
-            t.id,t.keyword,t.slug,t.category,t.pre_buzz_score,t.buzz_score,t.acceleration,
-            t.status,t.why_now,t.updated_at,
-            COALESCE(tt.traffic_potential,0) AS traffic_potential,
-            COALESCE(cf.confidence_score,0) AS confidence_score,
-            COALESCE(cf.source_count,0) AS source_count,
-            COALESCE(cf.confidence_label,'デモ/未確認') AS confidence_label,
-            COALESCE(ps.first_source,'') AS first_source,
-            (
-                SELECT s.title
-                FROM sources s
-                WHERE s.trend_id=t.id
-                  AND COALESCE(TRIM(s.title),'')<>''
-                ORDER BY
-                  CASE WHEN COALESCE(TRIM(s.published_at),'')='' THEN 1 ELSE 0 END,
-                  s.published_at DESC,
-                  s.id DESC
-                LIMIT 1
-            ) AS reason_title
+    rows = c.execute("""
+        SELECT t.id,t.keyword,t.slug,t.category,t.pre_buzz_score,t.buzz_score,
+          t.acceleration,t.status,t.why_now,t.updated_at,
+          COALESCE(tt.traffic_potential,0) AS traffic_potential,
+          COALESCE(cf.confidence_score,0) AS confidence_score,
+          COALESCE(cf.source_count,0) AS source_count,
+          COALESCE(cf.confidence_label,'未確認') AS confidence_label,
+          COALESCE(ps.first_source,'') AS first_source
         FROM trends t
         LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
         LEFT JOIN confidence_state cf ON cf.trend_id=t.id
         LEFT JOIN propagation_state ps ON ps.trend_id=t.id
-        WHERE t.is_indexable=1
-          AND t.pre_buzz_score>=?
+        WHERE t.is_indexable=1 AND t.pre_buzz_score>=?
           AND COALESCE(tt.traffic_potential,0)>=?
           AND COALESCE(cf.confidence_score,0)>=?
           AND t.status NOT LIKE '%%下降%%'
-        ORDER BY
-          t.pre_buzz_score DESC,
-          COALESCE(tt.traffic_potential,0) DESC,
-          COALESCE(cf.confidence_score,0) DESC,
-          t.acceleration DESC,
-          t.updated_at DESC
-        LIMIT ?
-    """, (
-        SOCIAL_MIN_PREBUZZ,
-        SOCIAL_MIN_TRAFFIC,
-        SOCIAL_MIN_CONFIDENCE,
-        limit,
-    )).fetchall()
+        ORDER BY t.pre_buzz_score DESC,COALESCE(tt.traffic_potential,0) DESC,
+          COALESCE(cf.confidence_score,0) DESC,t.acceleration DESC,t.updated_at DESC
+        LIMIT 100
+    """, (SOCIAL_MIN_PREBUZZ, SOCIAL_MIN_TRAFFIC, SOCIAL_MIN_CONFIDENCE)).fetchall()
+    if not rows:
+        return []
+    ids = [r["id"] for r in rows]
+    placeholders = ",".join("?" for _ in ids)
+    source_rows = c.execute(
+        f"SELECT trend_id,title,url,published_at,publisher FROM sources WHERE trend_id IN ({placeholders})",
+        tuple(ids)).fetchall()
+    grouped = {}
+    for source in source_rows:
+        grouped.setdefault(source["trend_id"], []).append(source)
+    candidates = []
+    for row in rows:
+        item = dict(row)
+        news = _article_briefing(grouped.get(row["id"], []), row["keyword"])
+        item.update(reason_title=news[0]["title"] if news else None,
+                    reason_url=news[0]["url"] if news else None,
+                    reason_published_at=news[0]["date"] if news else None)
+        candidates.append(item)
+    candidates.sort(key=lambda r: bool(r["reason_title"]), reverse=True)
+    return candidates[:limit]
 
 
 def _ensure_threads_tables(c):
@@ -2768,19 +2732,10 @@ def _ensure_threads_tables(c):
 
 
 def _build_threads_post_text(row) -> str:
-    """Threads-specific copy: compact, conversational, and cautious."""
-    keyword = str(row["keyword"]).strip()[:80]
-    pre = int(round(float(row["pre_buzz_score"] or 0)))
-    traffic = int(round(float(row["traffic_potential"] or 0)))
-    reason = _social_reason_from_row(row, keyword)
+    reason = _social_reason_from_row(row, str(row["keyword"]))
     detail_url = (SOCIAL_PUBLIC_BASE_URL + _social_detail_path(row["slug"])
-                  + "?utm_source=threads&utm_medium=social&utm_campaign=prebuzz")
-    return (
-        f"いま「{keyword}」の話題シグナルが上昇中。\n"
-        f"{reason}\n"
-        f"Pre-Buzz：{pre} / Traffic：{traffic}\n"
-        f"なぜ今？ → {detail_url}"
-    )
+                  + "?utm_source=threads&utm_medium=social&utm_campaign=prebuzz&utm_content=news_context_v1")
+    return f"いま気になる話題をチェック。\n{reason}\n関連ニュースの日時・出典はこちら。\n{detail_url}"
 
 
 def _threads_post_allowed(c, row, now_dt):
@@ -5041,6 +4996,46 @@ def home(request: Request):
 
 
 
+
+
+def _news_published_at(value):
+    from email.utils import parsedate_to_datetime
+    parsed = _parse_iso_datetime(str(value or ""))
+    if parsed is None:
+        try:
+            parsed = parsedate_to_datetime(str(value or ""))
+        except (TypeError, ValueError, OverflowError):
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _article_briefing(sources, keyword):
+    """Select dated, relevant source headlines without inventing a causal story."""
+    items = []
+    seen = set()
+    now = datetime.now(timezone.utc)
+    ordered = sorted(sources, key=lambda x: _news_published_at(x["published_at"]) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    for source in ordered:
+        title = _usable_news_headline(source["title"], keyword)
+        url = str(source["url"] or "")
+        published = _news_published_at(source["published_at"])
+        if not title or urlparse(url).scheme not in ("https", "http"):
+            continue
+        if published and published.tzinfo is None:
+            published = published.replace(tzinfo=timezone.utc)
+        if not published or published > now or published < now - timedelta(days=7):
+            continue
+        if title in seen:
+            continue
+        seen.add(title)
+        items.append({"title": title, "url": url,
+                      "publisher": source["publisher"] or "出典",
+                      "date": published.astimezone(timezone(timedelta(hours=9))).strftime("%Y年%m月%d日 %H:%M")})
+    return items[:3]
+
+
 def _seo_trend_title(keyword: str, status: str = "", why_now: str = "") -> str:
     keyword = str(keyword or "").strip()
     status = str(status or "")
@@ -5105,7 +5100,7 @@ def trend_detail(slug: str, request: Request):
         ).fetchall()
 
         sources = c.execute(
-            "SELECT * FROM sources WHERE trend_id=? ORDER BY CASE WHEN published_at='' THEN 1 ELSE 0 END, published_at DESC, id DESC LIMIT 10",
+            "SELECT * FROM sources WHERE trend_id=? ORDER BY id DESC LIMIT 30",
             (trend["id"],)
         ).fetchall()
 
@@ -5118,7 +5113,7 @@ def trend_detail(slug: str, request: Request):
                 c.commit()
                 trend = c.execute("SELECT * FROM trends WHERE id=?", (trend["id"],)).fetchone()
                 sources = c.execute(
-                    "SELECT * FROM sources WHERE trend_id=? ORDER BY CASE WHEN published_at='' THEN 1 ELSE 0 END, published_at DESC, id DESC LIMIT 10",
+                    "SELECT * FROM sources WHERE trend_id=? ORDER BY id DESC LIMIT 30",
                     (trend["id"],)
                 ).fetchall()
                 related = c.execute(
@@ -5143,7 +5138,9 @@ def trend_detail(slug: str, request: Request):
             f"Pre-Buzz Score・Buzz Score・関連キーワード・情報源から整理。"
         )
     canonical = f"{SITE_URL}/trend/{trend['slug']}"
-    seo_title = _seo_trend_title(trend["keyword"], trend["status"], trend["why_now"])
+    briefing = _article_briefing(sources, trend["keyword"])
+    seo_title = f"{trend['keyword']}の関連ニュース・注目の動き｜{SITE_NAME}"
+    description = (f"{trend['keyword']}の関連報道を公開日時・出典付きで確認。" + (briefing[0]["title"] if briefing else "注目の背景を確認できる情報を収集中です。"))
     og_image_url = _social_image_url(trend["id"])
 
 
@@ -5151,6 +5148,7 @@ def trend_detail(slug: str, request: Request):
         "request": request,
         "trend": trend,
             "seo_title": seo_title,
+            "briefing": briefing,
             "og_image_url": og_image_url,
             "related_rows": related_rows,
             "top_now_rows": top_now_rows,

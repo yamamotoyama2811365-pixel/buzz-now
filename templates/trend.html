@@ -70,10 +70,26 @@
 
   <article class="detail">
     <div class="kicker">{{ trend['category'] }} / TREND</div>
-    <h1>{{ trend['keyword'] }}とは？<br>なぜ今話題？</h1>
-    <p class="desc">{{ trend['summary'] }}</p>
+    <h1>{{ trend['keyword'] }}はなぜ話題？<br>確認できた関連ニュース</h1>
+    <section class="section news-briefing" aria-label="関連ニュースの要点">
+      <h2>いま確認できる情報</h2>
+      {% if briefing %}
+      <p>直近7日間に公開された関連報道です。見出し・公開日時・出典をまとめています。</p>
+      {% for item in briefing %}
+      <article class="card" style="margin-bottom:12px;padding:16px">
+        <p class="mini">{{ item.date }}（日本時間） · {{ item.publisher }}</p>
+        <h3 style="font-size:18px;line-height:1.7;margin:10px 0">{{ item.title }}</h3>
+        <a href="{{ item.url }}" target="_blank" rel="nofollow noopener noreferrer">出典で詳しく確認 ↗</a>
+      </article>
+      {% endfor %}
+      <p class="notice">関連報道の紹介であり、注目度が上がった原因を断定するものではありません。</p>
+      {% else %}
+      <p>今回の注目につながる出来事は確認中です。古い記事や断片的な見出しから理由を推測せず、出典を確認できた情報を掲載します。</p>
+      {% endif %}
+    </section>
 
     {{ next_links(related_rows or top_now_rows, 'あわせて読みたい話題', 'article_top', 3) }}
+    <details class="section"><summary style="cursor:pointer;padding:16px;font-weight:bold">注目度のデータを見る</summary>
     <div class="metrics">
       <div class="metric"><span>PRE-BUZZ</span><b>{{ trend['pre_buzz_score']|round|int }}</b></div>
       <div class="metric"><span>BUZZ SCORE</span><b>{{ trend['buzz_score']|round|int }}</b></div>
@@ -88,7 +104,7 @@
 
     <section class="section">
           <div class="kicker">WHY NOW?</div>
-          <h2>なぜ今、注目されている？</h2>
+          <h2>注目度の自動分析</h2>
           <div class="card why-now-card">
             <p style="margin:0;line-height:1.9;">{{ trend['why_now'] }}</p>
             {% if sources %}
@@ -114,22 +130,6 @@
       </div>
     </section>
 
-
-    <section class="section monetization-zone">
-      <div class="monetize-head">
-        <div>
-          <div class="kicker">MONETIZATION</div>
-          <h2>このトレンドの収益ポテンシャル</h2>
-        </div>
-        <div id="monetizeGrade" class="money-grade">-</div>
-      </div>
-      <div class="money-grid">
-        <div><span>MONETIZE SCORE</span><strong id="monetizeScore">-</strong></div>
-        <div><span>INTENT</span><strong id="monetizeIntent">-</strong></div>
-        <div><span>BEST MODE</span><strong id="monetizeMode">-</strong></div>
-      </div>
-      <div id="prDisclosure" class="pr-disclosure" style="display:none">{{ pr_label if pr_label else 'PR・広告を含みます' }}</div>
-    </section>
 
     <section class="section ad-zone">
       <div class="ad-label">ADVERTISEMENT</div>
@@ -182,7 +182,7 @@
         <div class="metric"><span>CTR</span><b id="ctr">-</b></div>
       </div>
       <div class="card">
-        <div id="trafficHistory">交通データ読み込み中...</div>
+        <div id="trafficHistory">アクセスデータ読み込み中...</div>
       </div>
     </section>
 
@@ -193,6 +193,7 @@
         <div id="history">読み込み中...</div>
       </div>
     </section>
+</details>
 <section class="section">
       <div class="kicker">RELATED SEARCHES</div>
       <h2>関連キーワード</h2>

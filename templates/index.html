@@ -7,8 +7,9 @@
 <meta name="description" content="BUZZ NOWは、いま話題のキーワードだけでなく『次にバズる話題』をいち早く見つけるトレンド発見サイト。Google TrendsやWikimediaなどの公開データを分析し、急上昇ワード、Pre-Buzz、拡散速度、検索需要の兆しをリアルタイムに可視化します。">
 <meta property="og:title" content="BUZZ NOW｜次にバズる話題を先読み">
 <meta property="og:description" content="バズった後ではなく、バズる直前を見る。急上昇ワードや検索需要の兆しをデータから発見するトレンドサイト。">
+<link rel="canonical" href="https://buzz-now-1.onrender.com/">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://buzz-now.onrender.com/">
+<meta property="og:url" content="https://buzz-now-1.onrender.com/">
 <link rel="stylesheet" href="/static/style.css">
 <style>
   .top-tab{text-decoration:none;display:flex;align-items:center;justify-content:center;cursor:pointer;}
@@ -550,5 +551,16 @@ loadRanking();loadMonetize();loadVelocity();loadLearning();loadCollectors();refr
 setInterval(()=>{loadRanking();loadMonetize();loadVelocity();loadLearning();loadCollectors();refreshStatus()},30000);
 </script>
 <script src="/static/v9-dashboard.js"></script>
+
+<section class="section" style="margin:24px auto;padding:20px;max-width:1100px" aria-label="話題の記事一覧">
+<h2>いま注目されている話題を読む</h2>
+<p>気になるキーワードから、関連ニュースと出典を確認できます。</p>
+<div style="display:flex;flex-wrap:wrap;gap:12px">
+{% for item in trends if item['is_indexable'] %}
+<a href="/trend/{{ item['slug']|urlencode }}" style="display:block;padding:12px 16px;border:1px solid #596576;border-radius:10px;color:inherit;text-decoration:underline">{{ item['keyword'] }}</a>
+{% endfor %}
+</div>
+</section>
+
 </body>
 </html>
