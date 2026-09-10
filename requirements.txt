@@ -13,3 +13,5 @@ trafilatura>=2,<3
 beautifulsoup4==4.13.4
 googlenewsdecoder==0.1.7
 PyJWT[crypto]>=2.13,<3
+
+psycopg2-binary>=2.9,<3
