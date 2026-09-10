@@ -125,7 +125,7 @@ def health():return {'ok':True,'database_configured':bool(DSN),'hosting':'shared
 @app.get('/ready')
 def ready():query('SELECT 1 FROM corporate_events LIMIT 1');return {'ready':True}
 @app.get('/')
-def home(page:int=Query(1,ge=1,le=10000)):return listing('企業の「いま」が、見えてくる。',page=page)
+def home(page:int=Query(1,ge=1,le=10000)):return listing('企業の倒産、新規法人情報',page=page)
 @app.get('/bankruptcies')
 def bankruptcies(page:int=Query(1,ge=1,le=10000)):return listing('倒産速報',kind='bankruptcy',page=page,path='/bankruptcies')
 @app.get('/registrations')
