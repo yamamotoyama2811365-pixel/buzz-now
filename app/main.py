@@ -21,6 +21,7 @@ from fastapi.templating import Jinja2Templates
 import httpx
 import feedparser
 from PIL import Image, ImageDraw, ImageFont
+from app.migration_control import MigrationMaintenance, migration_settings
 
 BASE = Path(__file__).resolve().parent.parent
 DB_PATH = BASE / "buzznow.db"
@@ -153,7 +154,8 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 
 
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+MIGRATION_MAINTENANCE, DATABASE_BACKEND, DATABASE_URL = migration_settings(os.environ)
+app.add_middleware(MigrationMaintenance, paused=MIGRATION_MAINTENANCE)
 
 
 def _pg_sql(sql: str) -> str:
@@ -209,6 +211,8 @@ class PostgresConnection:
 
 
 def db():
+    if MIGRATION_MAINTENANCE:
+        raise HTTPException(status_code=503, detail="Database migration maintenance")
     # Render production: durable PostgreSQL. Local development: SQLite fallback.
     if DATABASE_URL:
         return PostgresConnection(DATABASE_URL)
@@ -5013,7 +5017,7 @@ scheduler = BackgroundScheduler()
 
 @app.on_event("startup")
 def startup():
-    if LEGACY_SERVICE:
+    if LEGACY_SERVICE or MIGRATION_MAINTENANCE:
         return
     # V35: PostgreSQL is already initialized. Do not block Render startup on DB DDL.
     # init_db() remains available for explicit maintenance, but is not run here.
@@ -6539,7 +6543,8 @@ def trend_monetization(slug: str):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": SITE_NAME, "version": APP_VERSION, "environment": ENVIRONMENT}
+    return {"ok": True, "service": SITE_NAME, "version": APP_VERSION, "environment": ENVIRONMENT,
+            "migration_maintenance": MIGRATION_MAINTENANCE, "database_backend": DATABASE_BACKEND}
 
 @app.get("/ready")
 def ready():
