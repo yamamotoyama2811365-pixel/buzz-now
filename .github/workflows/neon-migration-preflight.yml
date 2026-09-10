@@ -10,7 +10,27 @@ concurrency:
   group: neon-migration-preflight
   cancel-in-progress: false
 jobs:
+  check-maintenance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm public application is paused on source
+        shell: python
+        run: |
+          import json, urllib.request, urllib.error
+          base = "https://buzz-now-1.onrender.com"
+          with urllib.request.urlopen(base + "/health", timeout=45) as r:
+              data = json.load(r)
+          assert data.get("migration_maintenance") is True, data
+          assert data.get("database_backend") == "source", data
+          try:
+              urllib.request.urlopen(base + "/", timeout=45)
+          except urllib.error.HTTPError as e:
+              assert e.code == 503, e.code
+          else:
+              raise RuntimeError("Public application is not paused")
+          print("Verified maintenance on source, homepage returns 503.")
   copy-and-verify:
+    needs: check-maintenance
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container: postgres:18
@@ -83,8 +103,12 @@ jobs:
           printf '%s\n' 'ROLLBACK;' '\q' >&"$snapshot_in"
           exec {snapshot_in}>&-
           wait "$snapshot_pid"
-          # Atomically replace only the verified rehearsal target, protected by its retained snapshot.
-          pg_restore --dbname="$TARGET" --clean --if-exists --no-owner --no-acl --single-transaction --exit-on-error "$work/source.dump"
+          # User explicitly authorized clearing the rehearsal copy; source and snapshot are retained.
+          # Commit cleanup separately to avoid overlapping old/new table storage within one transaction.
+          # Do this only after the latest source dump and its manifest have been captured.
+          psql -Xq --dbname="$TARGET" -v ON_ERROR_STOP=1 -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public AUTHORIZATION CURRENT_USER;'
+          echo "Rehearsal schema cleared after source export. Restoring latest copy."
+          pg_restore --dbname="$TARGET" --no-owner --no-acl --single-transaction --exit-on-error "$work/source.dump"
           { printf '%s\n' 'BEGIN READ ONLY;'; cat "$work/manifest.sql"; printf '%s\n' 'COMMIT;'; } | psql -XAtq --dbname="$TARGET" -v ON_ERROR_STOP=1 > "$work/target-manifest.txt"
           cmp "$work/source-manifest.txt" "$work/target-manifest.txt" || { echo "::error::Content verification failed; do not cut over"; exit 1; }
           success=1
