@@ -16,6 +16,7 @@ from .auth import authorize
 from .analytics import analytics_tag
 from .model import validate, identity, normalized_name, PREFECTURES, INDUSTRIES, preserve_profile, same_entity
 from .news import render_reports, validate_reports
+from .reference import render_reference
 
 app=FastAPI(title='企業倒産・新規法人情報サイト',docs_url=None,redoc_url=None)
 BASE=os.getenv('CORPORATE_PUBLIC_URL','https://buzz-now-1.onrender.com/corporate').rstrip('/')
@@ -141,7 +142,7 @@ def listing(title,kind='',prefecture='',industry='',q='',page=1,path='/',search=
     return shell(title,intro+kind_tabs(kind,path,prefecture,industry,q)+filters(kind,prefecture,industry,q)+'<div class="layout"><section class="panel"><h2>掲載情報 <span class="small">'+str(result['total'])+'件</span></h2>'+cards(result['items'])+pages+'</section>'+side()+'</div>',path+('?' + urlencode({**({'kind':kind} if kind and (path.startswith('/area/') or path.startswith('/industry/')) else {}),**({'page':page} if page>1 else {})}) if page>1 or (kind and (path.startswith('/area/') or path.startswith('/industry/'))) else ''),noindex=search or not result['items'])
 
 @app.get('/health')
-def health():return {'ok':True,'database_configured':bool(DSN),'hosting':'shared','news_enrichment_version':1}
+def health():return {'ok':True,'database_configured':bool(DSN),'hosting':'shared','news_enrichment_version':2,'reference_enrichment_version':2}
 @app.get('/ready')
 def ready():query('SELECT 1 FROM corporate_events LIMIT 1');return {'ready':True}
 @app.get('/')
@@ -166,14 +167,17 @@ def detail(event_id:str):
     if not rows or rows[0]['payload']['company'] in {'運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗'}:raise HTTPException(404)
     p=rows[0]['payload']; title=p['company']+'｜'+p['stage']
     facts=[('状況',p['stage']), (p.get('date_label','確認日'),p['reported_date']),('都道府県',p.get('prefecture') or '未確認'),('業種',p.get('industry') or '未確認'),('所在地',p.get('address') or '未確認'),('法人番号',p.get('corporate_number') or '未照合'),('業種の確認方法',p.get('classification_basis') or '確認できる情報なし')]
-    profile=p.get('web_profile',{})
+    web_profile=p.get('web_profile',{})
+    profile=web_profile if web_profile.get('verification_status')!='reference' else {}
     if profile:
         facts.extend([('公式サイト記載の事業分野','、'.join(profile.get('business_tags') or profile.get('industries',[])) or '分類未確認'),('公式サイトの照合方法',profile['match_basis']),('公式サイト確認日',profile['checked_at'][:10])])
     web_html=''
     if profile:
         web_html='<h2>公式サイトから確認した情報</h2><p><a class="source" href="'+e(profile['website_url'],quote=True)+'" target="_blank" rel="noopener noreferrer">公式サイトを確認する ↗</a></p><p class="small">公式サイトに残る事業情報です。現在の営業継続を示すものではありません。</p><div class="links">'+''.join('<a href="'+e(url,quote=True)+'" target="_blank" rel="noopener noreferrer">確認元 '+str(i+1)+' ↗</a>' for i,url in enumerate(profile['evidence_urls']))+'</div>'
         web_html+='<dl class="facts">'+''.join('<dt>'+e(d['label'])+'</dt><dd>'+e(d['value'])+' <a class="source" href="'+e(d['source_url'],quote=True)+'" target="_blank" rel="noopener noreferrer">出典 ↗</a></dd>' for d in profile.get('details',[]))+'</dl>'
+    web_html+=render_reference(p.get('web_reference_profile') or web_profile,ROOT+'/company/'+event_id+'/correction')
     web_html+=render_reports(p.get('news_reports',[]))
+    web_html+='<p class="small"><a href="'+ROOT+'/company/'+event_id+'/correction">掲載情報の修正依頼はこちら</a></p>'
     facts_html='<dl class="facts">'+''.join('<dt>'+e(k)+'</dt><dd>'+e(v)+'</dd>' for k,v in facts)+'</dl>'
     paragraph=e(p['company'])+'について、公開情報を整理しました。'
     if p['kind']=='bankruptcy':paragraph+=' 手続きの状況は「'+e(p['stage'])+'」です。報道時点の情報のため、その後の変更は出典でもご確認ください。'
@@ -193,7 +197,7 @@ def signals():
     if not a['groups']:body+='<div class="panel"><p>地域と業種を確認できる事案を蓄積しています。</p></div>'
     return shell('地域・業種の動き',body,'/signals')
 @app.get('/about')
-def about():return shell('掲載方針・訂正について','<div class="detail panel"><h1>掲載方針</h1><h2>速報と確認済み情報</h2><p>倒産関連の報道から会社名・地域・手続きなどの事実を整理します。業種不明でも速報に掲載し、不明項目は未確認と表示します。破産申請の準備、手続きの開始、民事再生などは同一の状況として扱いません。</p><h2>新設・新規法人</h2><p>国税庁法人番号公表サイトの差分データを加工して掲載しています。「新規」は法人番号の新規指定を意味し、設立日を保証しません。登記閉鎖を倒産と分類することはありません。</p><h2>集計・背景の読み方</h2><p>同じ会社名と地域の報道を仮に名寄せした参考値です。同名企業や続報の扱いにより誤差が生じます。全国を網羅した統計ではありません。業種・背景要因は記事の記載からルールで抽出し、推測による因果関係は追加しません。</p><h2>関連サイトの情報</h2><p>報道元が案内する公式サイトなどをたどり、会社名・所在地等を照合して事業情報を追記します。確認元と確認日を表示し、複数事業がある場合は主業種を推測しません。Googleマップは検索へのリンクです。口コミ・写真・営業状態の取得や、掲載企業との照合は行っていません。</p><h2>訂正・削除のご連絡</h2><p>以下のGitHub窓口で、該当ページのURLと訂正すべき箇所をお知らせください。秘密情報や個人の連絡先は記載しないでください。</p><a class="source" href="https://github.com/yamamotoyama2811365-pixel/buzz-now/issues/new">運営への連絡窓口 ↗</a></div>','/about')
+def about():return shell('掲載方針・訂正について','<div class="detail panel"><h1>掲載方針</h1><h2>速報と確認済み情報</h2><p>倒産関連の報道から会社名・地域・手続きなどの事実を整理します。業種不明でも速報に掲載し、不明項目は未確認と表示します。破産申請の準備、手続きの開始、民事再生などは同一の状況として扱いません。</p><h2>新設・新規法人</h2><p>国税庁法人番号公表サイトの差分データを加工して掲載しています。「新規」は法人番号の新規指定を意味し、設立日を保証しません。登記閉鎖を倒産と分類することはありません。</p><h2>集計・背景の読み方</h2><p>同じ会社名と地域の報道を仮に名寄せした参考値です。同名企業や続報の扱いにより誤差が生じます。全国を網羅した統計ではありません。業種・背景要因は記事の記載からルールで抽出し、推測による因果関係は追加しません。</p><h2>関連サイトの情報</h2><p>公式サイトに加え、企業情報サイトや記事を収集し、会社名・所在地等を照合して事業情報を追記します。出典が一つでも照合できた情報は「参考情報（未確定）」として掲載します。本人・法人への確認は行っていません。参考情報の業種は確定情報の集計に混ぜません。確認元と確認日を表示し、複数事業がある場合は主業種を推測しません。Googleマップは検索へのリンクです。口コミ・写真・営業状態の取得や、掲載企業との照合は行っていません。</p><h2 id="corrections">訂正・削除のご連絡</h2><p>各企業の詳細ページにある「掲載情報の修正依頼はこちら」から、訂正すべき箇所と根拠をお知らせください。受付内容は一般公開しません。秘密情報や個人の連絡先は記載しないでください。</p></div>','/about')
 @app.get('/sources')
 def sources():
     rows=query("SELECT * FROM corporate_runs WHERE source NOT LIKE %s ORDER BY source",['search-%'])
@@ -322,8 +326,8 @@ async def save_news_enrichment(request:Request):
 @app.get('/api/enrichment-candidates')
 def enrichment_candidates(request:Request,search_enabled:bool=False):
     authorize(request)
-    eligible="(jsonb_array_length(COALESCE(payload->'website_candidates','[]'::jsonb))>0"+(" OR kind IN ('registration','bankruptcy')" if search_enabled else '')+")"
-    rows=query("SELECT id,payload FROM corporate_events WHERE published AND "+eligible+" AND (COALESCE(payload->>'web_checked_at','')='' OR (payload->>'web_checked_at')::timestamptz<now()-interval '7 days') ORDER BY CASE WHEN kind='bankruptcy' THEN 0 ELSE 1 END, COALESCE(payload->>'web_checked_at',''),reported_date DESC,id LIMIT 6")
+    eligible="((jsonb_array_length(COALESCE(payload->'website_candidates','[]'::jsonb))>0 OR jsonb_array_length(COALESCE(payload->'news_reports','[]'::jsonb))>0 OR payload ? 'web_profile')"+(" OR kind IN ('registration','bankruptcy')" if search_enabled else '')+")"
+    rows=query("SELECT id,payload FROM corporate_events WHERE published AND "+eligible+" AND (COALESCE(payload->>'web_version','')<>'2' OR COALESCE(payload->>'web_checked_at','')='' OR (payload->>'web_checked_at')::timestamptz<now()-interval '7 days') ORDER BY CASE WHEN jsonb_array_length(COALESCE(payload->'website_candidates','[]'::jsonb))>0 OR payload ? 'web_profile' THEN 0 ELSE 1 END, CASE WHEN kind='bankruptcy' THEN 0 ELSE 1 END, COALESCE(payload->>'web_checked_at',''),reported_date DESC,id LIMIT 6")
     return {'items':rows}
 
 @app.post('/api/enrichment')
@@ -352,6 +356,8 @@ async def save_enrichment(request:Request):
                 if not isinstance(details,list) or len(details)>6:raise ValueError()
                 for detail in details:
                     if detail['label'] not in {'代表者','店舗・ブランド'} or not isinstance(detail['value'],str) or len(detail['value'])>100 or detail['source_url'] not in profile['evidence_urls']:raise ValueError()
+                if profile.get('verification_status','official') not in {'official','reference'}:raise ValueError()
+                if not isinstance(profile.get('source_title',''),str) or len(profile.get('source_title',''))>200:raise ValueError()
                 profile['checked_at']=datetime.now(timezone.utc).isoformat(timespec='seconds')
     except (ValueError,KeyError,TypeError,AttributeError):raise HTTPException(422,'Invalid enrichment')
     con=db();changed=0
@@ -362,10 +368,12 @@ async def save_enrichment(request:Request):
                 hit=cur.fetchone()
                 if not hit or not same_entity(hit[0],item['entity']):continue
                 p=hit[0];profile=item.get('profile')
-                p['web_checked_at']=datetime.now(timezone.utc).isoformat(timespec='seconds')
-                if profile:
+                p['web_checked_at']=datetime.now(timezone.utc).isoformat(timespec='seconds');p['web_version']=2
+                if profile and profile.get('verification_status')=='reference' and p.get('web_profile') and p['web_profile'].get('verification_status')!='reference':
+                    p['web_reference_profile']=profile
+                if profile and not (profile.get('verification_status')=='reference' and p.get('web_profile') and p['web_profile'].get('verification_status')!='reference'):
                     p['web_profile']=profile
-                    if not p.get('industry') or p.get('classification_basis')=='公式サイトの事業内容から自動分類':
+                    if profile.get('verification_status')!='reference' and (not p.get('industry') or p.get('classification_basis')=='公式サイトの事業内容から自動分類'):
                         p['industry']=profile['primary_industry'];p['classification_basis']='公式サイトの事業内容から自動分類' if p['industry'] else ''
                 cur.execute('UPDATE corporate_events SET payload=%s,industry=%s,updated_at=CASE WHEN %s THEN now() ELSE updated_at END WHERE id=%s',[Json(p),p.get('industry',''),bool(profile),item['id']])
                 changed+=bool(profile)
@@ -396,3 +404,7 @@ def sitemap_page(page:int):
             body+='<url><loc>'+e(BASE+'/industry/'+quote(p['industry']))+'</loc></url>'
     for r in rows:body+='<url><loc>'+e(BASE+'/company/'+r['id'])+'</loc><lastmod>'+r['updated_at'].date().isoformat()+'</lastmod></url>'
     return Response(body+'</urlset>',media_type='application/xml',headers={'Cache-Control':'public, max-age=300'})
+
+
+from .corrections import install as install_corrections
+install_corrections(app,db,query,shell,BASE,ROOT,DSN,lambda request:authorize(request))

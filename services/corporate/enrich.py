@@ -132,7 +132,7 @@ def matching_basis(row,text,explicit=False):
     if explicit and pref and norm(pref) in norm(text):return '報道元の公式サイトリンク・会社名・都道府県一致'
     return ''
 
-def profile_from_pages(row,pages,explicit=False):
+def profile_from_pages(row,pages,explicit=False,reference=False):
     text=' '.join(page_text(soup) for _,soup in pages)
     basis=matching_basis(row,text,explicit)
     if not basis:return None
@@ -141,7 +141,7 @@ def profile_from_pages(row,pages,explicit=False):
     for url,soup in pages:
         for el in soup.find_all(['h1','h2','h3','h4','dt','th','td']):
             label=el.get_text(' ',strip=True)
-            if re.fullmatch(r'事業内容|事業案内|業務内容|サービス内容',re.sub(r'\s','',label)):
+            if re.fullmatch(r'事業内容|事業案内|業務内容|サービス内容|業種|業態',re.sub(r'\s','',label)):
                 if el.name in {'dt','th','td'}:
                     nxt=el.find_next_sibling(['dd','td']);section=nxt.get_text(' ',strip=True) if nxt else ''
                 else:
@@ -155,6 +155,8 @@ def profile_from_pages(row,pages,explicit=False):
     # Titles describe the site's own offering, unlike footer/navigation keywords.
     titles=' '.join(soup.title.get_text(' ',strip=True) for _,soup in pages if soup.title)
     business=' '.join(sections) or titles
+    if reference and not sections:
+        business=text[:3000]
     industries=[k for k,words in BUSINESS.items() if any(w in business for w in words)]
     # Store short, original category labels, not copied website paragraphs.
     descriptions=[]
@@ -162,6 +164,8 @@ def profile_from_pages(row,pages,explicit=False):
         if any(t in business for t in terms):descriptions.append(label)
     for label,terms in [('デジタルマーケティング',['デジタルマーケティング']),('広告事業',['広告事業','広告代理']),('飲食店運営',['レストラン','居酒屋','飲食店'])]:
         if any(t in business for t in terms):descriptions.append(label)
+    if reference and not descriptions:
+        descriptions=[s for s in sections if len(s)<=100][:3]
     details=[]
     for url,soup in pages:
         for el in soup.find_all(['dt','th','td']):
@@ -172,7 +176,52 @@ def profile_from_pages(row,pages,explicit=False):
             if value and len(value)<=100:
                 item={'label':'代表者' if '代表' in label else '店舗・ブランド','value':value,'source_url':url}
                 if item not in details:details.append(item)
-    return dict(website_url=pages[0][0],evidence_urls=list(dict.fromkeys(url for url,_ in pages)),industries=industries,primary_industry=industries[0] if len(industries)==1 else '',business_tags=descriptions,details=details[:6],match_basis=basis,checked_at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
+    # Plain-text company summaries often have no table or definition list.
+    if not any(d['label']=='代表者' for d in details):
+        for url,soup in pages:
+            lines=soup.get_text('\n',strip=True)
+            match=re.search(r'(?:代表取締役(?:社長)?|代表者|代表社員)\s*[：:]?\s*([一-龥々ぁ-んァ-ヶ]{2,8}(?:[ \u3000]+[一-龥々ぁ-んァ-ヶ]{1,8})?)(?=[\s氏、,）)]|$)',lines)
+            if match and not re.search('未確認|不明|非公開|取締役|所在地|事業内容',match[1]):
+                details.append(dict(label='代表者',value=match[1].strip().removesuffix('氏'),source_url=url))
+    result=dict(website_url=pages[0][0],evidence_urls=list(dict.fromkeys(url for url,_ in pages)),industries=industries,primary_industry=industries[0] if len(industries)==1 else '',business_tags=descriptions,details=details[:6],match_basis=basis,checked_at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
+    if reference:result['verification_status']='reference'
+    return result
+
+def reference_profile(row,url,soup):
+    """A single-company third-party page can supply explicitly tentative facts."""
+    clone=BeautifulSoup(str(soup),'html.parser')
+    for el in clone.select('script,style,nav,aside,footer,.related,.related-articles,.comments,#comments'):
+        el.decompose()
+    headings=clone.select('h1, .entry-title, meta[property="og:title"]')
+    title=next((el.get('content','') or el.get_text(' ',strip=True) for el in headings),'')
+    if not title and clone.title:title=clone.title.get_text(' ',strip=True)
+    if normalized_name(row['company']) not in normalized_name(title):return None
+    roots=clone.select('article,main,[itemprop="articleBody"],.entry-body,.entry-content')
+    root=next((el for el in roots if matching_basis(row,page_text(el))),clone.body or clone)
+    # Never join a directory's separate company cards to establish identity.
+    scope=BeautifulSoup(str(root),'html.parser')
+    company_values=[]
+    for el in scope.find_all(['dt','th','td']):
+        if re.sub(r'\s','',el.get_text()) not in {'社名','会社名','商号'}:continue
+        nxt=el.find_next_sibling(['dd','td'])
+        if nxt:company_values.append(normalized_name(nxt.get_text(' ',strip=True)))
+    if any(name!=normalized_name(row['company']) for name in company_values):return None
+    result=profile_from_pages(row,[(url,scope)],reference=True)
+    if not result or not (result['details'] or result['industries'] or result['business_tags']):return None
+    result['source_title']=title[:200]
+    return result
+
+def known_candidates(row):
+    urls=list(row.get('website_candidates',[]))
+    urls += row.get('web_profile',{}).get('evidence_urls',[])
+    urls += row.get('web_reference_profile',{}).get('evidence_urls',[])
+    urls += [r['url'] for r in row.get('news_reports',[]) if r.get('url')]
+    result=[]
+    for url in urls:
+        try:url=candidate_url(url)
+        except ValueError:continue
+        if url not in result:result.append(url)
+    return result[:4]
 
 def search_candidates(row,permitted=False):
     key=os.getenv('BRAVE_SEARCH_API_KEY','')
@@ -188,12 +237,13 @@ def search_candidates(row,permitted=False):
     return urls[:3]
 
 def enrich(row,search_permitted=False):
-    candidates=row.get('website_candidates',[])[:3]
-    explicit=bool(candidates)
-    if not candidates:candidates=search_candidates(row,permitted=search_permitted)
+    candidates=known_candidates(row)
+    if search_permitted:candidates=list(dict.fromkeys(candidates+search_candidates(row,permitted=True)))[:5]
     fetcher=Fetcher()
+    references=[]
     for url in candidates:
         try:
+            explicit=url in row.get('website_candidates',[])
             root,soup=fetcher.page(url);pages=[(root,soup)]
             links=[]
             for a in soup.select('a[href]'):
@@ -215,8 +265,12 @@ def enrich(row,search_permitted=False):
                     site=page.select_one('meta[property="og:site_name"]')
                     if site and normalized_name(site.get('content',''))==own_name and re.search('会社概要|企業概要|会社情報',page_text(page)):
                         own_site=True
-                if not footer_match and not own_site:continue
+                if not footer_match and not own_site:
+                    for page_url,page in pages:
+                        reference=reference_profile(row,page_url,page)
+                        if reference:references.append(reference)
+                    continue
             result=profile_from_pages(row,pages,explicit)
             if result:return result
         except Exception:continue
-    return None
+    return max(references,key=lambda p:(len(p['details']),len(p['business_tags']),len(p['industries'])),default=None)
