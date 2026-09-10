@@ -8,6 +8,7 @@ ISSUER = 'https://token.actions.githubusercontent.com'
 AUDIENCE = 'https://buzz-now-1.onrender.com/open-close'
 REPOSITORY = 'yamamotoyama2811365-pixel/open-close-map'
 REPOSITORY_ID = '1359678678'
+IMMUTABLE_REPOSITORY = 'yamamotoyama2811365-pixel@321271816/open-close-map@1359678678'
 COLLECTOR = REPOSITORY + '/.github/workflows/open-close-map-auto.yml@refs/heads/main'
 CHECK = REPOSITORY + '/.github/workflows/shared-api-check.yml@refs/heads/ops/shared-api-check'
 READ_ROUTES = {('GET','/api/source-health'), ('GET','/api/prefecture-coverage')}
@@ -21,7 +22,8 @@ def allowed_claims(claims, method, path):
     if claims.get('repository') != REPOSITORY or str(claims.get('repository_id')) != REPOSITORY_ID:
         return False
     ref=claims.get('ref')
-    if claims.get('sub') != 'repo:'+REPOSITORY+':ref:'+str(ref):
+    subjects = {'repo:'+name+':ref:'+str(ref) for name in (REPOSITORY, IMMUTABLE_REPOSITORY)}
+    if claims.get('sub') not in subjects:
         return False
     workflow=claims.get('workflow_ref')
     if workflow == COLLECTOR and ref == 'refs/heads/main':

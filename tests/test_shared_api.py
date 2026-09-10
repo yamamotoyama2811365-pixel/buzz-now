@@ -40,6 +40,12 @@ class IdentityTest(unittest.TestCase):
             with self.assertRaises(Exception):self.verify(self.claims(**changes))
         with self.assertRaises(Exception):self.verify(self.claims(),signer=rsa.generate_private_key(public_exponent=65537,key_size=2048))
 
+    def test_immutable_github_subject_format(self):
+        c=self.claims(sub='repo:'+auth.IMMUTABLE_REPOSITORY+':ref:refs/heads/main')
+        self.assertTrue(self.verify(c))
+        c['sub']=c['sub'].replace('@321271816','@1')
+        with self.assertRaises(Exception):self.verify(c)
+
     def test_check_workflow_is_read_only(self):
         c=self.claims(ref='refs/heads/ops/shared-api-check',sub='repo:'+auth.REPOSITORY+':ref:refs/heads/ops/shared-api-check',workflow_ref=auth.CHECK,event_name='push')
         self.assertTrue(self.verify(c))
