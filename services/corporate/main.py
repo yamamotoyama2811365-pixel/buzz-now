@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import HTMLResponse, Response
 from .auth import authorize
 from .analytics import analytics_tag
+from .traffic import install as install_traffic, tracking_tag
 from .model import validate, identity, normalized_name, PREFECTURES, INDUSTRIES, preserve_profile, same_entity
 from .news import render_reports, validate_reports
 from .reference import render_reference
@@ -97,7 +98,7 @@ def analysis():
 def shell(title,body,path='/',noindex=False,description='企業の倒産速報・新規法人情報を、出典とともに地域・業種別に整理。報道事案の変化と背景を確認できます。'):
     canonical=BASE+path
     page_title=title if title=='企業倒産・新規法人情報サイト' else title+' | 企業倒産・新規法人情報サイト'
-    return HTMLResponse('<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+e(page_title)+'</title><meta name="description" content="'+e(description,quote=True)+'"><meta name="robots" content="'+('noindex,follow' if noindex else 'index,follow')+'"><link rel="canonical" href="'+e(canonical,quote=True)+'"><meta property="og:title" content="'+e(title,quote=True)+'"><meta property="og:url" content="'+e(canonical,quote=True)+'">'+analytics_tag()+'<style>'+STYLE+'</style></head><body><header><div class="bar"><a class="logo" href="'+ROOT+'/">企業倒産・新規法人情報サイト</a><nav><a href="'+ROOT+'/bankruptcies">倒産速報</a><a href="'+ROOT+'/registrations">新設・新規法人</a><a href="'+ROOT+'/signals">地域・業種の動き</a></nav></div></header><main>'+body+'</main><footer><strong>企業倒産・新規法人情報サイト</strong><p>公開情報を出典付きで整理する企業情報サイト。報道日・法人番号指定日を表示しています。休廃業・登記閉鎖だけを倒産とは判定しません。</p><a href="'+ROOT+'/about">掲載方針・訂正について</a>　｜　<a href="'+ROOT+'/sources">収集状況</a>　｜　<a href="'+ROOT+'/sitemap.xml">サイトマップ</a></footer></body></html>',headers={'Cache-Control':'public, max-age=60','X-Content-Type-Options':'nosniff'})
+    return HTMLResponse('<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+e(page_title)+'</title><meta name="description" content="'+e(description,quote=True)+'"><meta name="robots" content="'+('noindex,follow' if noindex else 'index,follow')+'"><link rel="canonical" href="'+e(canonical,quote=True)+'"><meta property="og:title" content="'+e(title,quote=True)+'"><meta property="og:url" content="'+e(canonical,quote=True)+'">'+analytics_tag()+'<style>'+STYLE+'</style></head><body><header><div class="bar"><a class="logo" href="'+ROOT+'/">企業倒産・新規法人情報サイト</a><nav><a href="'+ROOT+'/bankruptcies">倒産速報</a><a href="'+ROOT+'/registrations">新設・新規法人</a><a href="'+ROOT+'/signals">地域・業種の動き</a></nav></div></header><main>'+body+'</main><footer><strong>企業倒産・新規法人情報サイト</strong><p>公開情報を出典付きで整理する企業情報サイト。報道日・法人番号指定日を表示しています。休廃業・登記閉鎖だけを倒産とは判定しません。</p><a href="'+ROOT+'/about">掲載方針・訂正について</a>　｜　<a href="'+ROOT+'/sources">収集状況</a>　｜　<a href="'+ROOT+'/sitemap.xml">サイトマップ</a></footer>'+tracking_tag(path,ROOT,DSN)+'</body></html>',headers={'Cache-Control':'public, max-age=60','X-Content-Type-Options':'nosniff'})
 
 def breadcrumbs(items):
     links=' / '.join('<a href="'+e(BASE+path,quote=True)+'">'+e(label)+'</a>' for label,path in items)
@@ -438,3 +439,4 @@ def sitemap_page(page:int):
 
 from .corrections import install as install_corrections
 install_corrections(app,db,query,shell,BASE,ROOT,DSN,lambda request:authorize(request))
+install_traffic(app,db,query,BASE,ROOT,DSN,lambda request:authorize(request))
