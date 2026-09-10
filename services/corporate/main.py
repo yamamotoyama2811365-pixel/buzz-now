@@ -93,7 +93,8 @@ def analysis():
 
 def shell(title,body,path='/',noindex=False,description='企業の倒産速報・新規法人情報を、出典とともに地域・業種別に整理。報道事案の変化と背景を確認できます。'):
     canonical=BASE+path
-    return HTMLResponse('<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+e(title)+' | 企業倒産・新規法人情報サイト</title><meta name="description" content="'+e(description,quote=True)+'"><meta name="robots" content="'+('noindex,follow' if noindex else 'index,follow')+'"><link rel="canonical" href="'+e(canonical,quote=True)+'"><meta property="og:title" content="'+e(title,quote=True)+'"><meta property="og:url" content="'+e(canonical,quote=True)+'"><style>'+STYLE+'</style></head><body><header><div class="bar"><a class="logo" href="'+ROOT+'/">企業倒産・新規法人情報サイト</a><nav><a href="'+ROOT+'/bankruptcies">倒産速報</a><a href="'+ROOT+'/registrations">新設・新規法人</a><a href="'+ROOT+'/signals">地域・業種の動き</a></nav></div></header><main>'+body+'</main><footer><strong>企業倒産・新規法人情報サイト</strong><p>公開情報を出典付きで整理する企業情報サイト。報道日・法人番号指定日を表示しています。休廃業・登記閉鎖だけを倒産とは判定しません。</p><a href="'+ROOT+'/about">掲載方針・訂正について</a>　｜　<a href="'+ROOT+'/sources">収集状況</a>　｜　<a href="'+ROOT+'/sitemap.xml">サイトマップ</a></footer></body></html>',headers={'Cache-Control':'public, max-age=60','X-Content-Type-Options':'nosniff'})
+    page_title=title if title=='企業倒産・新規法人情報サイト' else title+' | 企業倒産・新規法人情報サイト'
+    return HTMLResponse('<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+e(page_title)+'</title><meta name="description" content="'+e(description,quote=True)+'"><meta name="robots" content="'+('noindex,follow' if noindex else 'index,follow')+'"><link rel="canonical" href="'+e(canonical,quote=True)+'"><meta property="og:title" content="'+e(title,quote=True)+'"><meta property="og:url" content="'+e(canonical,quote=True)+'"><style>'+STYLE+'</style></head><body><header><div class="bar"><a class="logo" href="'+ROOT+'/">企業倒産・新規法人情報サイト</a><nav><a href="'+ROOT+'/bankruptcies">倒産速報</a><a href="'+ROOT+'/registrations">新設・新規法人</a><a href="'+ROOT+'/signals">地域・業種の動き</a></nav></div></header><main>'+body+'</main><footer><strong>企業倒産・新規法人情報サイト</strong><p>公開情報を出典付きで整理する企業情報サイト。報道日・法人番号指定日を表示しています。休廃業・登記閉鎖だけを倒産とは判定しません。</p><a href="'+ROOT+'/about">掲載方針・訂正について</a>　｜　<a href="'+ROOT+'/sources">収集状況</a>　｜　<a href="'+ROOT+'/sitemap.xml">サイトマップ</a></footer></body></html>',headers={'Cache-Control':'public, max-age=60','X-Content-Type-Options':'nosniff'})
 
 def cards(items):
     if not items:return '<p class="empty">該当する情報はありません。地域や業種の条件を変えてお試しください。</p>'
@@ -129,7 +130,7 @@ def kind_tabs(kind,path,prefecture='',industry='',q=''):
 def listing(title,kind='',prefecture='',industry='',q='',page=1,path='/',search=False):
     if kind not in {'','bankruptcy','registration'}:raise HTTPException(400,'Invalid kind')
     result=records(kind,prefecture,industry,q,page)
-    intro='<div class="eyebrow">BUSINESS INTELLIGENCE / JAPAN</div><div class="hero"><div><h1>'+e(title)+'</h1><p>会社の変化を、いち早く。<br>倒産速報と新しい法人の情報を、地域・業種・出典から読み解く。</p></div><div class="live"><strong>●</strong>公開情報を自動収集</div></div>'
+    intro='<div class="eyebrow">BUSINESS INTELLIGENCE / JAPAN</div><div class="hero"><div><h1>'+e(title).replace('・','・<wbr>')+'</h1><p>会社の変化を、いち早く。<br>倒産速報と新しい法人の情報を、地域・業種・出典から読み解く。</p></div><div class="live"><strong>●</strong>公開情報を自動収集</div></div>'
     if path=='/':
         a=analysis();intro+='<div class="metrics"><div class="metric"><span>直近30日・収集倒産事案</span><strong>'+str(a['bankruptcies'])+'</strong><span>名寄せによる参考件数</span></div><div class="metric"><span>直近30日・新規法人番号</span><strong>'+format(a['registrations'],',')+'</strong><span>収集済みの指定データ</span></div><div class="metric"><span>業種を分類できた事案</span><strong>'+str(a['classified'])+'</strong><span>本文に記載のある情報から分類</span></div></div>'
     if kind=='registration': intro+='<div class="notice">国税庁が新たに法人番号を指定した会社を掲載しています。指定日は設立日と一致するとは限りません。</div>'
@@ -142,7 +143,7 @@ def health():return {'ok':True,'database_configured':bool(DSN),'hosting':'shared
 @app.get('/ready')
 def ready():query('SELECT 1 FROM corporate_events LIMIT 1');return {'ready':True}
 @app.get('/')
-def home(page:int=Query(1,ge=1,le=10000)):return listing('企業の倒産、新規法人情報',page=page)
+def home(page:int=Query(1,ge=1,le=10000)):return listing('企業倒産・新規法人情報サイト',page=page)
 @app.get('/bankruptcies')
 def bankruptcies(page:int=Query(1,ge=1,le=10000)):return listing('倒産速報',kind='bankruptcy',page=page,path='/bankruptcies')
 @app.get('/registrations')
