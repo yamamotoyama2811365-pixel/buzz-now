@@ -35,6 +35,11 @@
     </script>
 
 <style>
+.a8-advertisement{padding:16px 0;text-align:center;border-top:1px solid #465261;border-bottom:1px solid #465261;margin:24px 0}
+.a8-ad-grid{display:flex;flex-wrap:wrap;justify-content:center;gap:24px}
+.a8-ad-unit{width:300px;max-width:100%;min-width:0}
+.a8-advertisement a{display:block}
+.a8-advertisement a img{display:block;max-width:100%;height:auto;margin:0 auto}
 .reading-next{padding:18px;border:1px solid #465261;border-radius:16px;background:#101820}
 .reading-next h2{font-size:19px;margin:0 0 12px;color:#fff}
 .reading-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
@@ -102,6 +107,19 @@
       <p>今回の注目につながる出来事は確認中です。古い記事や断片的な見出しから理由を推測せず、出典を確認できた情報を掲載します。</p>
       {% endif %}
     </section>
+
+    <aside class="section a8-advertisement" aria-label="広告">
+      <p style="font-size:12px;color:#b8c3d1;margin:0 0 10px">広告・PR</p>
+      <div class="a8-ad-grid"><div class="a8-ad-unit">
+<a href="https://px.a8.net/svt/ejp?a8mat=4BC7V4+W5G7U+3OEO+601S1" rel="nofollow">
+<img border="0" width="300" height="250" alt="" src="https://www22.a8.net/svt/bgt?aid=260910544054&wid=002&eno=01&mid=s00000017160001008000&mc=1"></a>
+<img border="0" width="1" height="1" src="https://www19.a8.net/0.gif?a8mat=4BC7V4+W5G7U+3OEO+601S1" alt="">
+      </div><div class="a8-ad-unit">
+<a href="https://px.a8.net/svt/ejp?a8mat=4BC7V4+18NJX6+42T0+5ZU29" rel="nofollow">
+<img border="0" width="300" height="250" alt="" src="https://www27.a8.net/svt/bgt?aid=260910544075&wid=002&eno=01&mid=s00000019026001007000&mc=1"></a>
+<img border="0" width="1" height="1" src="https://www18.a8.net/0.gif?a8mat=4BC7V4+18NJX6+42T0+5ZU29" alt="">
+      </div></div>
+    </aside>
 
     {{ next_links(related_rows or top_now_rows, 'あわせて読みたい話題', 'article_top', 3) }}
     <details class="section"><summary style="cursor:pointer;padding:16px;font-weight:bold">注目度のデータを見る</summary>
