@@ -1,4 +1,4 @@
-name: Neon final database synchronization
+name: Neon cutover read-only verification
 on:
   push:
     branches: [ops/neon-migration-preflight]
@@ -6,122 +6,38 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-concurrency:
-  group: neon-migration-preflight
-  cancel-in-progress: false
 jobs:
-  check-maintenance:
+  verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: Confirm public application is paused on source
+      - name: Verify Neon readiness and homepage without running collectors
         shell: python
         run: |
-          import json, urllib.request, urllib.error
+          import json, time, urllib.request
           base = "https://buzz-now-1.onrender.com"
-          with urllib.request.urlopen(base + "/health", timeout=45) as r:
-              data = json.load(r)
-          assert data.get("migration_maintenance") is True, data
-          assert data.get("database_backend") == "source", data
-          try:
-              urllib.request.urlopen(base + "/", timeout=45)
-          except urllib.error.HTTPError as e:
-              assert e.code == 503, e.code
+          last = None
+          for attempt in range(25):
+              try:
+                  with urllib.request.urlopen(base + "/health", timeout=20) as r:
+                      health = json.load(r)
+                  if health.get("database_backend") != "neon" or health.get("migration_maintenance") is not False:
+                      raise RuntimeError("Waiting for Neon application deployment")
+                  with urllib.request.urlopen(base + "/ready", timeout=20) as r:
+                      ready = json.load(r)
+                  assert ready.get("ready") is True and ready.get("database") == "ok", ready
+                  with urllib.request.urlopen(base + "/", timeout=20) as r:
+                      body = r.read()
+                      assert r.status == 200 and len(body) > 1000
+                  print("VERIFIED: Neon selected, maintenance off, database ready, homepage HTTP 200.")
+                  print(json.dumps(health))
+                  print(json.dumps(ready))
+                  break
+              except Exception as exc:
+                  last = str(exc)
+                  print("Waiting for healthy deployment:", last)
+                  time.sleep(15)
           else:
-              raise RuntimeError("Public application is not paused")
-          print("Verified maintenance on source, homepage returns 503.")
-  copy-and-verify:
-    needs: check-maintenance
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    container: postgres:18
-    steps:
-      - name: Copy into the empty dedicated Neon database and verify
-        shell: bash
-        env:
-          SOURCE: ${{ secrets.MIGRATION_SOURCE_DATABASE_URL }}
-          TARGET: ${{ secrets.MIGRATION_TARGET_DATABASE_URL }}
-          PGSSLMODE: require
-          PGCONNECT_TIMEOUT: "30"
-          PGOPTIONS: "-c statement_timeout=900000 -c lock_timeout=10000 -c timezone=UTC -c datestyle=ISO,YMD -c extra_float_digits=3"
-        run: |
-          set -euo pipefail
-          umask 077
-          test -n "${SOURCE:-}" && test -n "${TARGET:-}" || { echo "::error::Migration secrets are missing"; exit 1; }
-          source_host="${SOURCE#*://}"; source_host="${source_host##*@}"; source_host="${source_host%%/*}"; source_host="${source_host%%:*}"
-          target_host="${TARGET#*://}"; target_host="${target_host##*@}"; target_host="${target_host%%/*}"; target_host="${target_host%%:*}"
-          case "$source_host" in dpg-daak8j142hec73ao272g-a.*.render.com) ;; *) echo "::error::Wrong source host"; exit 1;; esac
-          test "$target_host" = "ep-red-silence-b3y7ugl8.c-4.ap-southeast-1.aws.neon.tech" || { echo "::error::Wrong target host or pooled URL"; exit 1; }
-          # Enforce TLS at the client; Neon terminates TLS at its proxy.
-          case "$SOURCE" in *\?*) SOURCE="$SOURCE&sslmode=require";; *) SOURCE="$SOURCE?sslmode=require";; esac
-          case "$TARGET" in *\?*) TARGET="$TARGET&sslmode=require";; *) TARGET="$TARGET?sslmode=require";; esac
-          for uri in "$SOURCE" "$TARGET"; do
-            test "$(psql -XAtq --dbname="$uri" -c 'SELECT current_database()')" = buzz_now_db || { echo "::error::Wrong database"; exit 1; }
-          done
-          # This target is the verified rehearsal copy, never a production writer.
-          tables=$(psql -XAtq --dbname="$TARGET" -c "SELECT count(*) FROM pg_tables WHERE schemaname='public'")
-          test "$tables" = 29 || { echo "::error::Unexpected rehearsal target schema"; exit 1; }
-          for attempt in {1..12}; do
-            activity=$(psql -XAtq --dbname="$SOURCE" -c "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND state IS DISTINCT FROM 'idle'")
-            if [ "$activity" = 0 ]; then break; fi
-            echo "Waiting for source transactions to drain: $activity"
-            if [ "$attempt" = 12 ]; then
-              psql -XAtq --dbname="$SOURCE" -c "SELECT backend_type,coalesce(state,'not visible'),coalesce(application_name,''),coalesce(wait_event_type,'') FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid()"
-              echo "::error::Source transactions did not drain"; exit 1
-            fi
-            sleep 5
-          done
-          test "$(psql -XAtq --dbname="$SOURCE" -c 'SHOW default_transaction_read_only')" = off || { echo "::error::Unexpected source read-only configuration"; exit 1; }
-          # Maintenance is already live. Fence new source writes before the snapshot.
-          psql -Xq --dbname="$SOURCE" -v ON_ERROR_STOP=1 -c 'ALTER DATABASE buzz_now_db SET default_transaction_read_only=on'
-          work=$(mktemp -d)
-          success=0
-          cleanup() {
-            rc=$?
-            if [ "$success" != 1 ]; then
-              PGOPTIONS="$PGOPTIONS -c default_transaction_read_only=off" psql -Xq --dbname="$SOURCE" -v ON_ERROR_STOP=1 -c 'ALTER DATABASE buzz_now_db RESET default_transaction_read_only' || echo "::error::Source read-only reset failed; keep maintenance and repair before resuming."
-            fi
-            rm -rf "$work"
-            exit "$rc"
-          }
-          trap cleanup EXIT
-          # Hold a read-only source snapshot throughout export and checksum generation.
-          coproc SNAPSHOT { psql -XAtq --dbname="$SOURCE" -v ON_ERROR_STOP=1; }
-          snapshot_pid=$SNAPSHOT_PID
-          exec {snapshot_in}>&"${SNAPSHOT[1]}"
-          exec {snapshot_out}<&"${SNAPSHOT[0]}"
-          printf '%s\n' 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;' 'SELECT pg_export_snapshot();' >&"$snapshot_in"
-          read -r snapshot <&"$snapshot_out"
-          [[ "$snapshot" =~ ^[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9]+$ ]] || { echo "::error::Snapshot unavailable"; exit 1; }
-          PGOPTIONS="$PGOPTIONS -c default_transaction_read_only=on" pg_dump --dbname="$SOURCE" --snapshot="$snapshot" --format=custom --no-owner --no-acl --file="$work/source.dump"
-          pg_restore --list "$work/source.dump" > "$work/archive-list.txt"
-          # Hash every complete row without logging row contents; use the export snapshot.
-          cat > "$work/manifest.sql" <<'SQL'
-          SELECT format('SELECT %L, count(*), coalesce(sum((''x'' || substr(md5(t::text),1,16))::bit(64)::bigint),0) FROM ONLY %I.%I t;', n.nspname || '.' || c.relname,n.nspname,c.relname)
-          FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-          WHERE c.relkind='r' AND n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%'
-          ORDER BY n.nspname,c.relname
-          \gexec
-          SQL
-          {
-            printf '%s\n' 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;'
-            printf "SET TRANSACTION SNAPSHOT '%s';\n" "$snapshot"
-            cat "$work/manifest.sql"
-            printf '%s\n' 'COMMIT;'
-          } | psql -XAtq --dbname="$SOURCE" -v ON_ERROR_STOP=1 > "$work/source-manifest.txt"
-          printf '%s\n' 'ROLLBACK;' '\q' >&"$snapshot_in"
-          exec {snapshot_in}>&-
-          wait "$snapshot_pid"
-          # User explicitly authorized clearing the rehearsal copy; source and snapshot are retained.
-          # Commit cleanup separately to avoid overlapping old/new table storage within one transaction.
-          # Do this only after the latest source dump and its manifest have been captured.
-          psql -Xq --dbname="$TARGET" -v ON_ERROR_STOP=1 -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public AUTHORIZATION CURRENT_USER;'
-          echo "Rehearsal schema cleared after source export. Restoring latest copy."
-          pg_restore --dbname="$TARGET" --no-owner --no-acl --single-transaction --exit-on-error "$work/source.dump"
-          { printf '%s\n' 'BEGIN READ ONLY;'; cat "$work/manifest.sql"; printf '%s\n' 'COMMIT;'; } | psql -XAtq --dbname="$TARGET" -v ON_ERROR_STOP=1 > "$work/target-manifest.txt"
-          cmp "$work/source-manifest.txt" "$work/target-manifest.txt" || { echo "::error::Content verification failed; do not cut over"; exit 1; }
-          success=1
-          echo "COPY VERIFIED: all table row counts and row checksums match the exported snapshot."
-          cut -d '|' -f 1,2 "$work/target-manifest.txt"
-          echo "Final copy verified. Source remains read-only for rollback. Switch the paused application to Neon before resuming."
-          echo "Temporary dump is removed at exit; retain the source and snapshot the verified target."
-          
+              raise RuntimeError(last)
+# Migration writes were removed after successful final copy.
+# Re-running this workflow performs public read-only HTTP checks only.
