@@ -174,7 +174,7 @@ def signals():
 def about():return shell('掲載方針・訂正について','<div class="detail panel"><h1>掲載方針</h1><h2>速報と確認済み情報</h2><p>倒産関連の報道から会社名・地域・手続きなどの事実を整理します。業種不明でも速報に掲載し、不明項目は未確認と表示します。破産申請の準備、手続きの開始、民事再生などは同一の状況として扱いません。</p><h2>新設・新規法人</h2><p>国税庁法人番号公表サイトの差分データを加工して掲載しています。「新規」は法人番号の新規指定を意味し、設立日を保証しません。登記閉鎖を倒産と分類することはありません。</p><h2>集計・背景の読み方</h2><p>同じ会社名と地域の報道を仮に名寄せした参考値です。同名企業や続報の扱いにより誤差が生じます。全国を網羅した統計ではありません。業種・背景要因は記事の記載からルールで抽出し、推測による因果関係は追加しません。</p><h2>関連サイトの情報</h2><p>報道元が案内する公式サイトなどをたどり、会社名・所在地等を照合して事業情報を追記します。確認元と確認日を表示し、複数事業がある場合は主業種を推測しません。Googleマップは検索へのリンクです。口コミ・写真・営業状態の取得や、掲載企業との照合は行っていません。</p><h2>訂正・削除のご連絡</h2><p>以下のGitHub窓口で、該当ページのURLと訂正すべき箇所をお知らせください。秘密情報や個人の連絡先は記載しないでください。</p><a class="source" href="https://github.com/yamamotoyama2811365-pixel/buzz-now/issues/new">運営への連絡窓口 ↗</a></div>','/about')
 @app.get('/sources')
 def sources():
-    rows=query('SELECT * FROM corporate_runs ORDER BY source')
+    rows=query("SELECT * FROM corporate_runs WHERE source NOT LIKE 'search-%' ORDER BY source")
     body='<h1>自動収集の状況</h1><div class="panel"><table><tr><th>収集元</th><th>最終確認（UTC）</th><th>状況</th></tr>'+''.join('<tr><td>'+e(r['source'])+'</td><td>'+e(str(r['checked_at'])[:19])+'</td><td>'+e({'ok':'正常','error':'取得失敗'}.get(r['status'],r['status']))+'</td></tr>' for r in rows)+'</table><p>倒産速報は30分ごとに確認、新規法人は国税庁の日次公表データを確認します。公開元や実行基盤の状況によって遅れる場合があります。</p></div>'
     return shell('収集状況',body,'/sources',True)
 @app.get('/api/events')
@@ -236,10 +236,30 @@ async def ingest(request:Request):
     with _lock:_cache.clear()
     return {'ok':True,'received':len(rows),'changed':changed}
 
+
+@app.post('/api/search-permit')
+def search_permit(request:Request):
+    """Reserve before each paid-provider call. Failed calls still consume a reservation."""
+    authorize(request)
+    now=datetime.now(timezone.utc)
+    limits={'search-month:'+now.strftime('%Y-%m'):900,'search-day:'+now.strftime('%Y-%m-%d'):30}
+    con=db()
+    try:
+        with con,con.cursor() as cur:
+            for key in sorted(limits):
+                cur.execute("INSERT INTO corporate_runs(source,status,received,detail) VALUES(%s,'ok',0,'search reservation') ON CONFLICT(source) DO NOTHING",[key])
+            cur.execute('SELECT source,received FROM corporate_runs WHERE source=ANY(%s) ORDER BY source FOR UPDATE',[sorted(limits)])
+            counts=dict(cur.fetchall())
+            if any(counts[k]>=limit for k,limit in limits.items()):
+                return {'allowed':False,'reason':'search quota reached','monthly_limit':900,'daily_limit':30}
+            cur.execute('UPDATE corporate_runs SET received=received+1,checked_at=now() WHERE source=ANY(%s)',[sorted(limits)])
+            return {'allowed':True,'monthly_limit':900,'daily_limit':30}
+    finally:con.close()
+
 @app.get('/api/enrichment-candidates')
 def enrichment_candidates(request:Request,search_enabled:bool=False):
     authorize(request)
-    eligible="(jsonb_array_length(COALESCE(payload->'website_candidates','[]'::jsonb))>0"+(" OR kind='registration'" if search_enabled else '')+")"
+    eligible="(jsonb_array_length(COALESCE(payload->'website_candidates','[]'::jsonb))>0"+(" OR kind IN ('registration','bankruptcy')" if search_enabled else '')+")"
     rows=query("SELECT id,payload FROM corporate_events WHERE published AND "+eligible+" AND (COALESCE(payload->>'web_checked_at','')='' OR (payload->>'web_checked_at')::timestamptz<now()-interval '7 days') ORDER BY CASE WHEN kind='bankruptcy' THEN 0 ELSE 1 END, COALESCE(payload->>'web_checked_at',''),reported_date DESC,id LIMIT 6")
     return {'items':rows}
 

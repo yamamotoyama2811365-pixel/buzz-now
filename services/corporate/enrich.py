@@ -155,9 +155,9 @@ def profile_from_pages(row,pages,explicit=False):
         if any(t in business for t in terms):descriptions.append(label)
     return dict(website_url=pages[0][0],evidence_urls=list(dict.fromkeys(url for url,_ in pages)),industries=industries,primary_industry=industries[0] if len(industries)==1 else '',business_tags=descriptions,match_basis=basis,checked_at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
 
-def search_candidates(row):
+def search_candidates(row,permitted=False):
     key=os.getenv('BRAVE_SEARCH_API_KEY','')
-    if not key:return []
+    if not key or not permitted:return []
     # Optional official search API. Never scrape search result pages or print the key.
     response=requests.get('https://api.search.brave.com/res/v1/web/search',headers={'X-Subscription-Token':key},params={'q':row['company']+' '+row.get('address','')+' 会社概要','count':5,'country':'JP','search_lang':'jp'},timeout=15)
     response.raise_for_status()
@@ -167,10 +167,10 @@ def search_candidates(row):
         except (KeyError,ValueError):pass
     return urls[:3]
 
-def enrich(row):
+def enrich(row,search_permitted=False):
     candidates=row.get('website_candidates',[])[:3]
     explicit=bool(candidates)
-    if not candidates:candidates=search_candidates(row)
+    if not candidates:candidates=search_candidates(row,permitted=search_permitted)
     fetcher=Fetcher()
     for url in candidates:
         try:
