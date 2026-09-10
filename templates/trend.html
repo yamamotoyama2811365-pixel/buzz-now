@@ -36,7 +36,9 @@
 
 <style>
 .a8-advertisement{padding:16px 0;text-align:center;border-top:1px solid #465261;border-bottom:1px solid #465261;margin:24px 0}
-.a8-ad-grid{display:flex;flex-wrap:wrap;justify-content:center;gap:24px}
+.a8-ad-grid{display:grid;grid-template-columns:minmax(0,300px);justify-content:center;gap:24px}
+@media(min-width:700px){.a8-ad-grid{grid-template-columns:repeat(2,minmax(0,300px))}}
+@media(min-width:1024px){.page{max-width:1040px}.a8-ad-grid{grid-template-columns:repeat(3,minmax(0,300px))}}
 .a8-ad-unit{width:300px;max-width:100%;min-width:0}
 .a8-advertisement a{display:block}
 .a8-advertisement a img{display:block;max-width:100%;height:auto;margin:0 auto}
