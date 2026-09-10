@@ -22,8 +22,8 @@
 ## Remaining before retiring old API
 Do not suspend or delete open-close-map-api yet.
 1. DONE: user saved the five static rewrite destinations. Public sitemap and store/area/category requests with unique probe rewrite-34449807455 were observed in the paid shared service access logs with HTTP 200 at 07:24:52–53 UTC. robots.txt is served successfully with the correct canonical sitemap URL; an existing static robots.txt takes precedence over a rewrite.
-2. Preserve manual operator access: the original ADMIN_KEY still works at the old service. The shared service supports OPEN_CLOSE_ADMIN_KEY, but that key is not set because the connection cannot read the old service secret. Copy it directly between Render environment screens if manual operator access is required. Never paste it into a chat or repository. GitHub collector identity intentionally cannot access private inquiries or destructive maintenance.
-3. Confirm one scheduled full cycle on the new shared endpoint. Read-only checks did not run collection or create inquiries.
+2. User copied ADMIN_KEY to primary OPEN_CLOSE_ADMIN_KEY via Render UI. Deployment dep-dah68c1t0dsc73eod3cg went live at 08:03:54 UTC. Public health confirms admin_key_configured=true. Secret value was not accessed; equality with the old key and an actual manual administrator login have not been independently tested. GitHub collector identity intentionally cannot access private inquiries or destructive maintenance.
+3. DONE: scheduled main run https://github.com/yamamotoyama2811365-pixel/open-close-map/actions/runs/34450130637 succeeded on cutover commit 597c0d29bc90c22a9890694509185fd8acfc9b1d. Job 102783749079: full cycle OK at 07:29:58 UTC, RSS fetched 870 / inserted 8 / duplicates 667, prefecture closing fetched 144 / inserted 21 / duplicates 100. Source health 22 healthy, 1 idle, 0 warning/error. This is a real scheduled collection using the shared API.
 4. DONE: public canonical store/area/category pages, sitemap containing 2,005 canonical URLs, robots.txt, client API URLs and shared database readiness passed workflow https://github.com/yamamotoyama2811365-pixel/open-close-map/actions/runs/34449807455 (job 102782735211). Keep old compute until items 2 and 3 are completed.
 
 ## Rollback and future updates
@@ -31,3 +31,7 @@ Do not suspend or delete open-close-map-api yet.
 - Set OPEN_CLOSE_ENABLED=false to disable the mounted API if needed; this does not affect BUZZ NOW database selection.
 - Backend code was vendored from open-close-map commit 60a43d903d33188086ad5799e0a8c8f496f2d4ec. Future backend edits must also update services/open_close in buzz-now deliberately and pass shared tests.
 - Corporate-signal remains separate pending work; it has not been deployed by this change.
+
+## Post-environment verification
+- https://github.com/yamamotoyama2811365-pixel/open-close-map/actions/runs/34453160228 succeeded at 08:04:40 UTC (job 102793337596): shared DB and APIs, scoped identity, private inbox rejection, five frontend files, canonical SEO pages, sitemap with 2,052 URLs, robots.txt and manual key presence.
+- Old API remains running. Connected Render tools do not expose suspend/delete actions; no retirement is claimed. Keep it available until manual operator access is confirmed.
