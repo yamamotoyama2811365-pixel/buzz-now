@@ -1,4 +1,4 @@
-name: Neon migration source preflight
+name: Neon migration verified copy
 on:
   push:
     branches: [ops/neon-migration-preflight]
@@ -10,41 +10,69 @@ concurrency:
   group: neon-migration-preflight
   cancel-in-progress: false
 jobs:
-  source-check:
+  copy-and-verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     container: postgres:18
     steps:
-      - name: Verify source and test a consistent export
+      - name: Copy into the empty dedicated Neon database and verify
         shell: bash
         env:
-          PGDATABASE: ${{ secrets.MIGRATION_SOURCE_DATABASE_URL }}
+          SOURCE: ${{ secrets.MIGRATION_SOURCE_DATABASE_URL }}
+          TARGET: ${{ secrets.MIGRATION_TARGET_DATABASE_URL }}
           PGSSLMODE: require
           PGCONNECT_TIMEOUT: "30"
-          PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=600000 -c lock_timeout=10000"
+          PGOPTIONS: "-c statement_timeout=900000 -c lock_timeout=10000 -c timezone=UTC -c datestyle=ISO,YMD -c extra_float_digits=3"
         run: |
           set -euo pipefail
-          if [ -z "${PGDATABASE:-}" ]; then
-            echo "::error::MIGRATION_SOURCE_DATABASE_URL is missing."
-            exit 1
-          fi
-          case "$PGDATABASE" in
-            postgresql://*dpg-daak8j142hec73ao272g-a*|postgres://*dpg-daak8j142hec73ao272g-a*) ;;
-            *) echo "::error::Unexpected source. Expected the existing BUZZ NOW Render database."; exit 1 ;;
-          esac
-          actual_db=$(psql --dbname="$PGDATABASE" -X -A -t -v ON_ERROR_STOP=1 -c "SELECT current_database()")
-          if [ "$actual_db" != "buzz_now_db" ]; then
-            echo "::error::Unexpected database name."
-            exit 1
-          fi
-          psql --dbname="$PGDATABASE" -X -v ON_ERROR_STOP=1 -c "SELECT current_database() AS database, pg_database_size(current_database()) AS bytes, current_setting('server_version') AS version"
-          psql --dbname="$PGDATABASE" -X -v ON_ERROR_STOP=1 -c "SELECT schemaname,relname,n_live_tup AS estimated_rows FROM pg_stat_user_tables ORDER BY schemaname,relname"
           umask 077
-          export_dir=$(mktemp -d)
-          trap 'rm -rf "$export_dir"' EXIT
-          pg_dump --dbname="$PGDATABASE" --format=custom --no-owner --no-acl --file="$export_dir/source.dump"
-          pg_restore --list "$export_dir/source.dump" > "$export_dir/contents.txt"
-          test -s "$export_dir/contents.txt"
-          echo "Source connection and consistent export succeeded."
-          echo "This is a rehearsal only: no target restore, no application change."
-          echo "The temporary dump is removed at job exit. It is not a retained backup."
+          test -n "${SOURCE:-}" && test -n "${TARGET:-}" || { echo "::error::Migration secrets are missing"; exit 1; }
+          source_host="${SOURCE#*://}"; source_host="${source_host##*@}"; source_host="${source_host%%/*}"; source_host="${source_host%%:*}"
+          target_host="${TARGET#*://}"; target_host="${target_host##*@}"; target_host="${target_host%%/*}"; target_host="${target_host%%:*}"
+          case "$source_host" in dpg-daak8j142hec73ao272g-a.*.render.com) ;; *) echo "::error::Wrong source host"; exit 1;; esac
+          test "$target_host" = "ep-red-silence-b3y7ugl8.c-4.ap-southeast-1.aws.neon.tech" || { echo "::error::Wrong target host or pooled URL"; exit 1; }
+          for uri in "$SOURCE" "$TARGET"; do
+            test "$(psql -XAtq --dbname="$uri" -c 'SELECT current_database()')" = buzz_now_db || { echo "::error::Wrong database"; exit 1; }
+            test "$(psql -XAtq --dbname="$uri" -c 'SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()')" = t || { echo "::error::TLS is required"; exit 1; }
+          done
+          empty=$(psql -XAtq --dbname="$TARGET" -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' AND c.relkind IN ('r','p','v','m','S','f')")
+          test "$empty" = 0 || { echo "::error::Target is not empty; refusing overwrite"; exit 1; }
+          work=$(mktemp -d)
+          cleanup() { rm -rf "$work"; }
+          trap cleanup EXIT
+          # Hold a read-only source snapshot throughout export and checksum generation.
+          coproc SNAPSHOT { psql -XAtq --dbname="$SOURCE" -v ON_ERROR_STOP=1; }
+          snapshot_pid=$SNAPSHOT_PID
+          exec {snapshot_in}>&"${SNAPSHOT[1]}"
+          exec {snapshot_out}<&"${SNAPSHOT[0]}"
+          printf '%s\n' 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;' 'SELECT pg_export_snapshot();' >&"$snapshot_in"
+          read -r snapshot <&"$snapshot_out"
+          [[ "$snapshot" =~ ^[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9]+$ ]] || { echo "::error::Snapshot unavailable"; exit 1; }
+          PGOPTIONS="$PGOPTIONS -c default_transaction_read_only=on" pg_dump --dbname="$SOURCE" --snapshot="$snapshot" --format=custom --no-owner --no-acl --file="$work/source.dump"
+          pg_restore --list "$work/source.dump" > "$work/archive-list.txt"
+          # Hash every complete row without logging row contents; use the export snapshot.
+          cat > "$work/manifest.sql" <<'SQL'
+          SELECT format('SELECT %L, count(*), coalesce(sum((''x'' || substr(md5(t::text),1,16))::bit(64)::bigint),0) FROM ONLY %I.%I t;', n.nspname || '.' || c.relname,n.nspname,c.relname)
+          FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+          WHERE c.relkind='r' AND n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%'
+          ORDER BY n.nspname,c.relname
+          \gexec
+          SQL
+          {
+            printf '%s\n' 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;'
+            printf "SET TRANSACTION SNAPSHOT '%s';\n" "$snapshot"
+            cat "$work/manifest.sql"
+            printf '%s\n' 'COMMIT;'
+          } | psql -XAtq --dbname="$SOURCE" -v ON_ERROR_STOP=1 > "$work/source-manifest.txt"
+          printf '%s\n' 'ROLLBACK;' '\q' >&"$snapshot_in"
+          exec {snapshot_in}>&-
+          wait "$snapshot_pid"
+          # Atomic import. Never clean/drop existing data, never change the source.
+          pg_restore --dbname="$TARGET" --no-owner --no-acl --single-transaction --exit-on-error "$work/source.dump"
+          { printf '%s\n' 'BEGIN READ ONLY;'; cat "$work/manifest.sql"; printf '%s\n' 'COMMIT;'; } | psql -XAtq --dbname="$TARGET" -v ON_ERROR_STOP=1 > "$work/target-manifest.txt"
+          cmp "$work/source-manifest.txt" "$work/target-manifest.txt" || { echo "::error::Content verification failed; do not cut over"; exit 1; }
+          echo "COPY VERIFIED: all table row counts and row checksums match the exported snapshot."
+          cut -d '|' -f 1,2 "$work/target-manifest.txt"
+          echo "The live application still uses its original database. A final synchronized cutover is required."
+          echo "Temporary dump is removed at exit; retain the source and snapshot the verified target."
+          
