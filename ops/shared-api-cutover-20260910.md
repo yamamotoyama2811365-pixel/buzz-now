@@ -21,10 +21,10 @@
 
 ## Remaining before retiring old API
 Do not suspend or delete open-close-map-api yet.
-1. Inspect existing Render static-site Redirects/Rewrites. For any destination using https://open-close-map-api.onrender.com, replace only that prefix with https://buzz-now-1.onrender.com/open-close; preserve source paths, suffixes, placeholders, order and Rewrite action. Existing service rules are not exposed for update by the connected Render tools. No rewrite changes are claimed.
+1. DONE: user saved the five static rewrite destinations. Public sitemap and store/area/category requests with unique probe rewrite-34449807455 were observed in the paid shared service access logs with HTTP 200 at 07:24:52–53 UTC. robots.txt is served successfully with the correct canonical sitemap URL; an existing static robots.txt takes precedence over a rewrite.
 2. Preserve manual operator access: the original ADMIN_KEY still works at the old service. The shared service supports OPEN_CLOSE_ADMIN_KEY, but that key is not set because the connection cannot read the old service secret. Copy it directly between Render environment screens if manual operator access is required. Never paste it into a chat or repository. GitHub collector identity intentionally cannot access private inquiries or destructive maintenance.
 3. Confirm one scheduled full cycle on the new shared endpoint. Read-only checks did not run collection or create inquiries.
-4. Verify canonical store/area/category URLs and sitemap via the public static hostname after rewrite changes, then consider stopping old compute.
+4. DONE: public canonical store/area/category pages, sitemap containing 2,005 canonical URLs, robots.txt, client API URLs and shared database readiness passed workflow https://github.com/yamamotoyama2811365-pixel/open-close-map/actions/runs/34449807455 (job 102782735211). Keep old compute until items 2 and 3 are completed.
 
 ## Rollback and future updates
 - Revert the frontend/workflow cutover commit to restore old API consumers; existing DB and old service are retained.
