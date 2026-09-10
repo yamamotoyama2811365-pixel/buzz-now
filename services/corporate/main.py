@@ -105,12 +105,29 @@ def cards(items):
 
 def filters(kind,pref,industry,q):
     def options(values,selected,label):return '<option value="">'+label+'</option>'+''.join('<option'+(' selected' if x==selected else '')+'>'+e(x)+'</option>' for x in values)
-    return '<form class="filters" action="'+ROOT+'/search" method="get"><input type="search" name="q" aria-label="会社名" placeholder="会社名で検索" value="'+e(q,quote=True)+'"><select name="kind" aria-label="情報種別"><option value="">すべての情報</option><option value="bankruptcy"'+(' selected' if kind=='bankruptcy' else '')+'>倒産速報</option><option value="registration"'+(' selected' if kind=='registration' else '')+'>新規法人</option></select><select name="prefecture" aria-label="都道府県">'+options(PREFECTURES,pref,'すべての地域')+'</select><select name="industry" aria-label="業種">'+options(list(INDUSTRIES),industry,'すべての業種')+'</select><button type="submit">検索する →</button></form>'
+    return '<form class="filters" action="'+ROOT+'/search" method="get"><input type="search" name="q" aria-label="会社名" placeholder="会社名で検索" value="'+e(q,quote=True)+'"><input type="hidden" name="kind" value="'+e(kind,quote=True)+'"><select name="prefecture" aria-label="都道府県">'+options(PREFECTURES,pref,'すべての地域')+'</select><select name="industry" aria-label="業種">'+options(list(INDUSTRIES),industry,'すべての業種')+'</select><button type="submit">検索する →</button></form>'
 
 def side():
     return '<aside><section class="panel side"><div class="eyebrow">READ THE SIGNAL</div><h2>速く知り、背景を読む。</h2><p>業種や詳細が未確認でも速報に掲載。確認できた情報を順次追記します。</p><a class="source" href="'+ROOT+'/signals">地域・業種の動きを見る →</a></section><section class="panel side"><h2>地域から探す</h2><div class="links">'+''.join('<a href="'+ROOT+'/area/'+quote(p)+'">'+e(p)+'</a>' for p in PREFECTURES)+'</div></section></aside>'
 
+
+def kind_tabs(kind,path,prefecture='',industry='',q=''):
+    links=[]
+    for value,label in [('', 'すべて'),('bankruptcy','倒産'),('registration','新規法人')]:
+        if path in {'/','/bankruptcies','/registrations'}:
+            target={'':'/','bankruptcy':'/bankruptcies','registration':'/registrations'}[value]
+            params={}
+        elif path.startswith('/area/') or path.startswith('/industry/'):
+            target=path;params={'kind':value} if value else {}
+        else:
+            target='/search';params={k:v for k,v in dict(kind=value,prefecture=prefecture,industry=industry,q=q).items() if v}
+        href=ROOT+target+('?' + urlencode(params) if params else '')
+        active=value==kind
+        links.append('<a class="status-tab '+(value or 'all')+(' active' if active else '')+'" href="'+e(href,quote=True)+'"'+(' aria-current="page"' if active else '')+'>'+label+'</a>')
+    return '<nav class="status-tabs" aria-label="企業情報の切り替え">'+''.join(links)+'</nav>'
+
 def listing(title,kind='',prefecture='',industry='',q='',page=1,path='/',search=False):
+    if kind not in {'','bankruptcy','registration'}:raise HTTPException(400,'Invalid kind')
     result=records(kind,prefecture,industry,q,page)
     intro='<div class="eyebrow">BUSINESS INTELLIGENCE / JAPAN</div><div class="hero"><div><h1>'+e(title)+'</h1><p>会社の変化を、いち早く。<br>倒産速報と新しい法人の情報を、地域・業種・出典から読み解く。</p></div><div class="live"><strong>●</strong>公開情報を自動収集</div></div>'
     if path=='/':
@@ -118,7 +135,7 @@ def listing(title,kind='',prefecture='',industry='',q='',page=1,path='/',search=
     if kind=='registration': intro+='<div class="notice">国税庁が新たに法人番号を指定した会社を掲載しています。指定日は設立日と一致するとは限りません。</div>'
     page_url=lambda n:ROOT+path+'?'+urlencode(dict(kind=kind,prefecture=prefecture,industry=industry,q=q,page=n))
     pages='<div class="pager">'+('<a href="'+e(page_url(page-1),quote=True)+'">← 前のページ</a>' if page>1 else '<span></span>')+('<a href="'+e(page_url(page+1),quote=True)+'">次のページ →</a>' if result['total']>page*40 else '')+'</div>'
-    return shell(title,intro+filters(kind,prefecture,industry,q)+'<div class="layout"><section class="panel"><h2>掲載情報 <span class="small">'+str(result['total'])+'件</span></h2>'+cards(result['items'])+pages+'</section>'+side()+'</div>',path+('?page='+str(page) if page>1 else ''),noindex=search or not result['items'])
+    return shell(title,intro+kind_tabs(kind,path,prefecture,industry,q)+filters(kind,prefecture,industry,q)+'<div class="layout"><section class="panel"><h2>掲載情報 <span class="small">'+str(result['total'])+'件</span></h2>'+cards(result['items'])+pages+'</section>'+side()+'</div>',path+('?' + urlencode({**({'kind':kind} if kind and (path.startswith('/area/') or path.startswith('/industry/')) else {}),**({'page':page} if page>1 else {})}) if page>1 or (kind and (path.startswith('/area/') or path.startswith('/industry/'))) else ''),noindex=search or not result['items'])
 
 @app.get('/health')
 def health():return {'ok':True,'database_configured':bool(DSN),'hosting':'shared'}
@@ -133,13 +150,13 @@ def registrations(page:int=Query(1,ge=1,le=10000)):return listing('新設・新�
 @app.get('/search')
 def search(kind:str='',prefecture:str='',industry:str='',q:str=Query('',max_length=100),page:int=Query(1,ge=1,le=10000)):return listing('企業情報を検索',kind,prefecture,industry,q,page,'/search',True)
 @app.get('/area/{prefecture}')
-def area(prefecture:str,page:int=Query(1,ge=1,le=10000)):
+def area(prefecture:str,page:int=Query(1,ge=1,le=10000),kind:str=''):
     if prefecture not in PREFECTURES:raise HTTPException(404)
-    return listing(prefecture+'の企業の倒産、新規法人情報',prefecture=prefecture,page=page,path='/area/'+quote(prefecture))
+    return listing(prefecture+'の企業の倒産、新規法人情報',kind=kind,prefecture=prefecture,page=page,path='/area/'+quote(prefecture))
 @app.get('/industry/{industry}')
-def industry_page(industry:str,page:int=Query(1,ge=1,le=10000)):
+def industry_page(industry:str,page:int=Query(1,ge=1,le=10000),kind:str=''):
     if industry not in INDUSTRIES:raise HTTPException(404)
-    return listing(industry+'の企業情報',industry=industry,page=page,path='/industry/'+quote(industry))
+    return listing(industry+'の企業情報',kind=kind,industry=industry,page=page,path='/industry/'+quote(industry))
 @app.get('/company/{event_id}')
 def detail(event_id:str):
     rows=query('SELECT id,payload FROM corporate_events WHERE id=%s AND published',[event_id])
