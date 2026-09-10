@@ -63,7 +63,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.42.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.43.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -5001,6 +5001,8 @@ def demo_tick():
 
 
 
+from app import editorial
+
 scheduler = BackgroundScheduler()
 
 @app.on_event("startup")
@@ -5034,6 +5036,9 @@ def startup():
             max_instances=1
         )
 
+    scheduler.add_job(lambda: editorial.run(db), "interval", minutes=10,
+                      next_run_time=datetime.now(timezone.utc) + timedelta(seconds=30),
+                      id="editorial_worker", replace_existing=True, max_instances=1)
     if not scheduler.running:
         scheduler.start()
 
@@ -5196,6 +5201,7 @@ def trend_detail(slug: str, request: Request):
             f"Pre-Buzz Score・Buzz Score・関連キーワード・情報源から整理。"
         )
     canonical = f"{SITE_URL}/trend/{trend['slug']}"
+    editorial_brief = editorial.load_brief(db, trend["id"])
     briefing = _article_briefing(sources, trend["keyword"])
     seo_title = f"{trend['keyword']}の関連ニュース・注目の動き｜{SITE_NAME}"
     description = (f"{trend['keyword']}の関連報道を公開日時・出典付きで確認。" + (briefing[0]["title"] if briefing else "注目の背景を確認できる情報を収集中です。"))
@@ -5207,6 +5213,7 @@ def trend_detail(slug: str, request: Request):
         "trend": trend,
             "seo_title": seo_title,
             "briefing": briefing,
+            "editorial": editorial_brief,
             "og_image_url": og_image_url,
             "related_rows": related_rows,
             "top_now_rows": top_now_rows,

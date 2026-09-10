@@ -71,6 +71,21 @@
   <article class="detail">
     <div class="kicker">{{ trend['category'] }} / TREND</div>
     <h1>{{ trend['keyword'] }}はなぜ話題？<br>確認できた関連ニュース</h1>
+    {% if editorial %}
+    <section class="section editorial" aria-label="記事本文から読み解く注目の動き">
+      <h2>いま何が起きている？</h2>
+      <p style="line-height:1.9;white-space:pre-line">{{ editorial.summary }}</p>
+      <h2>BUZZ NOWの見方</h2>
+      <p style="line-height:1.9;white-space:pre-line">{{ editorial.viewpoint }}</p>
+      <p class="notice">確認できていないこと：{{ editorial.uncertainty }}</p>
+      <p class="mini">記事本文をもとにAIが要約・分析 · {{ editorial.updated_label }}（日本時間）更新</p>
+      <details><summary>要約・見解の出典（{{ editorial.sources|length }}記事）</summary>
+      <ul>{% for source in editorial.sources %}
+        <li><a href="{{ source.url }}" target="_blank" rel="nofollow noopener noreferrer">{{ source.title }}</a>
+        <span class="mini"> · {{ source.publisher }} · {{ source.published_at }}</span></li>
+      {% endfor %}</ul></details>
+    </section>
+    {% endif %}
     <section class="section news-briefing" aria-label="関連ニュースの要点">
       <h2>いま確認できる情報</h2>
       {% if briefing %}
