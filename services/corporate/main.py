@@ -278,7 +278,7 @@ def search_permit(request:Request):
 @app.get('/api/news-candidates')
 def news_candidates(request:Request):
     authorize(request)
-    rows=query("SELECT id,payload FROM corporate_events WHERE published AND kind='bankruptcy' AND (COALESCE(payload->>'news_checked_at','')='' OR (payload->>'news_checked_at')::timestamptz<now()-CASE WHEN payload->>'news_check_status'='partial' THEN interval '1 day' ELSE interval '7 days' END) ORDER BY CASE WHEN id=%s THEN 0 ELSE 1 END, COALESCE(payload->>'news_checked_at',''),reported_date DESC,id LIMIT 2",['bfb9524de141817310bcabbb4'])
+    rows=query("SELECT id,payload FROM corporate_events WHERE published AND kind='bankruptcy' AND (COALESCE(payload->>'news_version','0')<>'2' OR COALESCE(payload->>'news_checked_at','')='' OR (payload->>'news_checked_at')::timestamptz<now()-CASE WHEN payload->>'news_check_status'='partial' THEN interval '1 day' ELSE interval '7 days' END) ORDER BY CASE WHEN id=%s THEN 0 ELSE 1 END, COALESCE(payload->>'news_checked_at',''),reported_date DESC,id LIMIT 2",['bfb9524de141817310bcabbb4'])
     return {'items':rows}
 
 @app.post('/api/news-enrichment')
@@ -290,6 +290,7 @@ async def save_news_enrichment(request:Request):
         body=json.loads(raw)
         if not isinstance(body['id'],str) or not isinstance(body['entity'],dict):raise ValueError()
         reports=validate_reports(body['reports'])
+        if any(r['match_basis']=='速報の出典記事' and r['url']!=body['entity'].get('source_url') for r in reports):raise ValueError()
         if not isinstance(body.get('complete',False),bool):raise ValueError()
     except (ValueError,KeyError,TypeError,AttributeError):raise HTTPException(422,'Invalid news enrichment')
     con=db();changed=0
@@ -303,7 +304,15 @@ async def save_news_enrichment(request:Request):
                 p['news_reports']=sorted(merged.values(),key=lambda r:(r['published_date'],r['url']),reverse=True)[:8]
                 p['news_checked_at']=datetime.now(timezone.utc).isoformat(timespec='seconds')
                 p['news_check_status']='ok' if body.get('complete') else 'partial'
-                cur.execute('UPDATE corporate_events SET payload=%s,updated_at=CASE WHEN %s THEN now() ELSE updated_at END WHERE id=%s',[Json(p),bool(reports),body['id']])
+                p['news_version']=2
+                primary=[r for r in reports if r['url']==p['source_url'] and r['match_basis']=='速報の出典記事']
+                if not p.get('industry') and len(primary)==1:
+                    tags=primary[0]['fields'].get('business','').split('、')
+                    mapping={'広告事業':'サービス業','デジタルマーケティング':'サービス業','飲食店運営':'飲食業','宿泊施設運営':'宿泊業','建設業':'建設業','製造業':'製造業','運送業':'運輸業','システム開発':'情報通信業'}
+                    industries={mapping[t] for t in tags if t in mapping}
+                    if len(industries)==1:
+                        p['industry']=industries.pop();p['classification_basis']='速報の出典記事に記載された事業から自動分類'
+                cur.execute('UPDATE corporate_events SET payload=%s,industry=%s,updated_at=CASE WHEN %s THEN now() ELSE updated_at END WHERE id=%s',[Json(p),p.get('industry',''),bool(reports),body['id']])
                 changed=len(reports)
     finally:con.close()
     with _lock:_cache.clear()

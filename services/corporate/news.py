@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 from .enrich import Fetcher, public_url, norm
 from .model import normalized_name, INDUSTRIES, CAUSES
 
-VERSION = 1
+VERSION = 2
 # User-supplied discovery leads are still fetched and matched, never trusted as facts.
 LEADS = {'bfb9524de141817310bcabbb4': ['https://sapporo-zakkan.seesaa.net/article/521485415.html']}
 FIELDS = {'representative':'報道に記載の代表者', 'business':'報道に記載の事業',
@@ -100,7 +100,7 @@ def facts(body):
         m = re.search(pattern,lead)
         if m: result[key] = m[1]
     tags = []
-    for label,pattern in [('デジタルマーケティング','デジタルマーケティング'),('広告事業','広告事業|広告代理'),('飲食店運営','居酒屋|レストラン|飲食店'),('宿泊施設運営','ホテル経営|旅館経営'),('建設業','建設業|土木工事'),('製造業','製造業'),('運送業','運送業|貨物運送'),('システム開発','システム開発')]:
+    for label,pattern in [('デジタルマーケティング','デジタルマーケティング'),('広告事業','広告事業|広告代理|(?i:WEB)広告|広告運用'),('飲食店運営','居酒屋|レストラン|飲食店'),('宿泊施設運営','ホテル経営|旅館経営'),('建設業','建設業|土木工事'),('製造業','製造業'),('運送業','運送業|貨物運送'),('システム開発','システム開発')]:
         if re.search(pattern,lead): tags.append(label)
     if tags: result['business'] = '、'.join(tags)
     # Background terms are explicitly labeled as mentions, not causal conclusions.
@@ -111,12 +111,14 @@ def facts(body):
 def parse_report(row,url,soup,source_body=''):
     title,body = headline(soup),article(soup)
     basis = match_report(row,title,body,source_body)
+    if url==row.get('source_url') and normalized_name(row['company']) in normalized_name(title) and normalized_name(row['company']) in normalized_name(body[:1800]) and re.search('破産|民事再生|特別清算',title):
+        basis='速報の出典記事'
     if not basis: return None
-    day = published(soup)
+    day = published(soup) or (row['reported_date'] if basis=='速報の出典記事' else '')
     if day and abs((date.fromisoformat(day)-date.fromisoformat(row['reported_date'])).days)>60: return None
     return dict(url=public_url(url),title=title,publisher=urlsplit(url).hostname,
                 published_date=day,checked_at=datetime.now(timezone.utc).isoformat(timespec='seconds'),
-                match_basis=basis,fields=facts(body))
+                match_basis=basis,fields=facts(title+'\n'+body))
 
 def collect_reports(candidate,search_permitted=False):
     row = candidate['payload']; urls = list(LEADS.get(candidate['id'],[])); searched=False
@@ -128,7 +130,9 @@ def collect_reports(candidate,search_permitted=False):
         urls += [x['url'] for x in r.json().get('web',{}).get('results',[]) if x.get('url')]
     fetcher = NewsFetcher(budget=65); source_body=''; reports=[]; errors=0
     try:
-        _,soup = fetcher.page(row['source_url']); source_body = article(soup)
+        final,soup = fetcher.page(row['source_url']); source_body = article(soup)
+        primary=parse_report(row,final,soup)
+        if primary and primary['fields']:reports.append(primary)
     except Exception: errors+=1
     for url in list(dict.fromkeys(urls))[:4]:
         if url==row['source_url']: continue
@@ -137,7 +141,7 @@ def collect_reports(candidate,search_permitted=False):
             item = parse_report(row,final,soup,source_body)
             if item: reports.append(item)
         except Exception: errors+=1
-    return reports,errors,searched
+    return reports[:4],errors,searched
 
 def validate_reports(reports):
     if not isinstance(reports,list) or len(reports)>4: raise ValueError('reports')
@@ -149,7 +153,7 @@ def validate_reports(reports):
         if r['published_date']: date.fromisoformat(r['published_date'])
         datetime.fromisoformat(r['checked_at'].replace('Z','+00:00'))
         if r['publisher']!=urlsplit(r['url']).hostname: raise ValueError('publisher')
-        if r['match_basis'] not in {'会社名・法人番号一致','会社名・所在地一致','会社名・裁判所・事件番号一致'}: raise ValueError('match')
+        if r['match_basis'] not in {'速報の出典記事','会社名・法人番号一致','会社名・所在地一致','会社名・裁判所・事件番号一致'}: raise ValueError('match')
         if not isinstance(r['fields'],dict): raise ValueError('fields')
         for k,v in r['fields'].items():
             if k not in FIELDS or not isinstance(v,str) or len(v)>150: raise ValueError('field')
