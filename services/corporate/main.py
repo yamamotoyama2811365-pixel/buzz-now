@@ -135,7 +135,7 @@ def search(kind:str='',prefecture:str='',industry:str='',q:str=Query('',max_leng
 @app.get('/area/{prefecture}')
 def area(prefecture:str,page:int=Query(1,ge=1,le=10000)):
     if prefecture not in PREFECTURES:raise HTTPException(404)
-    return listing(prefecture+'の企業情報',prefecture=prefecture,page=page,path='/area/'+quote(prefecture))
+    return listing(prefecture+'の企業の倒産、新規法人情報',prefecture=prefecture,page=page,path='/area/'+quote(prefecture))
 @app.get('/industry/{industry}')
 def industry_page(industry:str,page:int=Query(1,ge=1,le=10000)):
     if industry not in INDUSTRIES:raise HTTPException(404)
