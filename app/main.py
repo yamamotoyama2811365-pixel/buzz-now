@@ -6708,10 +6708,11 @@ def ads_txt():
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
 def robots():
+    corporate_sitemap = ("Sitemap: " + os.getenv("CORPORATE_PUBLIC_URL", "https://buzz-now-1.onrender.com/corporate").rstrip("/") + "/sitemap.xml\n") if os.getenv("CORPORATE_ENABLED", "false").lower() == "true" else ""
     return f"""User-agent: *
 Allow: /
 Sitemap: {SITE_URL}/sitemap.xml
-"""
+{corporate_sitemap}"""
 
 
 @app.get("/api/trends")
@@ -6845,3 +6846,8 @@ def social_schedule_status():
 if os.getenv("OPEN_CLOSE_ENABLED", "false").lower() == "true" and not LEGACY_SERVICE:
     from services.open_close.main import app as open_close_app
     app.mount("/open-close", open_close_app)
+
+# Corporate Signal shares this instance but has its own Neon database and collector identity.
+if os.getenv("CORPORATE_ENABLED", "false").lower() == "true" and not LEGACY_SERVICE:
+    from services.corporate.main import app as corporate_app
+    app.mount("/corporate", corporate_app)

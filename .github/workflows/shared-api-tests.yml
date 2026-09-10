@@ -1,7 +1,7 @@
 name: Shared API tests
 on:
   push:
-    branches: [feat/shared-open-close, main]
+    branches: [feat/shared-open-close, feat/corporate-signal, main]
     paths: [services/**, tests/test_shared_api.py, .github/workflows/shared-api-tests.yml, requirements.txt]
 permissions:
   contents: read
@@ -21,6 +21,7 @@ jobs:
       - name: Import shared application without startup jobs
         env:
           OPEN_CLOSE_ENABLED: 'true'
+          CORPORATE_ENABLED: 'true'
           DEMO_MODE: 'false'
           REAL_DATA_MODE: 'false'
         run: python -c 'import app.main, resource; print("Import peak RSS KiB", resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)'
