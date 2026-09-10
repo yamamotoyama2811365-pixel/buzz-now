@@ -34,7 +34,7 @@ def article(soup):
     clone = BeautifulSoup(str(soup), 'html.parser')
     for el in clone.select('script,style,nav,aside,footer,.related,.related-articles,.comments,#comments'):
         el.decompose()
-    roots = clone.select('[itemprop="articleBody"], .article-body, .entry-body, .entry-more, .entry-content')
+    roots = clone.select('[itemprop="articleBody"], .article-body, .entry-body, #entry-body, .entry-more, #entry-more, .entry-content')
     if not roots:
         roots = clone.select('article')
     # A page without an identifiable article body is not a source for facts.
@@ -42,8 +42,9 @@ def article(soup):
 
 def headline(soup):
     meta = soup.select_one('meta[property="og:title"]')
-    h = soup.select_one('h1, h2.entry-title, h3.entry-title, .article-title')
-    return (meta.get('content','') if meta else h.get_text(' ',strip=True) if h else soup.title.get_text(' ',strip=True) if soup.title else '')[:200]
+    headings = soup.select('h1.entry-title, h2.entry-title, h3.entry-title, .article-title, h1')
+    candidates = [meta.get('content','') if meta else '']+[h.get_text(' ',strip=True) for h in headings]+[soup.title.get_text(' ',strip=True) if soup.title else '']
+    return next((x[:200] for x in candidates if x.strip()),'')
 
 def published(soup):
     for el in soup.select('meta[property="article:published_time"],meta[name="date"],time[datetime]'):
@@ -65,7 +66,7 @@ def canonical_address(value):
 
 def case_keys(text):
     text = unicodedata.normalize('NFKC',text)
-    numbers = re.findall(r'(令和|平成)\s*(\d+)年\s*\(\s*フ\s*\)\s*第?\s*(\d+)号',text)
+    numbers = re.findall(r'(令和|平成)\s*(\d+)\s*年\s*\(\s*フ\s*\)\s*第?\s*(\d+)\s*号',text)
     courts = re.findall(r'([一-龥]{2,8})(?:地方裁判所|地裁)',text)
     return {(court,*number) for court in courts for number in numbers}
 

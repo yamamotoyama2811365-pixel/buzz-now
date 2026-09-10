@@ -196,7 +196,7 @@ def about():return shell('掲載方針・訂正について','<div class="detail
 @app.get('/sources')
 def sources():
     rows=query("SELECT * FROM corporate_runs WHERE source NOT LIKE %s ORDER BY source",['search-%'])
-    body='<h1>自動収集の状況</h1><div class="panel"><table><tr><th>収集元</th><th>最終確認（UTC）</th><th>状況</th></tr>'+''.join('<tr><td>'+e(r['source'])+'</td><td>'+e(str(r['checked_at'])[:19])+'</td><td>'+e({'ok':'正常','error':'取得失敗'}.get(r['status'],r['status']))+'</td></tr>' for r in rows)+'</table><p>倒産速報は30分ごとに確認、新規法人は国税庁の日次公表データを確認します。公開元や実行基盤の状況によって遅れる場合があります。</p></div>'
+    body='<h1>自動収集の状況</h1><div class="panel"><table><tr><th>収集元</th><th>最終確認（UTC）</th><th>状況</th></tr>'+''.join('<tr><td>'+e(r['source'])+'</td><td>'+e(str(r['checked_at'])[:19])+'</td><td>'+e({'ok':'正常','error':'取得失敗','partial':'一部の情報を取得できませんでした','deferred':'検索枠の回復待ち'}.get(r['status'],r['status']))+'</td></tr>' for r in rows)+'</table><p>倒産速報は30分ごとに確認、新規法人は国税庁の日次公表データを確認します。公開元や実行基盤の状況によって遅れる場合があります。</p></div>'
     return shell('収集状況',body,'/sources',True)
 @app.get('/api/events')
 def api_events(kind:str='',prefecture:str='',industry:str='',q:str=Query('',max_length=100),page:int=Query(1,ge=1,le=10000)):return records(kind,prefecture,industry,q,page)
@@ -278,7 +278,7 @@ def search_permit(request:Request):
 @app.get('/api/news-candidates')
 def news_candidates(request:Request):
     authorize(request)
-    rows=query("SELECT id,payload FROM corporate_events WHERE published AND kind='bankruptcy' AND (COALESCE(payload->>'news_checked_at','')='' OR (payload->>'news_checked_at')::timestamptz<now()-interval '7 days') ORDER BY CASE WHEN id=%s THEN 0 ELSE 1 END, COALESCE(payload->>'news_checked_at',''),reported_date DESC,id LIMIT 2",['bfb9524de141817310bcabbb4'])
+    rows=query("SELECT id,payload FROM corporate_events WHERE published AND kind='bankruptcy' AND (COALESCE(payload->>'news_checked_at','')='' OR (payload->>'news_checked_at')::timestamptz<now()-CASE WHEN payload->>'news_check_status'='partial' THEN interval '1 day' ELSE interval '7 days' END) ORDER BY CASE WHEN id=%s THEN 0 ELSE 1 END, COALESCE(payload->>'news_checked_at',''),reported_date DESC,id LIMIT 2",['bfb9524de141817310bcabbb4'])
     return {'items':rows}
 
 @app.post('/api/news-enrichment')
@@ -302,6 +302,7 @@ async def save_news_enrichment(request:Request):
                 merged.update({r['url']:r for r in reports})
                 p['news_reports']=sorted(merged.values(),key=lambda r:(r['published_date'],r['url']),reverse=True)[:8]
                 p['news_checked_at']=datetime.now(timezone.utc).isoformat(timespec='seconds')
+                p['news_check_status']='ok' if body.get('complete') else 'partial'
                 cur.execute('UPDATE corporate_events SET payload=%s,updated_at=CASE WHEN %s THEN now() ELSE updated_at END WHERE id=%s',[Json(p),bool(reports),body['id']])
                 changed=len(reports)
     finally:con.close()
