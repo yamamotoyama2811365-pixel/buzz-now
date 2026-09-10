@@ -86,6 +86,11 @@ def collect_news(known=None):
         for link in soup.select('a[href]'):
             title=link.get_text(' ',strip=True);url=urljoin(page,link['href']).split('#')[0]
             if urlparse(url).hostname not in {'n-seikei.jp','www.n-seikei.jp'}:continue
+            daily_match=re.search(r'/(20\d{2})/(\d{2})/(20\d{2})-(\d{2})(\d{2})-tousan\.html$',url)
+            if daily_match:
+                day=f'{daily_match[3]}-{daily_match[4]}-{daily_match[5]}'
+                if cutoff.isoformat()<=day<=today.isoformat() and url not in daily:daily.append(url)
+                continue
             if not re.search(r'/20\d{2}/\d{2}/[^/]+\.html$',url) or not NEWS_WORDS.search(title):continue
             container=link.find_parent(class_=re.compile(r'\b(?:entry|hentry|asset)\b'))
             listed_date=publication_date(container) if container else ''
@@ -96,22 +101,22 @@ def collect_news(known=None):
                 continue
             if re.search('倒産件数|過去最多|ランキング|予測',title):continue
             if len(title)>len(candidates.get(url,('',None,''))[0]):candidates[url]=(title,listed_date or None,'')
-    months={today.replace(day=1),cutoff.replace(day=1)}
-    pages=['https://n-seikei.jp/','https://n-seikei.jp/tousan/','https://n-seikei.jp/koguchi-hasan/']+['https://n-seikei.jp/'+m.strftime('%Y/%m/') for m in sorted(months,reverse=True)]
+    pages=['https://n-seikei.jp/','https://n-seikei.jp/tousan/','https://n-seikei.jp/koguchi-hasan/']
     for url in pages:
         try:links(BeautifulSoup(read(url).text,'html.parser'),url);seen_pages.add(url)
         except requests.HTTPError as exc:
             if exc.response is not None and exc.response.status_code==429:raise
-            rows.errors.append({'url':url,'reason':type(exc).__name__})
-        except Exception as exc:rows.errors.append({'url':url,'reason':type(exc).__name__})
+            rows.errors.append({'url':url,'reason':type(exc).__name__,'status':getattr(getattr(exc,'response',None),'status_code',None)})
+        except Exception as exc:rows.errors.append({'url':url,'reason':type(exc).__name__,'status':getattr(getattr(exc,'response',None),'status_code',None)})
     # Read daily indexes to recover small-company articles omitted from the homepage.
-    for url in list(daily)[:35]:
+    for index,url in enumerate(daily):
+        if index>=35:break
         if url in seen_pages:continue
         try:links(BeautifulSoup(read(url).text,'html.parser'),url);seen_pages.add(url)
         except requests.HTTPError as exc:
             if exc.response is not None and exc.response.status_code==429:raise
-            rows.errors.append({'url':url,'reason':type(exc).__name__})
-        except Exception as exc:rows.errors.append({'url':url,'reason':type(exc).__name__})
+            rows.errors.append({'url':url,'reason':type(exc).__name__,'status':getattr(getattr(exc,'response',None),'status_code',None)})
+        except Exception as exc:rows.errors.append({'url':url,'reason':type(exc).__name__,'status':getattr(getattr(exc,'response',None),'status_code',None)})
     try:
         root=ET.fromstring(read('https://n-seikei.jp/rss.xml').content)
         items=root.findall('.//item') or root.findall('.//{http://purl.org/rss/1.0/}item')
@@ -121,8 +126,8 @@ def collect_news(known=None):
             if NEWS_WORDS.search(title) and '一覧' not in title:candidates.setdefault(url,(title,pub,''))
     except requests.HTTPError as exc:
         if exc.response is not None and exc.response.status_code==429:raise
-        rows.errors.append({'url':'rss.xml','reason':type(exc).__name__})
-    except Exception as exc:rows.errors.append({'url':'rss.xml','reason':type(exc).__name__})
+        rows.errors.append({'url':'rss.xml','reason':type(exc).__name__,'status':getattr(getattr(exc,'response',None),'status_code',None)})
+    except Exception as exc:rows.errors.append({'url':'rss.xml','reason':type(exc).__name__,'status':getattr(getattr(exc,'response',None),'status_code',None)})
     if not candidates:raise ValueError('No news candidates')
     rows.candidates=len(candidates);attempted=0;deadline=time.monotonic()+420
     # Iterate ALL discovered URLs. The work budget defers overflow to subsequent runs.
@@ -147,8 +152,8 @@ def collect_news(known=None):
             else:rows.rejected.append({'url':url,'title':title})
         except requests.HTTPError as exc:
             if exc.response is not None and exc.response.status_code==429:raise
-            rows.errors.append({'url':url,'reason':type(exc).__name__})
-        except Exception as exc:rows.errors.append({'url':url,'reason':type(exc).__name__})
+            rows.errors.append({'url':url,'reason':type(exc).__name__,'status':getattr(getattr(exc,'response',None),'status_code',None)})
+        except Exception as exc:rows.errors.append({'url':url,'reason':type(exc).__name__,'status':getattr(getattr(exc,'response',None),'status_code',None)})
     return rows
 
 class Collection(list):
