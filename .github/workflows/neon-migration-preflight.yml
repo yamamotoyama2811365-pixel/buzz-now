@@ -1,0 +1,50 @@
+name: Neon migration source preflight
+on:
+  push:
+    branches: [ops/neon-migration-preflight]
+    paths: [.github/workflows/neon-migration-preflight.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: neon-migration-preflight
+  cancel-in-progress: false
+jobs:
+  source-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: postgres:18
+    steps:
+      - name: Verify source and test a consistent export
+        shell: bash
+        env:
+          PGDATABASE: ${{ secrets.MIGRATION_SOURCE_DATABASE_URL }}
+          PGSSLMODE: require
+          PGCONNECT_TIMEOUT: "30"
+          PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=600000 -c lock_timeout=10000"
+        run: |
+          set -euo pipefail
+          if [ -z "${PGDATABASE:-}" ]; then
+            echo "::error::MIGRATION_SOURCE_DATABASE_URL is missing."
+            exit 1
+          fi
+          case "$PGDATABASE" in
+            postgresql://*dpg-daak8j142hec73ao272g-a*|postgres://*dpg-daak8j142hec73ao272g-a*) ;;
+            *) echo "::error::Unexpected source. Expected the existing BUZZ NOW Render database."; exit 1 ;;
+          esac
+          actual_db=$(psql -X -A -t -v ON_ERROR_STOP=1 -c "SELECT current_database()")
+          if [ "$actual_db" != "buzz_now_db" ]; then
+            echo "::error::Unexpected database name."
+            exit 1
+          fi
+          psql -X -v ON_ERROR_STOP=1 -c "SELECT current_database() AS database, pg_database_size(current_database()) AS bytes, current_setting('server_version') AS version"
+          psql -X -v ON_ERROR_STOP=1 -c "SELECT schemaname,relname,n_live_tup AS estimated_rows FROM pg_stat_user_tables ORDER BY schemaname,relname"
+          umask 077
+          export_dir=$(mktemp -d)
+          trap 'rm -rf "$export_dir"' EXIT
+          pg_dump --format=custom --no-owner --no-acl --file="$export_dir/source.dump"
+          pg_restore --list "$export_dir/source.dump" > "$export_dir/contents.txt"
+          test -s "$export_dir/contents.txt"
+          echo "Source connection and consistent export succeeded."
+          echo "This is a rehearsal only: no target restore, no application change."
+          echo "The temporary dump is removed at job exit. It is not a retained backup."
