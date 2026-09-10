@@ -22,9 +22,11 @@ import httpx
 import feedparser
 from PIL import Image, ImageDraw, ImageFont
 from app.migration_control import MigrationMaintenance, migration_settings
+from app import traffic_retention
 
 BASE = Path(__file__).resolve().parent.parent
 DB_PATH = BASE / "buzznow.db"
+TRAFFIC_RETENTION_ENABLED = os.getenv("TRAFFIC_RETENTION_ENABLED", "false").lower() == "true"
 SITE_URL = os.getenv("SITE_URL", "http://localhost:8000").rstrip("/")
 # V35.36: X/Threads public links must never fall back to the retired Render hostname.
 SOCIAL_PUBLIC_BASE_URL = os.getenv("SOCIAL_PUBLIC_BASE_URL", "https://buzz-now-1.onrender.com").rstrip("/")
@@ -2304,6 +2306,8 @@ def refresh_real_traffic_forecast(c, ts):
         LEFT JOIN confidence_state cs ON cs.trend_id=t.id
     """).fetchall()
 
+    samples = traffic_retention.latest_samples(c, bool(DATABASE_URL)) if TRAFFIC_RETENTION_ENABLED else {}
+
     for r in rows:
         pre = max(0.0, min(100.0, float(r["pre_buzz_score"] or 0)))
         buzz = max(0.0, min(100.0, float(r["buzz_score"] or 0)))
@@ -2347,12 +2351,15 @@ def refresh_real_traffic_forecast(c, ts):
         predicted_ctr = round(max(0.8, min(12.0, 2.2 + potential / 24.0)), 2)
         predicted_clicks = int(round(predicted_impressions * predicted_ctr / 100.0))
 
-        c.execute("""
-            INSERT INTO traffic_history(
-                trend_id,impressions,clicks,pageviews,ctr,traffic_potential,recorded_at
-            ) VALUES(?,?,?,?,?,?,?)
-        """, (r["id"], predicted_impressions, predicted_clicks,
-              predicted_pv, predicted_ctr, potential, ts))
+        values = dict(impressions=predicted_impressions, clicks=predicted_clicks,
+                      pageviews=predicted_pv, ctr=predicted_ctr, traffic_potential=potential)
+        if not TRAFFIC_RETENTION_ENABLED or traffic_retention.should_sample(samples.get(r["id"]), values, ts):
+            c.execute("""
+                INSERT INTO traffic_history(
+                    trend_id,impressions,clicks,pageviews,ctr,traffic_potential,recorded_at
+                ) VALUES(?,?,?,?,?,?,?)
+            """, (r["id"], predicted_impressions, predicted_clicks,
+                  predicted_pv, predicted_ctr, potential, ts))
 
         c.execute("""
             INSERT INTO traffic_totals(
@@ -5046,6 +5053,12 @@ def startup():
             max_instances=1
         )
 
+    if TRAFFIC_RETENTION_ENABLED and DATABASE_URL and DATABASE_BACKEND == "neon":
+        scheduler.add_job(lambda: traffic_retention.run(db), "interval", minutes=2,
+                          next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60),
+                          id="traffic_retention", replace_existing=True, max_instances=1,
+                          coalesce=True)
+
     scheduler.add_job(lambda: editorial.run(db), "interval", minutes=10,
                       next_run_time=datetime.now(timezone.utc) + timedelta(seconds=30),
                       id="editorial_worker", replace_existing=True, max_instances=1)
@@ -5380,6 +5393,20 @@ def trend_traffic(slug: str, limit: int = 24):
         "history":[dict(r) for r in reversed(hist)]
     }
 
+
+
+@app.get("/api/trends/{slug}/traffic/daily")
+def trend_traffic_daily(slug: str, days: int = 30):
+    if not TRAFFIC_RETENTION_ENABLED or not DATABASE_URL:
+        raise HTTPException(503, "Daily forecast archive is not enabled")
+    days = max(1, min(days, traffic_retention.SUMMARY_DAYS))
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days-1)).isoformat()
+    with db() as c:
+        trend = c.execute("SELECT id,keyword FROM trends WHERE slug=?", (slug,)).fetchone()
+        if not trend:
+            raise HTTPException(404, "Trend not found")
+        items = traffic_retention.daily(c, trend["id"], cutoff)
+    return {"keyword": trend["keyword"], "kind": "forecast", "days": days, "items": items}
 
 
 @app.get("/api/growth-ranking")
