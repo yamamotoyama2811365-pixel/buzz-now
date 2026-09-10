@@ -139,7 +139,7 @@ async def canonical_origin(request: Request, call_next):
     path = request.url.path
     # Keep Render health checks and Google ownership verification local.
     verification = bool(re.fullmatch(r"/google[a-zA-Z0-9]+\.html", path))
-    if (LEGACY_SERVICE or request.url.hostname == "buzz-now.onrender.com") and path != "/health" and not verification:
+    if (LEGACY_SERVICE or request.url.hostname == "buzz-now.onrender.com") and path not in ("/health", "/ads.txt") and not verification:
         raw_path = request.scope.get("raw_path", b"/").decode("ascii")
         query = request.scope.get("query_string", b"").decode("ascii")
         target = PRIMARY_SITE_URL + raw_path + (("?" + query) if query else "")
@@ -6663,6 +6663,11 @@ def sitemap():
             "X-Robots-Tag": "noindex",
         },
     )
+
+
+@app.get("/ads.txt", response_class=PlainTextResponse)
+def ads_txt():
+    return PlainTextResponse("google.com, pub-5776658615046901, DIRECT, f08c47fec0942fa0\n")
 
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
