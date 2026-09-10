@@ -39,17 +39,22 @@ def stage_from_title(title):
     if '特別清算' in title: return '特別清算（報道）'
     return ''
 
-def parse_news(title, body, url, published):
+GENERIC_NAMES={'運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗'}
+
+def parse_news(title, body, url, published, company_hint=''):
     stage=stage_from_title(title)
     if not stage or re.search('一覧|件数|過去最多|倒産件数|前年|予測|リスク|ランキング',title): return None
     t=re.sub(r'【[^】]+】|〖[^〗]+〗|追報[：:]?|続報[：:]?','',title).strip()
     m=re.search(r'^(.{2,100}?)(?:が|、|／|\s[/／]\s)(?:.*?)(?:破産|民事再生|特別清算)',t)
     if not m: return None
     company=m.group(1).strip()
-    company=re.sub(r'「[^」]+」','',company).strip()
+    quoted=re.search(r'「([^」]+)」$',company)
+    company=quoted.group(1) if quoted else re.sub(r'「[^」]+」','',company).strip()
     if 'の' in company: company=company.rsplit('の',1)[-1]
     company=re.sub(r'（旧[^）]*）','',company).strip(' ・')
-    if len(company)<2 or len(company)>60 or re.search('企業|会社数|件|\d+%|倒産',company): return None
+    if company_hint: company=company_hint
+    if company in GENERIC_NAMES:return None
+    if len(company)<2 or len(company)>60 or re.search(r'会社数|\d+件|\d+%|倒産',company): return None
     pref=''
     for p in PREFECTURES:
         short=p if p=='北海道' else p[:-1]

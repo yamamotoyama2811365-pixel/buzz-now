@@ -50,7 +50,7 @@ def collect_news(known=None):
     for url,(title,pub,description) in list(candidates.items())[:70]:
         if urlparse(url).hostname not in {'n-seikei.jp','www.n-seikei.jp'} or not rp.can_fetch(UA,url): continue
         if not re.search('破産|民事再生|特別清算',title) or '一覧' in title: continue
-        fingerprint=hashlib.sha256(title.encode()).hexdigest()
+        fingerprint='v2:'+hashlib.sha256(title.encode()).hexdigest()
         if known.get(url)==fingerprint:
             rows.skipped+=1
             continue
@@ -78,7 +78,17 @@ def collect_news(known=None):
         else:
             meta=soup.select_one('meta[name="description"]')
             description=meta.get('content','') if meta else BeautifulSoup(description,'html.parser').get_text(' ',strip=True)
-        row=parse_news(title,description,url,dt.date().isoformat())
+        metadata=soup.select_one('meta[name="description"]')
+        if metadata:description=metadata.get('content','')+' '+description
+        more=soup.select_one('.entry-more')
+        if more:description+=' '+more.get_text(' ',strip=True)[:6000]
+        company_hint=''
+        for tr in soup.select('tr'):
+            cells=tr.find_all(['th','td'],recursive=False)
+            if len(cells)==2 and cells[0].get_text(strip=True) in {'法人名','会社名','商号','企業名'}:
+                value=cells[1].get_text(' ',strip=True)
+                if 2<=len(value)<=100:company_hint=value;break
+        row=parse_news(title,description,url,dt.date().isoformat(),company_hint)
         if row:
             row["listing_fingerprint"]=fingerprint
             rows.append(row)

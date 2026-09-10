@@ -52,7 +52,7 @@ def cached(key,fn,ttl=60):
     return result
 
 def records(kind='',prefecture='',industry='',q='',page=1):
-    where=['published']; args=[]
+    where=["published AND company NOT IN ('運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗')"]; args=[]
     for field,value in [('kind',kind),('prefecture',prefecture),('industry',industry)]:
         if value: where.append(field+'=%s');args.append(value)
     if q:where.append('company ILIKE %s');args.append('%'+q.replace('%','\\%').replace('_','\\_')+'%')
@@ -66,7 +66,7 @@ def records(kind='',prefecture='',industry='',q='',page=1):
 
 def analysis():
     def read():
-        rows=query("SELECT id,prefecture,industry,reported_date,payload,first_seen FROM corporate_events WHERE published AND kind='bankruptcy' ORDER BY reported_date,id")
+        rows=query("SELECT id,prefecture,industry,reported_date,payload,first_seen FROM corporate_events WHERE published AND company NOT IN ('運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗') AND kind='bankruptcy' ORDER BY reported_date,id")
         entities={}
         for r in rows:
             key=r['payload'].get('entity_key',r['id'])
@@ -87,7 +87,7 @@ def analysis():
             causes=Counter(c for r in recent if (r['prefecture'],r['industry'])==(pref,ind) for c in r['payload'].get('causes',[]))
             sources=[{'name':r['payload']['company'],'url':r['payload']['source_url']} for r in recent if (r['prefecture'],r['industry'])==(pref,ind)][:4]
             groups.append(dict(prefecture=pref,industry=ind,current=n,previous=old,status=status,causes=causes.most_common(3),sources=sources))
-        registrations=query("SELECT count(*) n FROM corporate_events WHERE published AND kind='registration' AND reported_date BETWEEN %s AND %s",[today-timedelta(days=29),today])[0]['n']
+        registrations=query("SELECT count(*) n FROM corporate_events WHERE published AND company NOT IN ('運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗') AND kind='registration' AND reported_date BETWEEN %s AND %s",[today-timedelta(days=29),today])[0]['n']
         return dict(bankruptcies=len(recent),registrations=registrations,classified=sum(bool(x['industry']) for x in recent),groups=groups,enough=enough,start=str(first))
     return cached('analysis',read,120)
 
@@ -143,7 +143,7 @@ def industry_page(industry:str,page:int=Query(1,ge=1,le=10000)):
 @app.get('/company/{event_id}')
 def detail(event_id:str):
     rows=query('SELECT id,payload FROM corporate_events WHERE id=%s AND published',[event_id])
-    if not rows:raise HTTPException(404)
+    if not rows or rows[0]['payload']['company'] in {'運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗'}:raise HTTPException(404)
     p=rows[0]['payload']; title=p['company']+'｜'+p['stage']
     facts=[('状況',p['stage']), (p.get('date_label','確認日'),p['reported_date']),('都道府県',p.get('prefecture') or '未確認'),('業種',p.get('industry') or '未確認'),('所在地',p.get('address') or '未確認'),('法人番号',p.get('corporate_number') or '未照合'),('業種の確認方法',p.get('classification_basis') or '確認できる情報なし')]
     facts_html='<dl class="facts">'+''.join('<dt>'+e(k)+'</dt><dd>'+e(v)+'</dd>' for k,v in facts)+'</dl>'
@@ -227,7 +227,7 @@ async def ingest(request:Request):
 def robots():return Response('User-agent: *\nAllow: /\nSitemap: '+BASE+'/sitemap.xml\n',media_type='text/plain')
 @app.get('/sitemap.xml')
 def sitemap():
-    n=query('SELECT count(*) n FROM corporate_events WHERE published')[0]['n']
+    n=query("SELECT count(*) n FROM corporate_events WHERE published AND company NOT IN ('運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗')")[0]['n']
     pages=max(1,(n+9999)//10000)
     body='<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
     for page in range(1,pages+1):body+='<sitemap><loc>'+e(BASE+'/sitemaps/'+str(page)+'.xml')+'</loc></sitemap>'
@@ -235,14 +235,14 @@ def sitemap():
 @app.get('/sitemaps/{page}.xml')
 def sitemap_page(page:int):
     if page<1 or page>10000:raise HTTPException(404)
-    rows=query('SELECT id,updated_at FROM corporate_events WHERE published ORDER BY id LIMIT 10000 OFFSET %s',[(page-1)*10000])
+    rows=query("SELECT id,updated_at FROM corporate_events WHERE published AND company NOT IN ('運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗') ORDER BY id LIMIT 10000 OFFSET %s",[(page-1)*10000])
     if not rows and page>1:raise HTTPException(404)
     body='<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
     if page==1:
         for path in ['/','/bankruptcies','/registrations','/signals','/about']:body+='<url><loc>'+e(BASE+path)+'</loc></url>'
-        for p in query("SELECT DISTINCT prefecture FROM corporate_events WHERE published AND prefecture<>''"):
+        for p in query("SELECT DISTINCT prefecture FROM corporate_events WHERE published AND company NOT IN ('運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗') AND prefecture<>''"):
             body+='<url><loc>'+e(BASE+'/area/'+quote(p['prefecture']))+'</loc></url>'
-        for p in query("SELECT DISTINCT industry FROM corporate_events WHERE published AND industry<>''"):
+        for p in query("SELECT DISTINCT industry FROM corporate_events WHERE published AND company NOT IN ('運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗') AND industry<>''"):
             body+='<url><loc>'+e(BASE+'/industry/'+quote(p['industry']))+'</loc></url>'
     for r in rows:body+='<url><loc>'+e(BASE+'/company/'+r['id'])+'</loc><lastmod>'+r['updated_at'].date().isoformat()+'</lastmod></url>'
     return Response(body+'</urlset>',media_type='application/xml',headers={'Cache-Control':'public, max-age=300'})
