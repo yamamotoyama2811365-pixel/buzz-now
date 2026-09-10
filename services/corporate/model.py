@@ -97,6 +97,8 @@ def preserve_profile(row,old):
     # A subsequent news/registry import must not erase independently verified facts.
     row=dict(row)
     if old and same_entity(row,old):
+        for key in ('news_reports','news_checked_at'):
+            if old.get(key):row[key]=old[key]
         if old.get('web_checked_at'):row['web_checked_at']=old['web_checked_at']
         if old.get('web_profile'):row['web_profile']=old['web_profile']
         if not row.get('industry') and old.get('web_profile',{}).get('primary_industry'):

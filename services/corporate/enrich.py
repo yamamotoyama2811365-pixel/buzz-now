@@ -16,6 +16,7 @@ UA='CorporateSignal/1.0 (+https://github.com/yamamotoyama2811365-pixel/-corporat
 BUSINESS=dict(INDUSTRIES)
 BUSINESS['飲食業']=BUSINESS['飲食業']+['割烹','仕出し','ケータリング']
 BUSINESS['運輸業']=BUSINESS['運輸業']+['物流業務']
+BUSINESS['サービス業']=BUSINESS['サービス業']+['広告事業','広告代理','デジタルマーケティング']
 BLOCKED={'n-seikei.jp','google.com','google.co.jp','facebook.com','instagram.com','x.com','twitter.com','youtube.com','tabelog.com','houjin-bangou.nta.go.jp'}
 
 def public_url(url):
@@ -36,6 +37,8 @@ def candidate_url(url):
 
 def norm(text):
     text=unicodedata.normalize('NFKC',text).casefold()
+    digits=dict(zip('一二三四五六七八九','123456789'))
+    text=re.sub(r'[一二三四五六七八九](?=条|丁目)',lambda m:digits[m[0]],text)
     text=re.sub(r'(\d+)丁目',r'\1-',text)
     text=re.sub(r'(\d+)番地?(?:の)?',r'\1-',text)
     text=re.sub(r'(\d+)号',r'\1',text)
@@ -120,6 +123,10 @@ def matching_basis(row,text,explicit=False):
     address=norm(row.get('address',''))
     # A full street address must match; a prefecture/city alone is insufficient.
     if address and re.search(r'\d',address) and address in norm(text):return '会社名・所在地一致'
+    # A masked report still supplies a useful street prefix. Label the limited match.
+    prefix=re.split(r'[*＊○〇…]',address)[0].rstrip('-')
+    if prefix!=address and len(prefix)>=8 and re.search(r'(?:市|区|町).+\d',prefix) and prefix in norm(text):
+        return '会社名・公表所在地の範囲一致'
     # An explicit link in the cited report supplies independent attribution.
     pref=row.get('prefecture','')
     if explicit and pref and norm(pref) in norm(text):return '報道元の公式サイトリンク・会社名・都道府県一致'
@@ -153,13 +160,26 @@ def profile_from_pages(row,pages,explicit=False):
     descriptions=[]
     for label,terms in [('割烹・日本料理',['割烹','日本料理']),('仕出し・ケータリング',['仕出し','ケータリング']),('物流業務の受託',['物流業務','物流アウトソーシング']),('卸売',['卸売']),('通信販売',['通信販売']),('システム開発',['システム開発','ソフトウェア開発'])]:
         if any(t in business for t in terms):descriptions.append(label)
-    return dict(website_url=pages[0][0],evidence_urls=list(dict.fromkeys(url for url,_ in pages)),industries=industries,primary_industry=industries[0] if len(industries)==1 else '',business_tags=descriptions,match_basis=basis,checked_at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
+    for label,terms in [('デジタルマーケティング',['デジタルマーケティング']),('広告事業',['広告事業','広告代理']),('飲食店運営',['レストラン','居酒屋','飲食店'])]:
+        if any(t in business for t in terms):descriptions.append(label)
+    details=[]
+    for url,soup in pages:
+        for el in soup.find_all(['dt','th','td']):
+            label=re.sub(r'\s','',el.get_text(' ',strip=True))
+            if label not in {'代表者','代表取締役','代表取締役社長','運営店舗','店舗名','ブランド名'}:continue
+            nxt=el.find_next_sibling(['dd','td'])
+            value=nxt.get_text(' ',strip=True) if nxt else ''
+            if value and len(value)<=100:
+                item={'label':'代表者' if '代表' in label else '店舗・ブランド','value':value,'source_url':url}
+                if item not in details:details.append(item)
+    return dict(website_url=pages[0][0],evidence_urls=list(dict.fromkeys(url for url,_ in pages)),industries=industries,primary_industry=industries[0] if len(industries)==1 else '',business_tags=descriptions,details=details[:6],match_basis=basis,checked_at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
 
 def search_candidates(row,permitted=False):
     key=os.getenv('BRAVE_SEARCH_API_KEY','')
     if not key or not permitted:return []
     # Optional official search API. Never scrape search result pages or print the key.
-    response=requests.get('https://api.search.brave.com/res/v1/web/search',headers={'X-Subscription-Token':key},params={'q':row['company']+' '+row.get('address','')+' 会社概要','count':5,'country':'JP','search_lang':'jp'},timeout=15)
+    address=re.split(r'[*＊○〇…]',row.get('address',''))[0].strip()
+    response=requests.get('https://api.search.brave.com/res/v1/web/search',headers={'X-Subscription-Token':key},params={'q':'"'+row['company']+'" '+address+' 会社概要','count':5,'country':'JP','search_lang':'jp'},timeout=15)
     response.raise_for_status()
     urls=[]
     for item in response.json().get('web',{}).get('results',[]):
@@ -187,7 +207,15 @@ def enrich(row,search_permitted=False):
                 # A directory's matching listing is not proof that it is the official site.
                 own_name=normalized_name(row['company'])
                 footers=[n.get_text(' ',strip=True) for _,page in pages for n in page.select('footer, #footer, .footer')]
-                if not any(own_name in normalized_name(t) and re.search(r'copyright|©|著作権',t,re.I) for t in footers):continue
+                footer_match=any(own_name in normalized_name(t) and re.search(r'copyright|©|著作権',t,re.I) for t in footers)
+                # Some official sites use English copyright. An exact site identity
+                # plus a company overview is an alternative, not a directory match.
+                own_site=False
+                for _,page in pages:
+                    site=page.select_one('meta[property="og:site_name"]')
+                    if site and normalized_name(site.get('content',''))==own_name and re.search('会社概要|企業概要|会社情報',page_text(page)):
+                        own_site=True
+                if not footer_match and not own_site:continue
             result=profile_from_pages(row,pages,explicit)
             if result:return result
         except Exception:continue

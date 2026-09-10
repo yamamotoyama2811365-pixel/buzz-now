@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import HTMLResponse, Response
 from .auth import authorize
 from .model import validate, identity, normalized_name, PREFECTURES, INDUSTRIES, preserve_profile, same_entity
+from .news import render_reports, validate_reports
 
 app=FastAPI(title='企業倒産・新規法人情報サイト',docs_url=None,redoc_url=None)
 BASE=os.getenv('CORPORATE_PUBLIC_URL','https://buzz-now-1.onrender.com/corporate').rstrip('/')
@@ -139,7 +140,7 @@ def listing(title,kind='',prefecture='',industry='',q='',page=1,path='/',search=
     return shell(title,intro+kind_tabs(kind,path,prefecture,industry,q)+filters(kind,prefecture,industry,q)+'<div class="layout"><section class="panel"><h2>掲載情報 <span class="small">'+str(result['total'])+'件</span></h2>'+cards(result['items'])+pages+'</section>'+side()+'</div>',path+('?' + urlencode({**({'kind':kind} if kind and (path.startswith('/area/') or path.startswith('/industry/')) else {}),**({'page':page} if page>1 else {})}) if page>1 or (kind and (path.startswith('/area/') or path.startswith('/industry/'))) else ''),noindex=search or not result['items'])
 
 @app.get('/health')
-def health():return {'ok':True,'database_configured':bool(DSN),'hosting':'shared'}
+def health():return {'ok':True,'database_configured':bool(DSN),'hosting':'shared','news_enrichment_version':1}
 @app.get('/ready')
 def ready():query('SELECT 1 FROM corporate_events LIMIT 1');return {'ready':True}
 @app.get('/')
@@ -170,6 +171,8 @@ def detail(event_id:str):
     web_html=''
     if profile:
         web_html='<h2>公式サイトから確認した情報</h2><p><a class="source" href="'+e(profile['website_url'],quote=True)+'" target="_blank" rel="noopener noreferrer">公式サイトを確認する ↗</a></p><p class="small">公式サイトに残る事業情報です。現在の営業継続を示すものではありません。</p><div class="links">'+''.join('<a href="'+e(url,quote=True)+'" target="_blank" rel="noopener noreferrer">確認元 '+str(i+1)+' ↗</a>' for i,url in enumerate(profile['evidence_urls']))+'</div>'
+        web_html+='<dl class="facts">'+''.join('<dt>'+e(d['label'])+'</dt><dd>'+e(d['value'])+' <a class="source" href="'+e(d['source_url'],quote=True)+'" target="_blank" rel="noopener noreferrer">出典 ↗</a></dd>' for d in profile.get('details',[]))+'</dl>'
+    web_html+=render_reports(p.get('news_reports',[]))
     facts_html='<dl class="facts">'+''.join('<dt>'+e(k)+'</dt><dd>'+e(v)+'</dd>' for k,v in facts)+'</dl>'
     paragraph=e(p['company'])+'について、'+e(p['source_name'])+'の公開情報を整理しました。'
     if p['kind']=='bankruptcy':paragraph+=' 手続きの状況は「'+e(p['stage'])+'」です。報道時点の情報のため、その後の変更は出典でもご確認ください。'
@@ -246,7 +249,7 @@ async def ingest(request:Request):
                 cur.execute('''UPDATE corporate_events SET company=%s,prefecture=%s,payload=payload || %s,published=%s,updated_at=now()
                  WHERE id=%s AND kind='registration' AND (payload IS DISTINCT FROM payload || %s OR published IS DISTINCT FROM %s)''', [change['company'],change['prefecture'],Json(patch),change['published'],'n'+number,Json(patch),change['published']])
             for status in body.get('sources',[]):
-                if status.get('source') not in {'JC-NET','国税庁','公式サイト補完'}:raise HTTPException(422,'Invalid source')
+                if status.get('source') not in {'JC-NET','国税庁','公式サイト補完','ニュース補完'}:raise HTTPException(422,'Invalid source')
                 cur.execute('INSERT INTO corporate_runs(source,status,received,detail) VALUES(%s,%s,%s,%s) ON CONFLICT(source) DO UPDATE SET checked_at=now(),status=EXCLUDED.status,received=EXCLUDED.received,detail=EXCLUDED.detail',[status['source'],status['status'],status.get('received',0),status.get('detail','')[:200]])
     finally:con.close()
     with _lock:_cache.clear()
@@ -271,6 +274,39 @@ def search_permit(request:Request):
             cur.execute('UPDATE corporate_runs SET received=received+1,checked_at=now() WHERE source=ANY(%s)',[sorted(limits)])
             return {'allowed':True,'monthly_limit':900,'daily_limit':30}
     finally:con.close()
+
+@app.get('/api/news-candidates')
+def news_candidates(request:Request):
+    authorize(request)
+    rows=query("SELECT id,payload FROM corporate_events WHERE published AND kind='bankruptcy' AND (COALESCE(payload->>'news_checked_at','')='' OR (payload->>'news_checked_at')::timestamptz<now()-interval '7 days') ORDER BY CASE WHEN id=%s THEN 0 ELSE 1 END, COALESCE(payload->>'news_checked_at',''),reported_date DESC,id LIMIT 2",['bfb9524de141817310bcabbb4'])
+    return {'items':rows}
+
+@app.post('/api/news-enrichment')
+async def save_news_enrichment(request:Request):
+    authorize(request)
+    raw=await request.body()
+    if len(raw)>60_000:raise HTTPException(413)
+    try:
+        body=json.loads(raw)
+        if not isinstance(body['id'],str) or not isinstance(body['entity'],dict):raise ValueError()
+        reports=validate_reports(body['reports'])
+        if not isinstance(body.get('complete',False),bool):raise ValueError()
+    except (ValueError,KeyError,TypeError,AttributeError):raise HTTPException(422,'Invalid news enrichment')
+    con=db();changed=0
+    try:
+        with con,con.cursor() as cur:
+            cur.execute("SELECT payload FROM corporate_events WHERE id=%s AND published AND kind='bankruptcy' FOR UPDATE",[body['id']])
+            hit=cur.fetchone()
+            if hit and same_entity(hit[0],body['entity']):
+                p=hit[0];merged={r['url']:r for r in p.get('news_reports',[])}
+                merged.update({r['url']:r for r in reports})
+                p['news_reports']=sorted(merged.values(),key=lambda r:(r['published_date'],r['url']),reverse=True)[:8]
+                p['news_checked_at']=datetime.now(timezone.utc).isoformat(timespec='seconds')
+                cur.execute('UPDATE corporate_events SET payload=%s,updated_at=CASE WHEN %s THEN now() ELSE updated_at END WHERE id=%s',[Json(p),bool(reports),body['id']])
+                changed=len(reports)
+    finally:con.close()
+    with _lock:_cache.clear()
+    return {'ok':True,'changed':changed}
 
 @app.get('/api/enrichment-candidates')
 def enrichment_candidates(request:Request,search_enabled:bool=False):
@@ -300,7 +336,11 @@ async def save_enrichment(request:Request):
                 if profile['primary_industry'] not in list(INDUSTRIES)+['']:raise ValueError()
                 if not isinstance(profile['industries'],list) or any(x not in INDUSTRIES for x in profile['industries']):raise ValueError()
                 if not isinstance(profile['business_tags'],list) or len(profile['business_tags'])>10 or any(not isinstance(x,str) or len(x)>100 for x in profile['business_tags']):raise ValueError()
-                if profile['match_basis'] not in {'会社名・法人番号一致','会社名・所在地一致','報道元の公式サイトリンク・会社名・都道府県一致'}:raise ValueError()
+                if profile['match_basis'] not in {'会社名・法人番号一致','会社名・所在地一致','会社名・公表所在地の範囲一致','報道元の公式サイトリンク・会社名・都道府県一致'}:raise ValueError()
+                details=profile.get('details',[])
+                if not isinstance(details,list) or len(details)>6:raise ValueError()
+                for detail in details:
+                    if detail['label'] not in {'代表者','店舗・ブランド'} or not isinstance(detail['value'],str) or len(detail['value'])>100 or detail['source_url'] not in profile['evidence_urls']:raise ValueError()
                 profile['checked_at']=datetime.now(timezone.utc).isoformat(timespec='seconds')
     except (ValueError,KeyError,TypeError,AttributeError):raise HTTPException(422,'Invalid enrichment')
     con=db();changed=0
