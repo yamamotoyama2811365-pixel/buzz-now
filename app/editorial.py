@@ -18,7 +18,7 @@ import trafilatura
 LOG = logging.getLogger(__name__)
 AGENT = 'BuzzNowEditorial/1.0'
 # Release the display separately after inspecting the first persisted drafts.
-PUBLISH = False
+PUBLISH = True
 
 
 def utcnow():

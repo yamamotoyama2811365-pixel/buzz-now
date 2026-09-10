@@ -63,7 +63,7 @@ SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
 
 # Production runtime settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-APP_VERSION = os.getenv("APP_VERSION", "35.43.0")
+APP_VERSION = os.getenv("APP_VERSION", "35.43.1")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 REAL_DATA_MODE = os.getenv("REAL_DATA_MODE","true").lower() == "true"
@@ -105,6 +105,10 @@ OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2").strip()
 SOCIAL_AI_IMAGE_ENABLED = os.getenv("SOCIAL_AI_IMAGE_ENABLED", "false").lower() == "true"
 
 # X/SNS landing ad gate. The gate activates only when an i-mobile ad tag exists.
+ADSENSE_ENABLED = os.getenv("ADSENSE_ENABLED", "false").lower() == "true"
+AFFILIATE_ENABLED = os.getenv("AFFILIATE_ENABLED", "false").lower() == "true"
+AFFILIATE_PROVIDER = os.getenv("AFFILIATE_PROVIDER", "")
+PR_LABEL = os.getenv("PR_LABEL", "広告")
 IMOBILE_X_GATE_ENABLED = os.getenv("IMOBILE_X_GATE_ENABLED", "true").lower() == "true"
 IMOBILE_X_GATE_HTML = os.getenv("IMOBILE_X_GATE_HTML", "").strip()
 IMOBILE_X_GATE_SECONDS = max(0, min(int(os.getenv("IMOBILE_X_GATE_SECONDS", "3")), 10))
@@ -5205,6 +5209,8 @@ def trend_detail(slug: str, request: Request):
     briefing = _article_briefing(sources, trend["keyword"])
     seo_title = f"{trend['keyword']}の関連ニュース・注目の動き｜{SITE_NAME}"
     description = (f"{trend['keyword']}の関連報道を公開日時・出典付きで確認。" + (briefing[0]["title"] if briefing else "注目の背景を確認できる情報を収集中です。"))
+    if editorial_brief:
+        description = editorial_brief["summary"][:160]
     og_image_url = _social_image_url(trend["id"])
 
 
