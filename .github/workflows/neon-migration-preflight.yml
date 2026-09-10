@@ -1,4 +1,4 @@
-name: Neon cutover read-only verification
+name: Retention deployment read-only verification
 on:
   push:
     branches: [ops/neon-migration-preflight]
@@ -14,7 +14,7 @@ jobs:
       - name: Verify Neon readiness and homepage without running collectors
         shell: python
         run: |
-          import json, time, urllib.request
+          import json, time, urllib.request, urllib.parse
           base = "https://buzz-now-1.onrender.com"
           last = None
           for attempt in range(25):
@@ -29,7 +29,17 @@ jobs:
                   with urllib.request.urlopen(base + "/", timeout=20) as r:
                       body = r.read()
                       assert r.status == 200 and len(body) > 1000
-                  print("VERIFIED: Neon selected, maintenance off, database ready, homepage HTTP 200.")
+                  with urllib.request.urlopen(base + "/api/trends?limit=1", timeout=20) as r:
+                      slug = json.load(r)["items"][0]["slug"]
+                  path = base + "/api/trends/" + urllib.parse.quote(slug, safe="") + "/traffic"
+                  with urllib.request.urlopen(path + "?limit=100", timeout=20) as r:
+                      detail = json.load(r)
+                  assert len(detail["history"]) <= 100
+                  with urllib.request.urlopen(path + "/daily?days=365", timeout=20) as r:
+                      archive = json.load(r)
+                  assert archive["kind"] == "forecast" and archive["days"] == 365
+                  assert archive["items"] and archive["items"][0]["samples"] > 0
+                  print("VERIFIED: Neon ready, homepage 200, recent history and daily forecast summary available.")
                   print(json.dumps(health))
                   print(json.dumps(ready))
                   break
