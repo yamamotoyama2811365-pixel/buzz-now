@@ -1,4 +1,4 @@
-name: Neon migration verified copy
+name: Neon final database synchronization
 on:
   push:
     branches: [ops/neon-migration-preflight]
@@ -37,10 +37,24 @@ jobs:
           for uri in "$SOURCE" "$TARGET"; do
             test "$(psql -XAtq --dbname="$uri" -c 'SELECT current_database()')" = buzz_now_db || { echo "::error::Wrong database"; exit 1; }
           done
-          empty=$(psql -XAtq --dbname="$TARGET" -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' AND c.relkind IN ('r','p','v','m','S','f')")
-          test "$empty" = 0 || { echo "::error::Target is not empty; refusing overwrite"; exit 1; }
+          # This target is the verified rehearsal copy, never a production writer.
+          tables=$(psql -XAtq --dbname="$TARGET" -c "SELECT count(*) FROM pg_tables WHERE schemaname='public'")
+          test "$tables" = 29 || { echo "::error::Unexpected rehearsal target schema"; exit 1; }
+          activity=$(psql -XAtq --dbname="$SOURCE" -c "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND state IS DISTINCT FROM 'idle'")
+          test "$activity" = 0 || { echo "::error::Source has in-flight transactions; keep maintenance and drain them first"; exit 1; }
+          test "$(psql -XAtq --dbname="$SOURCE" -c 'SHOW default_transaction_read_only')" = off || { echo "::error::Unexpected source read-only configuration"; exit 1; }
+          # Maintenance is already live. Fence new source writes before the snapshot.
+          psql -Xq --dbname="$SOURCE" -v ON_ERROR_STOP=1 -c 'ALTER DATABASE buzz_now_db SET default_transaction_read_only=on'
           work=$(mktemp -d)
-          cleanup() { rm -rf "$work"; }
+          success=0
+          cleanup() {
+            rc=$?
+            if [ "$success" != 1 ]; then
+              PGOPTIONS="$PGOPTIONS -c default_transaction_read_only=off" psql -Xq --dbname="$SOURCE" -v ON_ERROR_STOP=1 -c 'ALTER DATABASE buzz_now_db RESET default_transaction_read_only' || echo "::error::Source read-only reset failed; keep maintenance and repair before resuming."
+            fi
+            rm -rf "$work"
+            exit "$rc"
+          }
           trap cleanup EXIT
           # Hold a read-only source snapshot throughout export and checksum generation.
           coproc SNAPSHOT { psql -XAtq --dbname="$SOURCE" -v ON_ERROR_STOP=1; }
@@ -69,12 +83,13 @@ jobs:
           printf '%s\n' 'ROLLBACK;' '\q' >&"$snapshot_in"
           exec {snapshot_in}>&-
           wait "$snapshot_pid"
-          # Atomic import. Never clean/drop existing data, never change the source.
-          pg_restore --dbname="$TARGET" --no-owner --no-acl --single-transaction --exit-on-error "$work/source.dump"
+          # Atomically replace only the verified rehearsal target, protected by its retained snapshot.
+          pg_restore --dbname="$TARGET" --clean --if-exists --no-owner --no-acl --single-transaction --exit-on-error "$work/source.dump"
           { printf '%s\n' 'BEGIN READ ONLY;'; cat "$work/manifest.sql"; printf '%s\n' 'COMMIT;'; } | psql -XAtq --dbname="$TARGET" -v ON_ERROR_STOP=1 > "$work/target-manifest.txt"
           cmp "$work/source-manifest.txt" "$work/target-manifest.txt" || { echo "::error::Content verification failed; do not cut over"; exit 1; }
+          success=1
           echo "COPY VERIFIED: all table row counts and row checksums match the exported snapshot."
           cut -d '|' -f 1,2 "$work/target-manifest.txt"
-          echo "The live application still uses its original database. A final synchronized cutover is required."
+          echo "Final copy verified. Source remains read-only for rollback. Switch the paused application to Neon before resuming."
           echo "Temporary dump is removed at exit; retain the source and snapshot the verified target."
           
