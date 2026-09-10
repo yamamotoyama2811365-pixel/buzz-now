@@ -60,8 +60,16 @@ jobs:
           # This target is the verified rehearsal copy, never a production writer.
           tables=$(psql -XAtq --dbname="$TARGET" -c "SELECT count(*) FROM pg_tables WHERE schemaname='public'")
           test "$tables" = 29 || { echo "::error::Unexpected rehearsal target schema"; exit 1; }
-          activity=$(psql -XAtq --dbname="$SOURCE" -c "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND state IS DISTINCT FROM 'idle'")
-          test "$activity" = 0 || { echo "::error::Source has in-flight transactions; keep maintenance and drain them first"; exit 1; }
+          for attempt in {1..12}; do
+            activity=$(psql -XAtq --dbname="$SOURCE" -c "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND state IS DISTINCT FROM 'idle'")
+            if [ "$activity" = 0 ]; then break; fi
+            echo "Waiting for source transactions to drain: $activity"
+            if [ "$attempt" = 12 ]; then
+              psql -XAtq --dbname="$SOURCE" -c "SELECT backend_type,coalesce(state,'not visible'),coalesce(application_name,''),coalesce(wait_event_type,'') FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid()"
+              echo "::error::Source transactions did not drain"; exit 1
+            fi
+            sleep 5
+          done
           test "$(psql -XAtq --dbname="$SOURCE" -c 'SHOW default_transaction_read_only')" = off || { echo "::error::Unexpected source read-only configuration"; exit 1; }
           # Maintenance is already live. Fence new source writes before the snapshot.
           psql -Xq --dbname="$SOURCE" -v ON_ERROR_STOP=1 -c 'ALTER DATABASE buzz_now_db SET default_transaction_read_only=on'
