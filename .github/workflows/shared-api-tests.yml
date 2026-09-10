@@ -1,0 +1,26 @@
+name: Shared API tests
+on:
+  push:
+    branches: [feat/shared-open-close, main]
+    paths: [services/**, tests/test_shared_api.py, .github/workflows/shared-api-tests.yml, requirements.txt]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -p test_shared_api.py -v
+      - run: python -m unittest discover -s services/open_close/tests -v
+      - run: python -m compileall -q app services
+      - name: Import shared application without startup jobs
+        env:
+          OPEN_CLOSE_ENABLED: 'true'
+          DEMO_MODE: 'false'
+          REAL_DATA_MODE: 'false'
+        run: python -c 'import app.main, resource; print("Import peak RSS KiB", resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)'

@@ -6839,3 +6839,9 @@ def run_scheduled_social():
 @app.get("/api/social/schedule")
 def social_schedule_status():
     return {**detective_posts.status(db), "buffer_pause": _buffer_pause()}
+
+
+# Separate app and database configuration under the shared paid service.
+if os.getenv("OPEN_CLOSE_ENABLED", "false").lower() == "true" and not LEGACY_SERVICE:
+    from services.open_close.main import app as open_close_app
+    app.mount("/open-close", open_close_app)
