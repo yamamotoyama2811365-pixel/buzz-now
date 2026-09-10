@@ -3006,7 +3006,7 @@ def _social_post_allowed(c, row, now_dt):
     return True, "ok"
 
 
-def auto_post_social(c, ts: str):
+def _auto_post_social_unscheduled(c, ts: str):
     """V30 production social dispatcher.
 
     Uses only BUZZ NOW's own scored trend state. It sends qualifying topics to the
@@ -3033,7 +3033,7 @@ def auto_post_social(c, ts: str):
     candidates = _social_candidate_rows(c, limit=30)
 
     for row in candidates:
-        if result["sent"] >= max(0, SOCIAL_MAX_POSTS_PER_RUN):
+        if result["sent"] >= min(1, max(0, SOCIAL_MAX_POSTS_PER_RUN)):
             break
 
         allowed, reason = _social_post_allowed(c, row, now_dt)
@@ -3107,9 +3107,11 @@ def auto_post_social(c, ts: str):
                 if buffer_result.get("status_code") == 429:
                     result["retry_at"] = buffer_result.get("retry_at")
                     break
+                break
         except Exception as exc:
             logger.exception("V33 Buffer direct auto-post failed for %s", row["keyword"])
             result["errors"].append({"keyword": row["keyword"], "error": str(exc)[:300]})
+            break
 
     return result
 
@@ -4481,7 +4483,7 @@ def _parse_iso_dt(value: str):
         return None
 
 
-def auto_quote_yahoo_buzzing_now():
+def _auto_quote_yahoo_buzzing_now_unscheduled():
     """Production Buzzing Now -> X quote-post automation.
 
     Flow:
@@ -4572,7 +4574,7 @@ def auto_quote_yahoo_buzzing_now():
         """).fetchall()
 
         for row in rows:
-            if result["posted_count"] >= YAHOO_QUOTE_MAX_PER_RUN:
+            if result["posted_count"] >= min(1, YAHOO_QUOTE_MAX_PER_RUN):
                 break
 
             keyword = str(row["keyword"] or "").strip()
@@ -4657,7 +4659,7 @@ def auto_quote_yahoo_buzzing_now():
                     "reason": "buffer_quote_post_failed",
                     "buffer_result": send_result,
                 })
-                continue
+                break
 
             ts = now_iso()
             c.execute("""
@@ -5043,6 +5045,8 @@ def startup():
     scheduler.add_job(lambda: editorial.run(db), "interval", minutes=10,
                       next_run_time=datetime.now(timezone.utc) + timedelta(seconds=30),
                       id="editorial_worker", replace_existing=True, max_instances=1)
+    scheduler.add_job(run_scheduled_social, "interval", minutes=3,
+                      id="scheduled_social", replace_existing=True, max_instances=1)
     if not scheduler.running:
         scheduler.start()
 
@@ -6748,3 +6752,58 @@ def create_or_update_trend(
 def google_site_verification():
     return "google-site-verification: google9854439bbecd0905.html"
 
+
+# X slots are shared by normal posts, quote posts and the character trial.
+from app import social_schedule, detective_posts
+
+def auto_post_social(c, ts: str):
+    now_dt = _parse_iso_datetime(ts) or datetime.now(timezone.utc)
+    if LEGACY_SERVICE or not SOCIAL_AUTO_ENABLED:
+        return {"sent": 0, "reason": "social_disabled"}
+    pause = _buffer_pause()
+    if pause:
+        return {"sent": 0, **pause}
+    if not any(_social_post_allowed(c, row, now_dt)[0] for row in _social_candidate_rows(c, limit=30)):
+        return {"sent": 0, "reason": "no_eligible_candidate"}
+    _ensure_quote_post_log(c)
+    slot, reason = social_schedule.reserve(c, "trend", now_dt, SOCIAL_DAILY_CAP, SOCIAL_GLOBAL_COOLDOWN_MINUTES)
+    if not slot:
+        return {"sent": 0, "reason": reason}
+    result = _auto_post_social_unscheduled(c, ts)
+    if result.get("sent") or not result.get("errors"):
+        social_schedule.finish(c, slot, bool(result.get("sent")), result.get("last_post_id"), result.get("reason", "no_eligible_candidate"))
+    return result
+
+def auto_quote_yahoo_buzzing_now():
+    if LEGACY_SERVICE or not YAHOO_QUOTE_AUTO_ENABLED:
+        return {"posted_count": 0, "reason": "quote_disabled"}
+    pause = _buffer_pause()
+    if pause:
+        return {"posted_count": 0, **pause}
+    with db() as c:
+        _ensure_quote_post_log(c)
+        slot, reason = social_schedule.reserve(c, "trend", datetime.now(timezone.utc), SOCIAL_DAILY_CAP, SOCIAL_GLOBAL_COOLDOWN_MINUTES)
+        if not slot:
+            return {"posted_count": 0, "reason": reason}
+    result = _auto_quote_yahoo_buzzing_now_unscheduled()
+    if result.get("posted_count") or not result.get("errors"):
+        with db() as c:
+            social_schedule.finish(c, slot, bool(result.get("posted_count")), reason=result.get("reason", "no_quote_candidate"))
+    return result
+
+def run_scheduled_social():
+    if LEGACY_SERVICE:
+        return
+    if social_schedule.current_slot(datetime.now(timezone.utc), "character"):
+        return detective_posts.run(db, _send_to_buffer_direct, _buffer_pause,
+            SOCIAL_AUTO_ENABLED, bool(BUFFER_API_KEY and BUFFER_CHANNEL_ID),
+            _ensure_quote_post_log, SOCIAL_DAILY_CAP, SOCIAL_GLOBAL_COOLDOWN_MINUTES)
+    if social_schedule.current_slot(datetime.now(timezone.utc), "trend"):
+        with db() as c:
+            result = auto_post_social(c, now_iso())
+            c.commit()
+            return result
+
+@app.get("/api/social/schedule")
+def social_schedule_status():
+    return {**detective_posts.status(db), "buffer_pause": _buffer_pause()}
