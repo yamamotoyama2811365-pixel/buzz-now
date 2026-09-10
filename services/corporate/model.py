@@ -76,3 +76,18 @@ def parse_registration(node):
     if assigned<date.today()-timedelta(days=14) or assigned>date.today():return None
     number=get('corporateNumber')
     return validate(dict(kind='registration',company=get('name'),corporate_number=number,prefecture=get('prefectureName'),industry='',stage='法人番号の新規指定',reported_date=get('assignmentDate'),source_name='国税庁 法人番号公表サイト',source_url='https://www.houjin-bangou.nta.go.jp/henkorireki-johoto.html?selHouzinNo='+number,causes=[],address=get('prefectureName')+get('cityName')+get('streetNumber'),date_label='法人番号指定日',classification_basis=''))
+
+
+def same_entity(a,b):
+    return all(a.get(k,'')==b.get(k,'') for k in ('company','address','prefecture','corporate_number'))
+
+def preserve_profile(row,old):
+    # A subsequent news/registry import must not erase independently verified facts.
+    row=dict(row)
+    if old and same_entity(row,old):
+        if old.get('web_checked_at'):row['web_checked_at']=old['web_checked_at']
+        if old.get('web_profile'):row['web_profile']=old['web_profile']
+        if not row.get('industry') and old.get('web_profile',{}).get('primary_industry'):
+            row['industry']=old['web_profile']['primary_industry']
+            row['classification_basis']='公式サイトの事業内容から自動分類'
+    return row

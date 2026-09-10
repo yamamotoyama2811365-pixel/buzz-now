@@ -13,7 +13,7 @@ from psycopg2.extras import RealDictCursor, Json
 from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import HTMLResponse, Response
 from .auth import authorize
-from .model import validate, identity, normalized_name, PREFECTURES, INDUSTRIES
+from .model import validate, identity, normalized_name, PREFECTURES, INDUSTRIES, preserve_profile, same_entity
 
 app=FastAPI(title='Corporate Signal',docs_url=None,redoc_url=None)
 BASE=os.getenv('CORPORATE_PUBLIC_URL','https://buzz-now-1.onrender.com/corporate').rstrip('/')
@@ -146,6 +146,12 @@ def detail(event_id:str):
     if not rows or rows[0]['payload']['company'] in {'運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗'}:raise HTTPException(404)
     p=rows[0]['payload']; title=p['company']+'｜'+p['stage']
     facts=[('状況',p['stage']), (p.get('date_label','確認日'),p['reported_date']),('都道府県',p.get('prefecture') or '未確認'),('業種',p.get('industry') or '未確認'),('所在地',p.get('address') or '未確認'),('法人番号',p.get('corporate_number') or '未照合'),('業種の確認方法',p.get('classification_basis') or '確認できる情報なし')]
+    profile=p.get('web_profile',{})
+    if profile:
+        facts.extend([('公式サイト記載の事業分野','、'.join(profile.get('business_tags') or profile.get('industries',[])) or '分類未確認'),('公式サイトの照合方法',profile['match_basis']),('公式サイト確認日',profile['checked_at'][:10])])
+    web_html=''
+    if profile:
+        web_html='<h2>公式サイトから確認した情報</h2><p><a class="source" href="'+e(profile['website_url'],quote=True)+'" target="_blank" rel="noopener noreferrer">公式サイトを確認する ↗</a></p><p class="small">公式サイトに残る事業情報です。現在の営業継続を示すものではありません。</p><div class="links">'+''.join('<a href="'+e(url,quote=True)+'" target="_blank" rel="noopener noreferrer">確認元 '+str(i+1)+' ↗</a>' for i,url in enumerate(profile['evidence_urls']))+'</div>'
     facts_html='<dl class="facts">'+''.join('<dt>'+e(k)+'</dt><dd>'+e(v)+'</dd>' for k,v in facts)+'</dl>'
     paragraph=e(p['company'])+'について、'+e(p['source_name'])+'の公開情報を整理しました。'
     if p['kind']=='bankruptcy':paragraph+=' 手続きの状況は「'+e(p['stage'])+'」です。報道時点の情報のため、その後の変更は出典でもご確認ください。'
@@ -153,7 +159,7 @@ def detail(event_id:str):
     causes=p.get('causes',[])
     note=('<h2>出典に記載された背景</h2><p>'+e('、'.join(causes))+'に関する記述を検出しました。記事の語句から自動抽出した項目で、影響の大きさや因果関係を評価したものではありません。</p>') if causes else '<p class="small">背景要因は確認できていません。確認できない原因を推測して掲載しません。</p>'
     search_url='https://www.google.com/maps/search/?api=1&query='+quote(p['company']+' '+(p.get('address') or p.get('prefecture','')))
-    return shell(title,'<div class="detail"><a class="small" href="'+ROOT+'/">ホーム / 企業情報</a><div class="panel"><div class="eyebrow">COMPANY REPORT</div><h1>'+e(p['company'])+'</h1><span class="tag '+p['kind']+'">'+e(p['stage'])+'</span><p>'+paragraph+'</p>'+facts_html+note+'<p><a class="source" href="'+e(p['source_url'],quote=True)+'" target="_blank" rel="noopener noreferrer">出典：'+e(p['source_name'])+'で確認する ↗</a></p><h2>関連情報を調べる</h2><p><a class="source" href="'+search_url+'" target="_blank" rel="noopener noreferrer">会社名・所在地でGoogleマップを検索 ↗</a></p><p class="small">検索結果のリンクです。同名企業との一致、営業状況、口コミは未確認です。</p></div></div>','/company/'+event_id)
+    return shell(title,'<div class="detail"><a class="small" href="'+ROOT+'/">ホーム / 企業情報</a><div class="panel"><div class="eyebrow">COMPANY REPORT</div><h1>'+e(p['company'])+'</h1><span class="tag '+p['kind']+'">'+e(p['stage'])+'</span><p>'+paragraph+'</p>'+facts_html+web_html+note+'<p><a class="source" href="'+e(p['source_url'],quote=True)+'" target="_blank" rel="noopener noreferrer">出典：'+e(p['source_name'])+'で確認する ↗</a></p><h2>関連情報を調べる</h2><p><a class="source" href="'+search_url+'" target="_blank" rel="noopener noreferrer">会社名・所在地でGoogleマップを検索 ↗</a></p><p class="small">検索結果のリンクです。同名企業との一致、営業状況、口コミは未確認です。</p></div></div>','/company/'+event_id)
 @app.get('/signals')
 def signals():
     a=analysis();body='<div class="eyebrow">REGIONAL SIGNALS</div><h1>地域・業種の動き</h1><p>同じ地域・業種で、どのような事案が報道されているか。</p><div class="notice">全国の倒産統計や個別企業の信用評価ではありません。当サイトが収集し、会社名と地域で仮に名寄せした事案の参考集計です。業種不明の事案は分類別集計から除外します。</div>'
@@ -165,7 +171,7 @@ def signals():
     if not a['groups']:body+='<div class="panel"><p>地域と業種を確認できる事案を蓄積しています。</p></div>'
     return shell('地域・業種の動き',body,'/signals')
 @app.get('/about')
-def about():return shell('掲載方針・訂正について','<div class="detail panel"><h1>掲載方針</h1><h2>速報と確認済み情報</h2><p>倒産関連の報道から会社名・地域・手続きなどの事実を整理します。業種不明でも速報に掲載し、不明項目は未確認と表示します。破産申請の準備、手続きの開始、民事再生などは同一の状況として扱いません。</p><h2>新設・新規法人</h2><p>国税庁法人番号公表サイトの差分データを加工して掲載しています。「新規」は法人番号の新規指定を意味し、設立日を保証しません。登記閉鎖を倒産と分類することはありません。</p><h2>集計・背景の読み方</h2><p>同じ会社名と地域の報道を仮に名寄せした参考値です。同名企業や続報の扱いにより誤差が生じます。全国を網羅した統計ではありません。業種・背景要因は記事の記載からルールで抽出し、推測による因果関係は追加しません。</p><h2>関連サイトの情報</h2><p>Googleマップは検索へのリンクです。口コミ・写真・営業状態の取得や、掲載企業との照合は行っていません。</p><h2>訂正・削除のご連絡</h2><p>以下のGitHub窓口で、該当ページのURLと訂正すべき箇所をお知らせください。秘密情報や個人の連絡先は記載しないでください。</p><a class="source" href="https://github.com/yamamotoyama2811365-pixel/buzz-now/issues/new">運営への連絡窓口 ↗</a></div>','/about')
+def about():return shell('掲載方針・訂正について','<div class="detail panel"><h1>掲載方針</h1><h2>速報と確認済み情報</h2><p>倒産関連の報道から会社名・地域・手続きなどの事実を整理します。業種不明でも速報に掲載し、不明項目は未確認と表示します。破産申請の準備、手続きの開始、民事再生などは同一の状況として扱いません。</p><h2>新設・新規法人</h2><p>国税庁法人番号公表サイトの差分データを加工して掲載しています。「新規」は法人番号の新規指定を意味し、設立日を保証しません。登記閉鎖を倒産と分類することはありません。</p><h2>集計・背景の読み方</h2><p>同じ会社名と地域の報道を仮に名寄せした参考値です。同名企業や続報の扱いにより誤差が生じます。全国を網羅した統計ではありません。業種・背景要因は記事の記載からルールで抽出し、推測による因果関係は追加しません。</p><h2>関連サイトの情報</h2><p>報道元が案内する公式サイトなどをたどり、会社名・所在地等を照合して事業情報を追記します。確認元と確認日を表示し、複数事業がある場合は主業種を推測しません。Googleマップは検索へのリンクです。口コミ・写真・営業状態の取得や、掲載企業との照合は行っていません。</p><h2>訂正・削除のご連絡</h2><p>以下のGitHub窓口で、該当ページのURLと訂正すべき箇所をお知らせください。秘密情報や個人の連絡先は記載しないでください。</p><a class="source" href="https://github.com/yamamotoyama2811365-pixel/buzz-now/issues/new">運営への連絡窓口 ↗</a></div>','/about')
 @app.get('/sources')
 def sources():
     rows=query('SELECT * FROM corporate_runs ORDER BY source')
@@ -201,6 +207,9 @@ async def ingest(request:Request):
     con=db(); changed=0
     try:
         with con,con.cursor() as cur:
+            cur.execute('SELECT id,payload FROM corporate_events WHERE id=ANY(%s)',[[identity(r) for r in rows]])
+            existing=dict(cur.fetchall())
+            rows=[preserve_profile(r,existing.get(identity(r))) for r in rows]
             for row in rows:
                 row['entity_key']=('n'+row['corporate_number']) if row.get('corporate_number') else (normalized_name(row['company'])+'|'+row['prefecture'] if row.get('prefecture') else identity(row))
                 cur.execute('''INSERT INTO corporate_events(id,kind,company,corporate_number,prefecture,industry,stage,reported_date,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
@@ -215,14 +224,68 @@ async def ingest(request:Request):
                 for key in ['company','prefecture','address']:
                     if not isinstance(change.get(key),str) or len(change[key])>1000:raise HTTPException(422,'Invalid registry field')
                 patch={key:change[key] for key in ['company','prefecture','address']}
+                cur.execute("""UPDATE corporate_events SET payload=payload-'web_profile'-'web_checked_at',industry='',updated_at=now()
+                    WHERE id=%s AND (company<>%s OR payload->>'address' IS DISTINCT FROM %s)""",['n'+number,change['company'],change['address']])
+                cur.execute("UPDATE corporate_events SET payload=payload || '{\"industry\":\"\",\"classification_basis\":\"\"}'::jsonb WHERE id=%s AND NOT (payload ? 'web_profile') AND payload->>'classification_basis'='公式サイトの事業内容から自動分類'",['n'+number])
                 cur.execute('''UPDATE corporate_events SET company=%s,prefecture=%s,payload=payload || %s,published=%s,updated_at=now()
                  WHERE id=%s AND kind='registration' AND (payload IS DISTINCT FROM payload || %s OR published IS DISTINCT FROM %s)''', [change['company'],change['prefecture'],Json(patch),change['published'],'n'+number,Json(patch),change['published']])
             for status in body.get('sources',[]):
-                if status.get('source') not in {'JC-NET','国税庁'}:raise HTTPException(422,'Invalid source')
+                if status.get('source') not in {'JC-NET','国税庁','公式サイト補完'}:raise HTTPException(422,'Invalid source')
                 cur.execute('INSERT INTO corporate_runs(source,status,received,detail) VALUES(%s,%s,%s,%s) ON CONFLICT(source) DO UPDATE SET checked_at=now(),status=EXCLUDED.status,received=EXCLUDED.received,detail=EXCLUDED.detail',[status['source'],status['status'],status.get('received',0),status.get('detail','')[:200]])
     finally:con.close()
     with _lock:_cache.clear()
     return {'ok':True,'received':len(rows),'changed':changed}
+
+@app.get('/api/enrichment-candidates')
+def enrichment_candidates(request:Request,search_enabled:bool=False):
+    authorize(request)
+    eligible="(jsonb_array_length(COALESCE(payload->'website_candidates','[]'::jsonb))>0"+(" OR kind='registration'" if search_enabled else '')+")"
+    rows=query("SELECT id,payload FROM corporate_events WHERE published AND "+eligible+" AND (COALESCE(payload->>'web_checked_at','')='' OR (payload->>'web_checked_at')::timestamptz<now()-interval '7 days') ORDER BY CASE WHEN kind='bankruptcy' THEN 0 ELSE 1 END, COALESCE(payload->>'web_checked_at',''),reported_date DESC,id LIMIT 6")
+    return {'items':rows}
+
+@app.post('/api/enrichment')
+async def save_enrichment(request:Request):
+    authorize(request)
+    raw=await request.body()
+    if len(raw)>100_000:raise HTTPException(413)
+    try:
+        body=json.loads(raw);items=body['items']
+        if not isinstance(items,list) or len(items)>10:raise ValueError()
+        for item in items:
+            if not isinstance(item.get('id'),str) or not isinstance(item.get('entity'),dict):raise ValueError()
+            profile=item.get('profile')
+            if profile:
+                from urllib.parse import urlsplit
+                urls=[profile['website_url']]+profile['evidence_urls']
+                if not 1<=len(urls)<=5:raise ValueError()
+                for url in urls:
+                    p=urlsplit(url)
+                    if p.scheme not in {'http','https'} or not p.hostname or p.username or p.password or len(url)>2000:raise ValueError()
+                if profile['primary_industry'] not in list(INDUSTRIES)+['']:raise ValueError()
+                if not isinstance(profile['industries'],list) or any(x not in INDUSTRIES for x in profile['industries']):raise ValueError()
+                if not isinstance(profile['business_tags'],list) or len(profile['business_tags'])>10 or any(not isinstance(x,str) or len(x)>100 for x in profile['business_tags']):raise ValueError()
+                if profile['match_basis'] not in {'会社名・法人番号一致','会社名・所在地一致','報道元の公式サイトリンク・会社名・都道府県一致'}:raise ValueError()
+                profile['checked_at']=datetime.now(timezone.utc).isoformat(timespec='seconds')
+    except (ValueError,KeyError,TypeError,AttributeError):raise HTTPException(422,'Invalid enrichment')
+    con=db();changed=0
+    try:
+        with con,con.cursor() as cur:
+            for item in items:
+                cur.execute('SELECT payload FROM corporate_events WHERE id=%s AND published FOR UPDATE',[item['id']])
+                hit=cur.fetchone()
+                if not hit or not same_entity(hit[0],item['entity']):continue
+                p=hit[0];profile=item.get('profile')
+                p['web_checked_at']=datetime.now(timezone.utc).isoformat(timespec='seconds')
+                if profile:
+                    p['web_profile']=profile
+                    if not p.get('industry') or p.get('classification_basis')=='公式サイトの事業内容から自動分類':
+                        p['industry']=profile['primary_industry'];p['classification_basis']='公式サイトの事業内容から自動分類' if p['industry'] else ''
+                cur.execute('UPDATE corporate_events SET payload=%s,industry=%s,updated_at=CASE WHEN %s THEN now() ELSE updated_at END WHERE id=%s',[Json(p),p.get('industry',''),bool(profile),item['id']])
+                changed+=bool(profile)
+    finally:con.close()
+    with _lock:_cache.clear()
+    return {'ok':True,'changed':changed,'checked':len(items)}
+
 @app.get('/robots.txt')
 def robots():return Response('User-agent: *\nAllow: /\nSitemap: '+BASE+'/sitemap.xml\n',media_type='text/plain')
 @app.get('/sitemap.xml')

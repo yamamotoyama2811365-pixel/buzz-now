@@ -12,6 +12,7 @@ from urllib.robotparser import RobotFileParser
 import requests
 from bs4 import BeautifulSoup
 from .model import parse_news, parse_registration
+from .enrich import article_candidates
 UA='CorporateSignal/1.0 (+https://github.com/yamamotoyama2811365-pixel/-corporate-signal)'
 NTA='https://www.houjin-bangou.nta.go.jp/download/sabun/'
 
@@ -50,7 +51,7 @@ def collect_news(known=None):
     for url,(title,pub,description) in list(candidates.items())[:70]:
         if urlparse(url).hostname not in {'n-seikei.jp','www.n-seikei.jp'} or not rp.can_fetch(UA,url): continue
         if not re.search('破産|民事再生|特別清算',title) or '一覧' in title: continue
-        fingerprint='v2:'+hashlib.sha256(title.encode()).hexdigest()
+        fingerprint='v3:'+hashlib.sha256(title.encode()).hexdigest()
         if known.get(url)==fingerprint:
             rows.skipped+=1
             continue
@@ -91,6 +92,13 @@ def collect_news(known=None):
         row=parse_news(title,description,url,dt.date().isoformat(),company_hint)
         if row:
             row["listing_fingerprint"]=fingerprint
+            row['website_candidates']=article_candidates(soup,url)
+            for tr in soup.select('tr'):
+                cells=tr.find_all(['th','td'],recursive=False)
+                if len(cells)==2 and cells[0].get_text(strip=True) in {'所在地','住所','本社所在地'}:
+                    address=cells[1].get_text(' ',strip=True)
+                    if len(address)<=300:row['address']=address
+                    break
             rows.append(row)
         if len(rows)>=35: break
     return rows
