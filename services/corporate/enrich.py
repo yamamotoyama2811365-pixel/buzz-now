@@ -187,7 +187,7 @@ def profile_from_pages(row,pages,explicit=False,reference=False):
     if reference:result['verification_status']='reference'
     return result
 
-def reference_profile(row,url,soup):
+def reference_profile(row,url,soup,explicit=False):
     """A single-company third-party page can supply explicitly tentative facts."""
     clone=BeautifulSoup(str(soup),'html.parser')
     for el in clone.select('script,style,nav,aside,footer,.related,.related-articles,.comments,#comments'):
@@ -206,7 +206,7 @@ def reference_profile(row,url,soup):
         nxt=el.find_next_sibling(['dd','td'])
         if nxt:company_values.append(normalized_name(nxt.get_text(' ',strip=True)))
     if any(name!=normalized_name(row['company']) for name in company_values):return None
-    result=profile_from_pages(row,[(url,scope)],reference=True)
+    result=profile_from_pages(row,[(url,scope)],explicit=explicit,reference=True)
     if not result or not (result['details'] or result['industries'] or result['business_tags']):return None
     result['source_title']=title[:200]
     return result
@@ -253,23 +253,22 @@ def enrich(row,search_permitted=False):
             for dest in links[:2]:
                 try:pages.append(fetcher.page(dest))
                 except Exception:continue
-            if not explicit:
-                # A directory's matching listing is not proof that it is the official site.
-                own_name=normalized_name(row['company'])
-                footers=[n.get_text(' ',strip=True) for _,page in pages for n in page.select('footer, #footer, .footer')]
-                footer_match=any(own_name in normalized_name(t) and re.search(r'copyright|©|著作権',t,re.I) for t in footers)
-                # Some official sites use English copyright. An exact site identity
-                # plus a company overview is an alternative, not a directory match.
-                own_site=False
-                for _,page in pages:
-                    site=page.select_one('meta[property="og:site_name"]')
-                    if site and normalized_name(site.get('content',''))==own_name and re.search('会社概要|企業概要|会社情報',page_text(page)):
-                        own_site=True
-                if not footer_match and not own_site:
-                    for page_url,page in pages:
-                        reference=reference_profile(row,page_url,page)
-                        if reference:references.append(reference)
-                    continue
+            # A directory's matching listing is not proof that it is the official site.
+            own_name=normalized_name(row['company'])
+            footers=[n.get_text(' ',strip=True) for _,page in pages for n in page.select('footer, #footer, .footer')]
+            footer_match=any(own_name in normalized_name(t) and re.search(r'copyright|©|著作権',t,re.I) for t in footers)
+            # Some official sites use English copyright. An exact site identity
+            # plus a company overview is an alternative, not a directory match.
+            own_site=False
+            for _,page in pages:
+                site=page.select_one('meta[property="og:site_name"]')
+                if site and normalized_name(site.get('content',''))==own_name and re.search('会社概要|企業概要|会社情報',page_text(page)):
+                    own_site=True
+            if not footer_match and not own_site:
+                for page_url,page in pages:
+                    reference=reference_profile(row,page_url,page,explicit)
+                    if reference:references.append(reference)
+                continue
             result=profile_from_pages(row,pages,explicit)
             if result:return result
         except Exception:continue
