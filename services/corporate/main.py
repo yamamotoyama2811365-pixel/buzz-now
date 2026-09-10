@@ -24,7 +24,15 @@ STYLE=Path(__file__).with_name('style.css').read_text()
 
 def db():
     if not DSN: raise HTTPException(503,'Database is not configured')
-    return psycopg2.connect(DSN,connect_timeout=8,options='-c statement_timeout=10000 -c lock_timeout=2000')
+    con=psycopg2.connect(DSN,connect_timeout=8)
+    try:
+        with con.cursor() as cur:
+            cur.execute("SET LOCAL statement_timeout = '10s'")
+            cur.execute("SET LOCAL lock_timeout = '2s'")
+        return con
+    except Exception:
+        con.close()
+        raise
 
 def query(sql,args=()):
     con=db()
@@ -167,6 +175,19 @@ def sources():
 def api_events(kind:str='',prefecture:str='',industry:str='',q:str=Query('',max_length=100),page:int=Query(1,ge=1,le=10000)):return records(kind,prefecture,industry,q,page)
 @app.get('/api/signals')
 def api_signals():return analysis()
+@app.get('/api/collection-state')
+def collection_state(request:Request):
+    authorize(request)
+    runs=query('SELECT source,status,detail,checked_at FROM corporate_runs')
+    news=next((x for x in runs if x['source']=='JC-NET'),None)
+    nta=next((x for x in runs if x['source']=='国税庁'),None)
+    same_day=news and news['checked_at'].date()==datetime.now(timezone.utc).date()
+    known={}
+    if same_day:
+        for r in query("SELECT payload FROM corporate_events WHERE kind='bankruptcy' ORDER BY reported_date DESC LIMIT 1000"):
+            p=r['payload'];known[p['source_url']]=p.get('listing_fingerprint','')
+    return {'news':known,'nta_files':nta['detail'].split(',') if nta and nta['status']=='ok' else []}
+
 @app.post('/api/ingest')
 async def ingest(request:Request):
     authorize(request)

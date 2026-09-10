@@ -1,5 +1,6 @@
 """Bounded HTTP collection runs on GitHub Actions, outside the 512MB API server."""
 import io
+import hashlib
 import re
 import time
 import zipfile
@@ -22,14 +23,15 @@ def get(s,url,**kwargs):
     if len(r.content)>15_000_000: raise ValueError('source too large')
     r.encoding='utf-8'; return r
 
-def collect_news():
+def collect_news(known=None):
+    known=known or {}
     s=session()
     robots=get(s,'https://n-seikei.jp/robots.txt').text
     rp=RobotFileParser(); rp.parse(robots.splitlines())
     feedurl='https://n-seikei.jp/rss.xml'
     if not rp.can_fetch(UA,feedurl): raise RuntimeError('source robots disallows feed')
     root=ET.fromstring(get(s,feedurl).content)
-    rows=[]
+    rows=Collection()
     candidates={}
     # RSS may be stale: current homepage is an independent freshness source.
     home=BeautifulSoup(get(s,'https://n-seikei.jp/').text,'html.parser')
@@ -48,6 +50,10 @@ def collect_news():
     for url,(title,pub,description) in list(candidates.items())[:70]:
         if urlparse(url).hostname not in {'n-seikei.jp','www.n-seikei.jp'} or not rp.can_fetch(UA,url): continue
         if not re.search('破産|民事再生|特別清算',title) or '一覧' in title: continue
+        fingerprint=hashlib.sha256(title.encode()).hexdigest()
+        if known.get(url)==fingerprint:
+            rows.skipped+=1
+            continue
         time.sleep(1)
         soup=BeautifulSoup(get(s,url).text,'html.parser')
         # Prefer the full article title to truncated list labels.
@@ -73,15 +79,18 @@ def collect_news():
             meta=soup.select_one('meta[name="description"]')
             description=meta.get('content','') if meta else BeautifulSoup(description,'html.parser').get_text(' ',strip=True)
         row=parse_news(title,description,url,dt.date().isoformat())
-        if row: rows.append(row)
+        if row:
+            row["listing_fingerprint"]=fingerprint
+            rows.append(row)
         if len(rows)>=35: break
     return rows
 
 class Collection(list):
     def __init__(self):
-        super().__init__(); self.updates=[]
+        super().__init__(); self.updates=[]; self.skipped=0; self.file_ids=[]
 
-def collect_registrations():
+def collect_registrations(known_files=None):
+    known_files=set(known_files or [])
     s=session(); page=BeautifulSoup(get(s,NTA).text,'html.parser')
     form=page.select_one('form#appForm')
     if not form: raise ValueError('NTA download form changed')
@@ -92,6 +101,11 @@ def collect_registrations():
     if not links: raise ValueError('NTA download list missing')
     rows=Collection()
     for link in links:
+        file_id=re.search(r'doDownload\((\d+)\)',link['onclick']).group(1)
+        rows.file_ids.append(file_id)
+        if file_id in known_files:
+            rows.skipped+=1
+            continue
         fields={n['name']:n.get('value','') for n in form.select('input[name]')}
         fields.update(event='download',selDlFileNo=re.search(r'doDownload\((\d+)\)',link['onclick']).group(1))
         response=s.post(urljoin(NTA,form.get('action')),data=fields,timeout=(10,45)); response.raise_for_status()
