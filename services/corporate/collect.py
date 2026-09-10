@@ -5,7 +5,7 @@ import re
 import time
 import zipfile
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
@@ -24,88 +24,136 @@ def get(s,url,**kwargs):
     if len(r.content)>15_000_000: raise ValueError('source too large')
     r.encoding='utf-8'; return r
 
-def collect_news(known=None):
-    known=known or {}
-    s=session()
-    robots=get(s,'https://n-seikei.jp/robots.txt').text
-    rp=RobotFileParser(); rp.parse(robots.splitlines())
-    feedurl='https://n-seikei.jp/rss.xml'
-    if not rp.can_fetch(UA,feedurl): raise RuntimeError('source robots disallows feed')
-    root=ET.fromstring(get(s,feedurl).content)
-    rows=Collection()
-    candidates={}
-    # RSS may be stale: current homepage is an independent freshness source.
-    home=BeautifulSoup(get(s,'https://n-seikei.jp/').text,'html.parser')
-    for link in home.select('a[href]'):
-        title=link.get_text(' ',strip=True); url=urljoin('https://n-seikei.jp/',link['href'])
-        if re.search(r'/20\d{2}/\d{2}/',url) and re.search('破産|民事再生|特別清算',title):
-            if len(title)>len(candidates.get(url,('',None,''))[0]): candidates[url]=(title,None,'')
-    items=root.findall('.//item') or root.findall('.//{http://purl.org/rss/1.0/}item')
-    if not items and not candidates: raise ValueError('No news candidates')
-    for item in items[:80]:
-        def value(tag):
-            return item.findtext(tag) or item.findtext('{http://purl.org/rss/1.0/}'+tag) or ''
-        title=value('title'); url=value('link')
-        pub=value('pubDate') or item.findtext('{http://purl.org/dc/elements/1.1/}date')
-        candidates.setdefault(url,(title,pub,value('description')))
-    for url,(title,pub,description) in list(candidates.items())[:70]:
-        if urlparse(url).hostname not in {'n-seikei.jp','www.n-seikei.jp'} or not rp.can_fetch(UA,url): continue
-        if not re.search('破産|民事再生|特別清算',title) or '一覧' in title: continue
-        fingerprint='v3:'+hashlib.sha256(title.encode()).hexdigest()
-        if known.get(url)==fingerprint:
-            rows.skipped+=1
-            continue
-        time.sleep(1)
-        soup=BeautifulSoup(get(s,url).text,'html.parser')
-        # Prefer the full article title to truncated list labels.
-        h=soup.select_one('h1.entry-title') or soup.select_one('h1')
-        if h and re.search('破産|民事再生|特別清算',h.get_text()): title=h.get_text(' ',strip=True)
-        meta=soup.select_one('meta[property="article:published_time"]') or soup.select_one('meta[name="date"]')
-        if meta: pub=meta.get('content') or pub
-        if not pub:
-            time_node=soup.select_one('time[datetime]') or soup.select_one('.published[title]')
-            if time_node: pub=time_node.get('datetime') or time_node.get('title')
-        if not pub:
-            # Visible Japanese publication date, not the collection time.
-            m=re.search(r'\[\s*(20\d{2})年\s*(\d{1,2})月\s*(\d{1,2})日',soup.get_text(' ',strip=True))
-            if m: pub=f'{m[1]}-{int(m[2]):02d}-{int(m[3]):02d}'
-        if not pub: continue
-        try: dt=parsedate_to_datetime(pub)
-        except ValueError: dt=datetime.fromisoformat(pub.replace('Z','+00:00'))
-        body=soup.select_one('.entry-body') or soup.select_one('#entry-body') or soup.select_one('.article-body') or soup.select_one('[itemprop="articleBody"]') or soup.select_one('.entry-content')
-        if body:
-            for n in body.select('script,style,aside,nav'): n.decompose()
-            description=body.get_text(' ',strip=True)[:7000]
-        else:
-            meta=soup.select_one('meta[name="description"]')
-            description=meta.get('content','') if meta else BeautifulSoup(description,'html.parser').get_text(' ',strip=True)
-        metadata=soup.select_one('meta[name="description"]')
-        if metadata:description=metadata.get('content','')+' '+description
-        more=soup.select_one('.entry-more')
-        if more:description+=' '+more.get_text(' ',strip=True)[:6000]
-        company_hint=''
-        for tr in soup.select('tr'):
+NEWS_WORDS=re.compile('破産|民事再生|特別清算')
+
+def publication_date(soup,fallback=None):
+    node=soup.select_one('meta[property="article:published_time"],meta[name="date"]')
+    if node:fallback=node.get('content') or fallback
+    if not fallback:
+        node=soup.select_one('time[datetime],.published[title]')
+        if node:fallback=node.get('datetime') or node.get('title')
+    if not fallback:
+        m=re.search(r'\[\s*(20\d{2})年\s*(\d{1,2})月\s*(\d{1,2})日',soup.get_text(' ',strip=True))
+        if m:return f'{m[1]}-{int(m[2]):02d}-{int(m[3]):02d}'
+    if fallback:
+        try:return parsedate_to_datetime(fallback).date().isoformat()
+        except (ValueError,TypeError):return datetime.fromisoformat(fallback.replace('Z','+00:00')).date().isoformat()
+    return ''
+
+def article_facts(soup,url,title,published):
+    heading=soup.select_one('h1.entry-title') or soup.select_one('h1')
+    if heading and NEWS_WORDS.search(heading.get_text()):title=heading.get_text(' ',strip=True)
+    roots=soup.select('.entry-body,#entry-body,.article-body,[itemprop="articleBody"],.entry-content,.entry-more')
+    for root in roots:
+        for n in root.select('script,style,aside,nav'):n.decompose()
+    description=' '.join(root.get_text(' ',strip=True) for root in roots)[:12000]
+    metadata=soup.select_one('meta[name="description"]')
+    if metadata:description=metadata.get('content','')+' '+description
+    company_hint='';address=''
+    # Only read facts inside the article, excluding recommendations and advertising.
+    for root in roots:
+        for tr in root.select('tr'):
             cells=tr.find_all(['th','td'],recursive=False)
-            if len(cells)==2 and cells[0].get_text(strip=True) in {'法人名','会社名','商号','企業名'}:
-                value=cells[1].get_text(' ',strip=True)
-                if 2<=len(value)<=100:company_hint=value;break
-        row=parse_news(title,description,url,dt.date().isoformat(),company_hint)
-        if row:
-            row["listing_fingerprint"]=fingerprint
-            row['website_candidates']=article_candidates(soup,url)
-            for tr in soup.select('tr'):
-                cells=tr.find_all(['th','td'],recursive=False)
-                if len(cells)==2 and cells[0].get_text(strip=True) in {'所在地','住所','本社所在地'}:
-                    address=cells[1].get_text(' ',strip=True)
-                    if len(address)<=300:row['address']=address
-                    break
-            rows.append(row)
-        if len(rows)>=35: break
+            if len(cells)!=2:continue
+            label=re.sub(r'\s','',cells[0].get_text(strip=True));value=cells[1].get_text(' ',strip=True)
+            if label in {'法人名','会社名','商号','企業名'} and 2<=len(value)<=100:company_hint=value
+            if label in {'所在地','住所','本社所在地'} and len(value)<=300:address=value
+    row=parse_news(title,description,url,published,company_hint)
+    if not row:return None
+    if not address:
+        m=re.search(r'「[^」]+」は[（(]([^）)]+)[）)]に所在',description)
+        if m:address=re.split('、|,|法人番号|登記記録上|商業登記',m[1])[0].strip()
+    row['address']=address[:300]
+    # Do not attach one company's number to a multi-company report.
+    numbers=set(re.findall(r'法人番号[：:\s]*([0-9]{13})(?![0-9])',description))
+    if len(numbers)==1:row['corporate_number']=next(iter(numbers))
+    row['website_candidates']=article_candidates(soup,url)
+    return row
+
+def collect_news(known=None):
+    known=known or {};s=session();rows=Collection()
+    rp=RobotFileParser();rp.parse(get(s,'https://n-seikei.jp/robots.txt').text.splitlines())
+    candidates={};seen_pages=set();daily=[];last_request=0
+    today=datetime.now(timezone(timedelta(hours=9))).date();cutoff=today-timedelta(days=29)
+    def read(url):
+        nonlocal last_request
+        if urlparse(url).hostname not in {'n-seikei.jp','www.n-seikei.jp'} or not rp.can_fetch(UA,url):raise ValueError('source not allowed')
+        delay=1.0-(time.monotonic()-last_request)
+        if delay>0:time.sleep(delay)
+        last_request=time.monotonic()
+        return get(s,url)
+    def links(soup,page):
+        for link in soup.select('a[href]'):
+            title=link.get_text(' ',strip=True);url=urljoin(page,link['href']).split('#')[0]
+            if urlparse(url).hostname not in {'n-seikei.jp','www.n-seikei.jp'}:continue
+            if not re.search(r'/20\d{2}/\d{2}/[^/]+\.html$',url) or not NEWS_WORDS.search(title):continue
+            container=link.find_parent(class_=re.compile(r'\b(?:entry|hentry|asset)\b'))
+            listed_date=publication_date(container) if container else ''
+            if listed_date and listed_date<cutoff.isoformat():continue
+            # Date summaries are discovery indexes, never a company record.
+            if '一覧' in title:
+                if re.search('破産・小口倒産一覧',title) and url not in daily:daily.append(url)
+                continue
+            if re.search('倒産件数|過去最多|ランキング|予測',title):continue
+            if len(title)>len(candidates.get(url,('',None,''))[0]):candidates[url]=(title,listed_date or None,'')
+    months={today.replace(day=1),cutoff.replace(day=1)}
+    pages=['https://n-seikei.jp/','https://n-seikei.jp/tousan/','https://n-seikei.jp/koguchi-hasan/']+['https://n-seikei.jp/'+m.strftime('%Y/%m/') for m in sorted(months,reverse=True)]
+    for url in pages:
+        try:links(BeautifulSoup(read(url).text,'html.parser'),url);seen_pages.add(url)
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code==429:raise
+            rows.errors.append({'url':url,'reason':type(exc).__name__})
+        except Exception as exc:rows.errors.append({'url':url,'reason':type(exc).__name__})
+    # Read daily indexes to recover small-company articles omitted from the homepage.
+    for url in list(daily)[:35]:
+        if url in seen_pages:continue
+        try:links(BeautifulSoup(read(url).text,'html.parser'),url);seen_pages.add(url)
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code==429:raise
+            rows.errors.append({'url':url,'reason':type(exc).__name__})
+        except Exception as exc:rows.errors.append({'url':url,'reason':type(exc).__name__})
+    try:
+        root=ET.fromstring(read('https://n-seikei.jp/rss.xml').content)
+        items=root.findall('.//item') or root.findall('.//{http://purl.org/rss/1.0/}item')
+        for item in items:
+            value=lambda tag:item.findtext(tag) or item.findtext('{http://purl.org/rss/1.0/}'+tag) or ''
+            title=value('title');url=value('link');pub=value('pubDate') or item.findtext('{http://purl.org/dc/elements/1.1/}date')
+            if NEWS_WORDS.search(title) and '一覧' not in title:candidates.setdefault(url,(title,pub,''))
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code==429:raise
+        rows.errors.append({'url':'rss.xml','reason':type(exc).__name__})
+    except Exception as exc:rows.errors.append({'url':'rss.xml','reason':type(exc).__name__})
+    if not candidates:raise ValueError('No news candidates')
+    rows.candidates=len(candidates);attempted=0;deadline=time.monotonic()+420
+    # Iterate ALL discovered URLs. The work budget defers overflow to subsequent runs.
+    for url,(title,pub,_) in candidates.items():
+        if pub:
+            try:
+                listed=publication_date(BeautifulSoup('','html.parser'),pub)
+                if listed<cutoff.isoformat():rows.outside_window+=1;continue
+            except (ValueError,TypeError):pass
+        fingerprint='v4:'+hashlib.sha256(title.encode()).hexdigest()
+        if known.get(url)==fingerprint:rows.skipped+=1;continue
+        if attempted>=160 or time.monotonic()>deadline:rows.deferred+=1;continue
+        attempted+=1
+        try:
+            soup=BeautifulSoup(read(url).text,'html.parser');published=publication_date(soup,pub)
+            if not published:raise ValueError('missing publication date')
+            if published<cutoff.isoformat() or published>today.isoformat():
+                rows.outside_window+=1;continue
+            row=article_facts(soup,url,title,published)
+            if row:
+                row['listing_fingerprint']=fingerprint;rows.append(row)
+            else:rows.rejected.append({'url':url,'title':title})
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code==429:raise
+            rows.errors.append({'url':url,'reason':type(exc).__name__})
+        except Exception as exc:rows.errors.append({'url':url,'reason':type(exc).__name__})
     return rows
 
 class Collection(list):
     def __init__(self):
-        super().__init__(); self.updates=[]; self.skipped=0; self.file_ids=[]
+        super().__init__(); self.updates=[]; self.skipped=0; self.file_ids=[]; self.errors=[]; self.rejected=[]; self.candidates=0; self.deferred=0; self.outside_window=0
 
 def collect_registrations(known_files=None):
     known_files=set(known_files or [])

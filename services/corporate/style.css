@@ -10,3 +10,5 @@
 .status-tab.registration.active{background:var(--teal)}
 .status-tab:focus-visible{outline:3px solid #75b9e6;outline-offset:3px}
 @media(max-width:760px){.status-tabs{width:100%;margin-top:0}.status-tab{flex:1;min-width:0;padding:10px 8px;font-size:13px}}
+
+.logo{font-size:clamp(17px,2.3vw,24px);letter-spacing:0;line-height:1.5;display:inline-block;overflow-wrap:anywhere}.bar{flex-wrap:wrap}@media(max-width:760px){.logo{font-size:19px}}

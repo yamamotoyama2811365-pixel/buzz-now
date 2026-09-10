@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, Response
 from .auth import authorize
 from .model import validate, identity, normalized_name, PREFECTURES, INDUSTRIES, preserve_profile, same_entity
 
-app=FastAPI(title='Corporate Signal',docs_url=None,redoc_url=None)
+app=FastAPI(title='企業倒産・新規法人情報サイト',docs_url=None,redoc_url=None)
 BASE=os.getenv('CORPORATE_PUBLIC_URL','https://buzz-now-1.onrender.com/corporate').rstrip('/')
 ROOT='/corporate'
 DSN=os.getenv('CORPORATE_DATABASE_URL','')
@@ -93,7 +93,7 @@ def analysis():
 
 def shell(title,body,path='/',noindex=False,description='企業の倒産速報・新規法人情報を、出典とともに地域・業種別に整理。報道事案の変化と背景を確認できます。'):
     canonical=BASE+path
-    return HTMLResponse('<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+e(title)+' | Corporate Signal</title><meta name="description" content="'+e(description,quote=True)+'"><meta name="robots" content="'+('noindex,follow' if noindex else 'index,follow')+'"><link rel="canonical" href="'+e(canonical,quote=True)+'"><meta property="og:title" content="'+e(title,quote=True)+'"><meta property="og:url" content="'+e(canonical,quote=True)+'"><style>'+STYLE+'</style></head><body><header><div class="bar"><a class="logo" href="'+ROOT+'/">CORPORATE <b>SIGNAL.</b></a><nav><a href="'+ROOT+'/bankruptcies">倒産速報</a><a href="'+ROOT+'/registrations">新設・新規法人</a><a href="'+ROOT+'/signals">地域・業種の動き</a></nav></div></header><main>'+body+'</main><footer><strong>CORPORATE SIGNAL.</strong><p>公開情報を出典付きで整理する企業情報サイト。報道日・法人番号指定日を表示しています。休廃業・登記閉鎖だけを倒産とは判定しません。</p><a href="'+ROOT+'/about">掲載方針・訂正について</a>　｜　<a href="'+ROOT+'/sources">収集状況</a>　｜　<a href="'+ROOT+'/sitemap.xml">サイトマップ</a></footer></body></html>',headers={'Cache-Control':'public, max-age=60','X-Content-Type-Options':'nosniff'})
+    return HTMLResponse('<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+e(title)+' | 企業倒産・新規法人情報サイト</title><meta name="description" content="'+e(description,quote=True)+'"><meta name="robots" content="'+('noindex,follow' if noindex else 'index,follow')+'"><link rel="canonical" href="'+e(canonical,quote=True)+'"><meta property="og:title" content="'+e(title,quote=True)+'"><meta property="og:url" content="'+e(canonical,quote=True)+'"><style>'+STYLE+'</style></head><body><header><div class="bar"><a class="logo" href="'+ROOT+'/">企業倒産・新規法人情報サイト</a><nav><a href="'+ROOT+'/bankruptcies">倒産速報</a><a href="'+ROOT+'/registrations">新設・新規法人</a><a href="'+ROOT+'/signals">地域・業種の動き</a></nav></div></header><main>'+body+'</main><footer><strong>企業倒産・新規法人情報サイト</strong><p>公開情報を出典付きで整理する企業情報サイト。報道日・法人番号指定日を表示しています。休廃業・登記閉鎖だけを倒産とは判定しません。</p><a href="'+ROOT+'/about">掲載方針・訂正について</a>　｜　<a href="'+ROOT+'/sources">収集状況</a>　｜　<a href="'+ROOT+'/sitemap.xml">サイトマップ</a></footer></body></html>',headers={'Cache-Control':'public, max-age=60','X-Content-Type-Options':'nosniff'})
 
 def cards(items):
     if not items:return '<p class="empty">該当する情報はありません。地域や業種の条件を変えてお試しください。</p>'
@@ -204,11 +204,9 @@ def collection_state(request:Request):
     runs=query('SELECT source,status,detail,checked_at FROM corporate_runs')
     news=next((x for x in runs if x['source']=='JC-NET'),None)
     nta=next((x for x in runs if x['source']=='国税庁'),None)
-    same_day=news and news['checked_at'].date()==datetime.now(timezone.utc).date()
     known={}
-    if same_day:
-        for r in query("SELECT payload FROM corporate_events WHERE kind='bankruptcy' ORDER BY reported_date DESC LIMIT 1000"):
-            p=r['payload'];known[p['source_url']]=p.get('listing_fingerprint','')
+    for r in query("SELECT payload FROM corporate_events WHERE kind='bankruptcy' AND (reported_date<CURRENT_DATE-7 OR updated_at>now()-interval '24 hours') ORDER BY reported_date DESC LIMIT 5000"):
+        p=r['payload'];known[p['source_url']]=p.get('listing_fingerprint','')
     return {'news':known,'nta_files':nta['detail'].split(',') if nta and nta['status']=='ok' else []}
 
 @app.post('/api/ingest')

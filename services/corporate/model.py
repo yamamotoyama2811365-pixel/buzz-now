@@ -41,24 +41,36 @@ def stage_from_title(title):
 
 GENERIC_NAMES={'運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗'}
 
+def clean_company(name):
+    name=unicodedata.normalize('NFKC',name)
+    for abbreviated,full in [('(株)','株式会社'),('(有)','有限会社'),('(同)','合同会社'),('(資)','合資会社'),('(名)','合名会社')]:name=name.replace(abbreviated,full)
+    return name.strip(' ・「」')
+
 def parse_news(title, body, url, published, company_hint=''):
     stage=stage_from_title(title)
     if not stage or re.search('一覧|件数|過去最多|倒産件数|前年|予測|リスク|ランキング',title): return None
     t=re.sub(r'【[^】]+】|〖[^〗]+〗|追報[：:]?|続報[：:]?','',title).strip()
-    m=re.search(r'^(.{2,100}?)(?:が|、|／|\s[/／]\s)(?:.*?)(?:破産|民事再生|特別清算)',t)
-    if not m: return None
-    company=m.group(1).strip()
+    m=re.search(r'^(.{2,100}?)(?:が|に(?:対し)?|、|／|\s[/／]\s)(?:.*?)(?:破産|民事再生|特別清算)',t)
+    if not m and not company_hint:return None
+    company=m.group(1).strip() if m else company_hint
     quoted=re.search(r'「([^」]+)」$',company)
     company=quoted.group(1) if quoted else re.sub(r'「[^」]+」','',company).strip()
     if 'の' in company: company=company.rsplit('の',1)[-1]
     company=re.sub(r'（旧[^）]*）','',company).strip(' ・')
     if company_hint: company=company_hint
+    else:
+        subject=re.search(r'「([^」]{2,100})」は[（(]',body[:2000])
+        if subject:company=subject[1]
+    company=clean_company(company)
+    company=re.sub(r'\((?:'+ '|'.join(re.escape(p if p=='北海道' else p[:-1]) for p in PREFECTURES)+r')\)$','',company).strip()
     if company in GENERIC_NAMES:return None
     if len(company)<2 or len(company)>60 or re.search(r'会社数|\d+件|\d+%|倒産',company): return None
     pref=''
-    for p in PREFECTURES:
-        short=p if p=='北海道' else p[:-1]
-        if re.search(r'[【〖]'+re.escape(short)+r'(?:[・】〗])',title) or p in body[:300]: pref=p; break
+    regions='・'.join(re.findall(r'[【〖]([^】〗]+)[】〗]',title)).split('・')
+    for region in regions:
+        pref=next((p for p in PREFECTURES if region in {p,p if p=='北海道' else p[:-1]}),'')
+        if pref:break
+    if not pref:pref=next((p for p in PREFECTURES if p in body[:500]),'')
     # Restrict classification to the lead; avoid unrelated recommendations/footer text.
     lead=body[:600]
     industries=[k for k,words in INDUSTRIES.items() if any(w in lead for w in words)]
