@@ -175,7 +175,7 @@ def detail(event_id:str):
         web_html+='<dl class="facts">'+''.join('<dt>'+e(d['label'])+'</dt><dd>'+e(d['value'])+' <a class="source" href="'+e(d['source_url'],quote=True)+'" target="_blank" rel="noopener noreferrer">出典 ↗</a></dd>' for d in profile.get('details',[]))+'</dl>'
     web_html+=render_reports(p.get('news_reports',[]))
     facts_html='<dl class="facts">'+''.join('<dt>'+e(k)+'</dt><dd>'+e(v)+'</dd>' for k,v in facts)+'</dl>'
-    paragraph=e(p['company'])+'について、'+e(p['source_name'])+'の公開情報を整理しました。'
+    paragraph=e(p['company'])+'について、公開情報を整理しました。'
     if p['kind']=='bankruptcy':paragraph+=' 手続きの状況は「'+e(p['stage'])+'」です。報道時点の情報のため、その後の変更は出典でもご確認ください。'
     else:paragraph+=' 表示日は法人番号の指定日です。設立年月日を確認した情報ではありません。'
     causes=p.get('causes',[])
