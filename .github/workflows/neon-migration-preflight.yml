@@ -31,9 +31,11 @@ jobs:
           target_host="${TARGET#*://}"; target_host="${target_host##*@}"; target_host="${target_host%%/*}"; target_host="${target_host%%:*}"
           case "$source_host" in dpg-daak8j142hec73ao272g-a.*.render.com) ;; *) echo "::error::Wrong source host"; exit 1;; esac
           test "$target_host" = "ep-red-silence-b3y7ugl8.c-4.ap-southeast-1.aws.neon.tech" || { echo "::error::Wrong target host or pooled URL"; exit 1; }
+          # Enforce TLS at the client; Neon terminates TLS at its proxy.
+          case "$SOURCE" in *\?*) SOURCE="$SOURCE&sslmode=require";; *) SOURCE="$SOURCE?sslmode=require";; esac
+          case "$TARGET" in *\?*) TARGET="$TARGET&sslmode=require";; *) TARGET="$TARGET?sslmode=require";; esac
           for uri in "$SOURCE" "$TARGET"; do
             test "$(psql -XAtq --dbname="$uri" -c 'SELECT current_database()')" = buzz_now_db || { echo "::error::Wrong database"; exit 1; }
-            test "$(psql -XAtq --dbname="$uri" -c 'SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()')" = t || { echo "::error::TLS is required"; exit 1; }
           done
           empty=$(psql -XAtq --dbname="$TARGET" -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' AND c.relkind IN ('r','p','v','m','S','f')")
           test "$empty" = 0 || { echo "::error::Target is not empty; refusing overwrite"; exit 1; }
