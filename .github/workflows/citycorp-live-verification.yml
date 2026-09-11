@@ -1,0 +1,59 @@
+name: Verify live city-corporate X readiness
+on:
+  push:
+    branches: [ops/citycorp-x-live-20260912]
+    paths: [.github/workflows/citycorp-live-verification.yml]
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Read only public cached status and record exact result
+        run: |
+          python -u - <<'PY'
+          import json,time,urllib.request
+          from datetime import datetime,timezone
+          from pathlib import Path
+          base='https://buzz-now-1.onrender.com'
+          data=None
+          for attempt in range(12):
+              try:
+                  with urllib.request.urlopen(base+'/api/city-corporate-x/status',timeout=15) as r:
+                      data=json.load(r)
+                  print('READINESS',attempt+1,json.dumps(data,ensure_ascii=False))
+                  v=data.get('channel_verification') or {}
+                  if (data.get('enabled') is True and data.get('handle')=='machi_to_kigyo'
+                      and data.get('channel_id_suffix')=='4e120d' and data.get('channel_id_matches') is True
+                      and v.get('ok') is True and all(data.get('sources',{}).values())
+                      and data.get('last_run',{}).get('reason') not in ('worker_error','source_database_missing')):
+                      break
+              except Exception as e:
+                  print('Readiness not ready:',type(e).__name__)
+              time.sleep(15)
+          else:
+              raise RuntimeError('Live account readiness not confirmed; no test post was submitted')
+          with urllib.request.urlopen(base+'/health',timeout=15) as r:
+              assert r.status==200
+          record={'verified_at_utc':datetime.now(timezone.utc).isoformat(),
+                  'runtime_status':data,'live_health_http':200,
+                  'real_post_sent_by_probe':False,'x_publication_verified':False,
+                  'implementation_commit':'3d7b1f0799fad05667becf9f6bd8e2b86914b94c',
+                  'note':'Read-only verification: Buffer channel identity and running scheduler confirmed; first public post is still pending its scheduled slot.'}
+          p=Path('docs/citycorp-live-20260912.json');p.parent.mkdir(exist_ok=True)
+          p.write_text(json.dumps(record,ensure_ascii=False,indent=2)+'\n')
+          print('CONFIRMED: dedicated X worker enabled; no test publication')
+          PY
+      - name: Store verification only on this operations branch
+        run: |
+          test "$GITHUB_REF" = refs/heads/ops/citycorp-x-live-20260912
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/citycorp-live-20260912.json
+          git commit -m 'Record verified live Buffer binding for machi_to_kigyo'
+          git push origin HEAD:ops/citycorp-x-live-20260912
