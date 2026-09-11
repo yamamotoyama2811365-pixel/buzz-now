@@ -1,0 +1,43 @@
+name: Open Close Map PV regression tests
+on:
+  push:
+    branches: [main]
+    paths: ['services/open_close/**', 'migrations/open_close_pv.sql', '.github/workflows/ocm-pv-tests.yml']
+  pull_request:
+    paths: ['services/open_close/**', 'migrations/open_close_pv.sql', '.github/workflows/ocm-pv-tests.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pv_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Tests with disposable database only
+        env:
+          OCM_PV_TEST_DSN: postgresql://postgres:postgres@localhost:5432/pv_test
+        run: python -m unittest discover -s services/open_close/tests -p test_traffic.py -v
+      - name: Real app route checks
+        run: |
+          python - <<'PY'
+          from services.open_close.main import app
+          from fastapi.testclient import TestClient
+          c=TestClient(app)
+          assert c.get('/api/pv-report').status_code in (401,403)
+          assert c.post('/api/page-view',json={}).status_code==403
+          assert '/api/stores' in [r.path for r in app.routes]
+          print('App route checks passed')
+          PY
