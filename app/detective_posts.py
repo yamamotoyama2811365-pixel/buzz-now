@@ -7,8 +7,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def media(day, slot):
-    period = 'noon' if 6 <= slot['start'].hour < 18 else 'night'
-    relative = f'static/detective/{period}.jpg'
+    relative = 'static/detective/approved.jpg'
     return relative if (ROOT / relative).is_file() else None
 
 
@@ -53,6 +52,6 @@ def status(db):
         row = c.execute("SELECT value FROM system_state WHERE key='detective_trial_start'").fetchone()
         day = plan.trial_day(c, now)
     return {**plan.status(), 'trial_start_jst':row['value'] if row else None,
-            'approved_scene_images':len(list((ROOT/'static/detective').glob('*.jpg'))),
-            'character_state':'trial_finished' if day>=14 else ('awaiting_approved_images' if not any((ROOT/'static/detective').glob('*.jpg')) else 'ready'),
-            'profile_update':'not_performed; every character post discloses AI identity'}
+            'approved_scene_images':1 if (ROOT/'static/detective/approved.jpg').is_file() else 0,
+            'character_state':'trial_finished' if day>=14 else ('awaiting_approved_images' if not (ROOT/'static/detective/approved.jpg').is_file() else 'ready'),
+            'profile_update':'not_performed; approved SNS investigator photo is used for character posts'}
