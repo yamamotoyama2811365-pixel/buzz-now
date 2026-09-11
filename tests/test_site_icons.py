@@ -2,6 +2,7 @@ import hashlib
 from io import BytesIO
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -66,11 +67,14 @@ class SiteIconsTest(unittest.TestCase):
         self.assertNotIn('http:',html)
         self.assertNotIn('<script',html)
 
-    def test_main_registers_icon_routes_without_starting_background_jobs(self):
+    def test_main_serves_icons_without_database_or_background_jobs(self):
         import app.main as main
-        paths = [route.path for route in main.app.routes]
-        self.assertEqual(paths.count('/favicon.ico'),1)
-        self.assertEqual(paths.count('/apple-touch-icon.png'),1)
+        # No TestClient context manager: startup/lifespan jobs are not run.
+        client = TestClient(main.app)
+        with patch.object(main,'db',side_effect=AssertionError('Icon must not access DB')):
+            for path in ('/favicon.ico','/apple-touch-icon.png'):
+                self.assertEqual(client.get(path).status_code,200)
+                self.assertEqual(client.head(path).status_code,200)
 
 
 if __name__ == '__main__':
