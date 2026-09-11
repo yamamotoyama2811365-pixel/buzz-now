@@ -1,0 +1,106 @@
+name: Amazon affiliate link verification
+on:
+  push:
+    branches: [feat/amazon-associate-20260911, main]
+    paths:
+      - templates/_amazon_associate.html
+      - templates/index.html
+      - templates/trend.html
+      - static/amazon-associate.css
+      - scripts/install_amazon_associate.py
+      - tests/test_amazon_associate.py
+      - .github/workflows/amazon-associate.yml
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DEMO_MODE: 'false'
+      REAL_DATA_MODE: 'false'
+      SOCIAL_AUTO_ENABLED: 'false'
+      THREADS_AUTO_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - run: python scripts/install_amazon_associate.py
+      - run: python -m unittest discover -s tests -p test_amazon_associate.py -v
+      - run: python -m unittest discover -s tests -p test_shared_api.py -v
+      - run: python -m unittest discover -s tests -p test_visitor_analytics.py -v
+      - run: python -m unittest discover -s tests -p test_social_mix.py -v
+      - run: python -m unittest discover -s tests -p test_site_icons.py -v
+      - run: git diff --check
+  assemble-feature-only:
+    if: github.ref == 'refs/heads/feat/amazon-associate-20260911'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - run: python scripts/install_amazon_associate.py
+      - name: Commit only tested template integration to feature branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add templates/index.html templates/trend.html
+          if ! git diff --cached --quiet; then
+            git commit -m 'Wire Amazon affiliate card into homepage and trend footer'
+            git push origin HEAD:feat/amazon-associate-20260911
+          fi
+  production-read-only:
+    if: github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify live HTML and tag without clicking Amazon
+        run: |
+          python - <<'PY'
+          import json, time
+          from html.parser import HTMLParser
+          from urllib.request import urlopen
+          from urllib.parse import urlsplit, parse_qs, quote
+          from urllib.error import HTTPError, URLError
+          base = 'https://buzz-now-1.onrender.com'
+          class Links(HTMLParser):
+              def __init__(self): super().__init__(); self.links=[]
+              def handle_starttag(self, tag, attrs):
+                  if tag == 'a': self.links.append(dict(attrs))
+          from pathlib import Path
+          source = Links(); source.feed(Path('templates/_amazon_associate.html').read_text())
+          expected = source.links[0]['href']
+          def check(url):
+              with urlopen(url, timeout=15) as response:
+                  assert response.status == 200
+                  html = response.read().decode('utf-8')
+              parser=Links(); parser.feed(html)
+              links=[a for a in parser.links if parse_qs(urlsplit(a.get('href','')).query).get('tag')==['buzznow-22']]
+              assert len(links)==1 and links[0]['href']==expected
+              assert {'sponsored','nofollow','noopener'} <= set(links[0]['rel'].split())
+              assert '広告・PR｜Amazonアソシエイト' in html
+              assert 'Amazonのアソシエイトとして、BUZZ NOWは適格販売により収入を得ています。' in html
+              assert '/static/amazon-associate.css?v=20260911' in html
+              return url
+          for attempt in range(25):
+              try:
+                  home=check(base+'/')
+                  with urlopen(base+'/api/v9/dashboard?limit=1', timeout=15) as r: data=json.load(r)
+                  slug=data['items'][0]['slug']
+                  article=check(base+'/trend/'+quote(slug, safe=''))
+                  with urlopen(base+'/static/amazon-associate.css', timeout=15) as r:
+                      assert r.status==200 and 'text/css' in r.headers.get('content-type','')
+                  print(json.dumps({'verified': True, 'tag': 'buzznow-22', 'homepage': home, 'article': article, 'amazon_link_clicked': False, 'sales_or_account_approval_verified': False}, ensure_ascii=False))
+                  break
+              except (HTTPError, URLError, TimeoutError, ValueError, AssertionError, KeyError, IndexError):
+                  time.sleep(10)
+          else: raise SystemExit('Live Amazon link setup not verified')
+          PY
