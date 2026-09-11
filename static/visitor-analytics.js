@@ -24,8 +24,9 @@
     window.__buzzNowPageview = true;
     const q = new URLSearchParams(location.search);
     const nonce = crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint32Array(4)), v => v.toString(16).padStart(8, '0')).join('');
+    // cors mode preserves Origin under no-referrer; the destination remains this site's relative URL.
     fetch('/api/visitor-analytics/pageview', {
-      method: 'POST', mode: 'same-origin', credentials: 'omit', referrerPolicy: 'no-referrer', keepalive: true,
+      method: 'POST', mode: 'cors', credentials: 'omit', referrerPolicy: 'no-referrer', keepalive: true,
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({path: location.pathname, source: classify(), test: q.get('bn_analytics_test') === '1', nonce})
     }).catch(() => {});
