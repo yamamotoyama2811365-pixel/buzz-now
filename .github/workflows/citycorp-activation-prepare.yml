@@ -1,0 +1,87 @@
+name: Prepare verified city-corporate X activation
+on:
+  push:
+    branches: [work/citycorp-activate-20260912]
+    paths: [app/city_corporate_activation.py, tests/test_city_corporate_activation.py, .github/workflows/citycorp-activation-prepare.yml]
+permissions:
+  contents: write
+concurrency:
+  group: citycorp-activation-preparation
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Apply guarded activation on this branch only
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          p=Path('app/main.py');t=p.read_text()
+          if 'from app import city_corporate_activation' not in t:
+              assert 'from app import city_corporate_social\n' in t
+              t=t.replace('from app import city_corporate_social\n','from app import city_corporate_social\nfrom app import city_corporate_activation\n',1)
+              old='''    scheduler.add_job(lambda: city_corporate_social.run(db, _send_to_buffer_channel), "interval", minutes=3,
+                                id="city_corporate_social", replace_existing=True, max_instances=1)'''
+              # Match whitespace exactly as existing source rather than replace broadly.
+              old='    scheduler.add_job(lambda: city_corporate_social.run(db, _send_to_buffer_channel), "interval", minutes=3,\n                      id="city_corporate_social", replace_existing=True, max_instances=1)'
+              assert old in t
+              new='    scheduler.add_job(lambda: city_corporate_activation.run(db, _send_to_buffer_channel, _buffer_graphql), "interval", minutes=3,\n                      next_run_time=datetime.now(timezone.utc) + timedelta(seconds=15),\n                      id="city_corporate_social", replace_existing=True, max_instances=1, coalesce=True)'
+              t=t.replace(old,new,1)
+              assert '/api/city-corporate-x/status' not in t
+              t+='\n\n@app.get("/api/city-corporate-x/status")\ndef city_corporate_x_status():\n    """Read only: cached configuration/identity; no posting or credentials."""\n    return city_corporate_activation.status()\n'
+              p.write_text(t)
+          p=Path('app/city_corporate_social.py');t=p.read_text()
+          if '# CITYCORP_DURABLE_ACTIVATION' not in t:
+              assert subprocess.check_output(['git','hash-object',str(p)],text=True).strip()=='b2b9e77886a22c5d5029fc501170ada6f262fc6e'
+              t=t.replace("    with shared_db() as c:\n        if _state_get(c,'slot:'", "    with shared_db() as c:\n        # CITYCORP_DURABLE_ACTIVATION: serialize reservation across workers.\n        if hasattr(c, '_con'):\n            c.execute('SELECT pg_advisory_xact_lock(3544102)')\n        used=c.execute(\"SELECT COUNT(*) AS n FROM system_state WHERE key LIKE ? AND value<>'no_candidate'\",(PREFIX+'slot:'+now.astimezone(JST).date().isoformat()+'%',)).fetchone()['n']\n        if used >= cfg['daily_cap']:return {'sent':0,'reason':'daily_cap_reached'}\n        if _state_get(c,'slot:'",1)
+              old="        result=sender(cfg['channel_id'],text,'','shareNow')"
+              assert old in t
+              t=t.replace(old,"        # Reserve the item before submitting. An uncertain response must not\n        # cause the same bankruptcy/closure to be sent again in another slot.\n        _state_set(c,'sent:'+key,'pending:'+now.isoformat());c.commit()\n        try:\n            result=sender(cfg['channel_id'],text,'','shareNow')\n        except Exception:\n            _state_set(c,'slot:'+slot['key'],'uncertain');c.commit()\n            return {'sent':0,'reason':'submission_uncertain','kind':slot['kind']}\n",1)
+              t=t.replace("AND updated_at >= now()-interval '10 days'", "AND updated_at >= now()-interval '10 days'\n            AND close_date BETWEEN (now() AT TIME ZONE 'Asia/Tokyo')::date-10 AND (now() AT TIME ZONE 'Asia/Tokyo')::date+180\n            AND COALESCE(TRIM(name),'')<>'' AND COALESCE(TRIM(source_url),'')<>''",1)
+              t=t.replace("AND reported_date >= current_date-10", "AND reported_date BETWEEN (now() AT TIME ZONE 'Asia/Tokyo')::date-10 AND (now() AT TIME ZONE 'Asia/Tokyo')::date\n                AND COALESCE(payload->>'source_url','')<>''",1)
+              p.write_text(t)
+          PY
+      - name: Test new and existing feed behavior without real posts
+        env:
+          CITY_CORP_X_ENABLED: 'false'
+        run: |
+          python -m py_compile app/main.py app/city_corporate_social.py app/city_corporate_activation.py
+          python -m unittest tests.test_city_corporate_social tests.test_city_corporate_activation -v
+          python - <<'PY'
+          from app.main import app
+          from fastapi.testclient import TestClient
+          r=TestClient(app).get('/api/city-corporate-x/status')
+          assert r.status_code==200 and r.json()['enabled'] is False
+          assert r.json()['handle']=='machi_to_kigyo'
+          print('Safe read-only status route passed')
+          PY
+      - name: Read live connected channel labels without credentials
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import json,urllib.request
+          u='https://buzz-now-1.onrender.com/api/threads/channels'
+          with urllib.request.urlopen(u,timeout=30) as r:d=json.load(r)
+          channels=[{k:c.get(k) for k in ('name','displayName','service','id_suffix')} for c in d.get('channels',[])]
+          print(json.dumps({'ok':d.get('ok'),'channels':channels},ensure_ascii=False))
+          target=[c for c in channels if c.get('id_suffix')=='4e120d']
+          if target:print('Expected channel label:',json.dumps(target,ensure_ascii=False))
+          PY
+      - name: Commit tested changes to preparation branch only
+        run: |
+          test "$GITHUB_REF" = refs/heads/work/citycorp-activate-20260912
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/main.py app/city_corporate_social.py
+          if ! git diff --cached --quiet; then
+            git commit -m 'Register verified channel worker with durable reservation and safe status'
+            git push origin HEAD:work/citycorp-activate-20260912
+          fi
