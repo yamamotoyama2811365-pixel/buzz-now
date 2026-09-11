@@ -6885,3 +6885,8 @@ if os.getenv("CORPORATE_ENABLED", "false").lower() == "true" and not LEGACY_SERV
 # First-party visitor analytics (independent of modeled traffic metrics).
 from app.visitor_analytics import install_visitor_analytics
 install_visitor_analytics(app, db, is_legacy=LEGACY_SERVICE)
+
+
+# Approved BUZZ NOW site icons (September 2026).
+from app.site_icons import router as site_icons_router
+app.include_router(site_icons_router)
