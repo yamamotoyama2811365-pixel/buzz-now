@@ -1,0 +1,64 @@
+name: Prepare city and corporate X feed
+on:
+  push:
+    branches: [work/city-corporate-x-20260911]
+    paths:
+      - app/city_corporate_social.py
+      - tests/test_city_corporate_social.py
+      - .github/workflows/city-corporate-x-prepare.yml
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Register worker on preparation branch only
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('app/main.py'); text=p.read_text()
+          imp='from app import traffic_retention\n'
+          newimp='from app import traffic_retention\nfrom app import city_corporate_social\n'
+          if 'from app import city_corporate_social' not in text:
+              assert imp in text
+              text=text.replace(imp,newimp,1)
+          marker='''    scheduler.add_job(run_scheduled_social, "interval", minutes=3,\n                      id="scheduled_social", replace_existing=True, max_instances=1)\n'''
+          addition=marker+'''    # Separate account: closure + bankruptcy facts only. Disabled until its own Buffer channel is configured.\n    scheduler.add_job(lambda: city_corporate_social.run(db, _send_to_buffer_channel), "interval", minutes=3,\n                      id="city_corporate_social", replace_existing=True, max_instances=1)\n'''
+          if 'id="city_corporate_social"' not in text:
+              assert marker in text
+              text=text.replace(marker,addition,1)
+          p.write_text(text)
+          PY
+      - name: Unit and syntax tests
+        run: |
+          python -m unittest tests.test_city_corporate_social -v
+          python -m py_compile app/main.py app/city_corporate_social.py
+      - name: Confirm disabled default cannot touch current BUZZ NOW X channel
+        run: |
+          python - <<'PY'
+          import os
+          from app import city_corporate_social as s
+          os.environ.pop('CITY_CORP_X_BUFFER_CHANNEL_ID',None)
+          os.environ.pop('CITY_CORP_X_ENABLED',None)
+          r=s.run(None,None)
+          assert r=={'sent':0,'reason':'CITY_CORP_X_ENABLED=false'}
+          assert not s.config()['channel_id']
+          print('Dedicated feed stays disabled without its own channel')
+          PY
+      - name: Commit tested registration to preparation branch
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/main.py
+          if ! git diff --cached --quiet; then
+            git commit -m 'Register disabled-by-default city and corporate X worker'
+            git push origin HEAD:work/city-corporate-x-20260911
+          fi
