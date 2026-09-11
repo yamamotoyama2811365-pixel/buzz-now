@@ -83,12 +83,14 @@ class MixTest(unittest.TestCase):
         self.assertEqual(mix.character_content(self.c,'x',self.now)['reason'],'character_trial_finished')
         self.assertTrue(mix.character_content(self.c,'threads',self.now)['ok'])
 
-    def test_existing_assets_and_disclosure(self):
+    def test_existing_asset_and_simplified_caption(self):
         for platform in ('x','threads'):
             content=mix.character_content(self.c,platform,self.now)
             self.assertTrue(content['ok'])
-            self.assertIn('AIキャラクター',content['text'])
-            self.assertTrue(content['image_url'].endswith('/noon.jpg'))
+            self.assertIn('SNS捜査官｜BUZZ NOW',content['text'])
+            self.assertNotIn('公式AIキャラクター',content['text'])
+            self.assertNotIn('#AIキャラクター',content['text'])
+            self.assertTrue(content['image_url'].endswith('/approved.jpg'))
             self.assertLessEqual(len(content['text'])*2,280)
 
 
@@ -126,7 +128,9 @@ class ThreadsIntegrationTest(unittest.TestCase):
         self.assertEqual(result['sent'],1)
         self.assertEqual(result['kind'],'character')
         self.assertEqual(sender.call_args.args[0],self.main.BUFFER_THREADS_CHANNEL_ID)
-        self.assertIn('AIキャラクター',sender.call_args.args[1])
+        self.assertIn('SNS捜査官｜BUZZ NOW',sender.call_args.args[1])
+        self.assertNotIn('公式AIキャラクター',sender.call_args.args[1])
+        self.assertTrue(sender.call_args.args[2].endswith('/approved.jpg'))
         with self.db() as c:
             self.assertEqual(mix.counts(c,'threads'),{'accepted':5,'character_accepted':1})
             self.assertIsNotNone(c.execute("SELECT value FROM system_state WHERE key='detective_threads_trial_start'").fetchone())
