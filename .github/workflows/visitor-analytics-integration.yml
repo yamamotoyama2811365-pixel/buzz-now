@@ -1,0 +1,48 @@
+name: Visitor analytics integration
+on:
+  push:
+    branches: [feat/visitor-analytics-20260911]
+    paths:
+      - app/visitor_analytics.py
+      - static/visitor-analytics.js
+      - scripts/install_visitor_analytics.py
+      - tests/test_visitor_analytics*
+      - .github/workflows/visitor-analytics-integration.yml
+permissions:
+  contents: read
+jobs:
+  verify-and-integrate:
+    if: github.ref == 'refs/heads/feat/visitor-analytics-20260911'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - run: python scripts/install_visitor_analytics.py
+      - run: python -m unittest discover -s tests -p test_visitor_analytics.py -v
+      - run: node tests/test_visitor_analytics_browser.cjs
+      - run: python -m unittest discover -s tests -p test_shared_api.py -v
+      - run: python -m unittest discover -s tests -p test_traffic_retention.py -v
+      - run: python -m compileall -q app services
+      - name: Verify integrated application without startup jobs
+        env:
+          DEMO_MODE: 'false'
+          REAL_DATA_MODE: 'false'
+          SOCIAL_AUTO_ENABLED: 'false'
+          THREADS_AUTO_ENABLED: 'false'
+        run: python -c "import app.main; assert app.main.app.state.visitor_analytics_installed; print('Analytics routes registered')"
+      - run: git diff --check
+      - name: Commit verified integration to feature branch only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/main.py templates/index.html templates/trend.html
+          if ! git diff --cached --quiet; then
+            git commit -m 'Integrate verified first-party visitor analytics'
+            git push origin HEAD:feat/visitor-analytics-20260911
+          fi
