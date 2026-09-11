@@ -1,0 +1,40 @@
+name: Investigator approved image verification
+on:
+  push:
+    branches: [fix/detective-assets-20260911-final]
+permissions:
+  contents: read
+jobs:
+  verify-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install 'Pillow>=11,<12'
+      - name: Verify actual approved JPEG and export for visual review
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageFile
+          import hashlib,json
+          ImageFile.LOAD_TRUNCATED_IMAGES=False
+          p=Path('static/detective/approved.jpg')
+          raw=p.read_bytes()
+          print(json.dumps({'bytes':len(raw),'header':raw[:16].hex(),'sha256':hashlib.sha256(raw).hexdigest()}))
+          assert raw.startswith(b'\xff\xd8') and raw.endswith(b'\xff\xd9')
+          with Image.open(p) as im:
+              assert im.format=='JPEG'
+              im.load()
+              assert im.width>=240 and im.height>=300
+              Path('approved-review').mkdir(exist_ok=True)
+              im.save('approved-review/approved.png')
+              print(json.dumps({'format':im.format,'size':im.size,'mode':im.mode}))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: approved-investigator-review
+          path: approved-review/approved.png
+          retention-days: 1
