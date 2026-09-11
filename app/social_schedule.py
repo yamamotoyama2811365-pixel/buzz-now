@@ -73,7 +73,7 @@ NIGHT_PROMPTS = ('夜の捜査室、開けとく。\n「それ本当？」って
 
 def character_text(day, slot):
     prompt = DAY_PROMPTS[day] if slot['start'].hour == 12 else NIGHT_PROMPTS[day]
-    return '🕵️ SNS捜査官｜BUZZ NOW公式AIキャラクター\n\n' + prompt + '\n\n#SNS捜査官 #AIキャラクター'
+    return '🕵️ SNS捜査官｜BUZZ NOW\n\n' + prompt + '\n\n#SNS捜査官'
 
 
 def trial_day(c, now):

@@ -1,0 +1,71 @@
+name: SNS investigator image verification
+on:
+  push:
+    branches: [feat/detective-image-20260911, main]
+    paths:
+      - app/social_schedule.py
+      - app/detective_posts.py
+      - app/social_mix.py
+      - static/detective/approved.jpg
+      - tests/test_social_schedule.py
+      - tests/test_social_mix.py
+      - .github/workflows/detective-image.yml
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DEMO_MODE: 'false'
+      REAL_DATA_MODE: 'false'
+      SOCIAL_AUTO_ENABLED: 'false'
+      THREADS_AUTO_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - name: Verify approved image bytes
+        run: |
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          p=Path('static/detective/approved.jpg')
+          b=p.read_bytes()
+          assert len(b) > 30000
+          assert hashlib.sha256(b).hexdigest() == 'af56026feb4168debd29643637aad3a06046f3b8b45b6e338315a6a7fe2af5dd'
+          print('approved investigator image verified', len(b))
+          PY
+      - run: python -m unittest discover -s tests -p test_social_schedule.py -v
+      - run: python -m unittest discover -s tests -p test_social_mix.py -v
+      - run: python -m unittest discover -s tests -p test_shared_api.py -v
+      - run: python -m compileall -q app
+      - run: git diff --check
+  production-read-only-check:
+    if: github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Verify deployed photo and schedule status without posting
+        run: |
+          python - <<'PY'
+          import hashlib,json,time
+          from urllib.request import urlopen
+          from urllib.error import HTTPError,URLError
+          base='https://buzz-now-1.onrender.com'
+          for _ in range(30):
+              try:
+                  with urlopen(base+'/static/detective/approved.jpg',timeout=10) as r: image=r.read()
+                  with urlopen(base+'/api/social/schedule',timeout=10) as r: status=json.load(r)
+                  assert hashlib.sha256(image).hexdigest()=='af56026feb4168debd29643637aad3a06046f3b8b45b6e338315a6a7fe2af5dd'
+                  assert status.get('posting_enabled',{}).get('x') is True
+                  assert status.get('posting_enabled',{}).get('threads') is True
+                  print(json.dumps({'approved_image':'verified','x_enabled':True,'threads_enabled':True}))
+                  break
+              except (HTTPError,URLError,TimeoutError,ValueError,AssertionError):
+                  time.sleep(10)
+          else: raise SystemExit('production investigator image not verified')
+          PY
