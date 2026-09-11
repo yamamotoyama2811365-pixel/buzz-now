@@ -25,6 +25,7 @@ for (const [ref, search, expected] of cases) {
   const calls = run(ref, search);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].payload.source, expected);
+  assert.equal(calls[0].options.mode, 'cors');
   assert.equal(calls[0].options.credentials, 'omit');
   assert.equal(calls[0].options.referrerPolicy, 'no-referrer');
   assert.equal(calls[0].options.body.includes('secret'), false);
