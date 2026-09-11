@@ -6,11 +6,13 @@ channel rather than advancing its sequence or risking a duplicate.
 from datetime import datetime, timezone
 from pathlib import Path
 from . import social_schedule as plan
+from . import detective_media
+# Verified approved-photo integration.
 
 ROOT = Path(__file__).resolve().parent.parent
 CHARACTER_ID = -1
 TRIAL_KEYS = {'x': 'detective_trial_start', 'threads': 'detective_threads_trial_start'}
-APPROVED_ASSET = 'static/detective/approved.jpg'
+APPROVED_ASSET = detective_media.ASSET
 
 
 def counts(c, platform):
@@ -55,7 +57,7 @@ def character_content(c, platform, now):
     day = trial_day(c, platform, now)
     if not 0 <= day < 14:
         return {'ok': False, 'reason': 'character_trial_finished'}
-    if not (ROOT / APPROVED_ASSET).is_file():
+    if not detective_media.inspect(ROOT)['ready']:
         return {'ok': False, 'reason': 'approved_character_image_missing'}
     local = now.astimezone(plan.JST)
     slot = {'start': local.replace(hour=12 if 6 <= local.hour < 18 else 21)}
@@ -79,6 +81,7 @@ def status(db):
     return {'version': 2, 'normal_per_10': 8, 'character_per_10': 2,
             'character_positions': [5,10], 'counter_basis': 'buffer_accepted_not_publication_confirmed',
             'trial_days': 14, 'x_counter_scope': 'persistent_slot_ledger',
-            'character_image': '/static/detective/approved.jpg',
+            'character_image': '/' + APPROVED_ASSET,
+            'media_revision': detective_media.REVISION,
             'missed_slots': 'skip; preserve content sequence; never catch up in a burst',
             'platforms': platforms}
