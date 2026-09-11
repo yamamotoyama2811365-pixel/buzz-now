@@ -84,7 +84,7 @@ def _connect(dsn):
     import psycopg
     if not dsn:
         raise RuntimeError('PV database unavailable')
-    return psycopg.connect(dsn, connect_timeout=5, options='-c statement_timeout=3000')
+    return psycopg.connect(dsn, connect_timeout=5)
 
 
 def _exists(cur, page):
@@ -109,6 +109,8 @@ def _exists(cur, page):
 
 def record(dsn, page, source, is_test):
     with _connect(dsn) as conn, conn.cursor() as cur:
+        # Transaction-local setting is compatible with Neon/PgBouncer pooling.
+        cur.execute('SET LOCAL statement_timeout = 3000')
         if not _exists(cur, page):
             return False
         cur.execute('''INSERT INTO public.ocm_page_views_daily(day,page,source,is_test,views)
@@ -126,6 +128,8 @@ def report(dsn, days=30, include_today=False):
     where = 'is_test=FALSE AND day BETWEEN %s AND %s'
     args = [start, end]
     with _connect(dsn) as conn, conn.cursor() as cur:
+        # Transaction-local setting is compatible with Neon/PgBouncer pooling.
+        cur.execute('SET LOCAL statement_timeout = 3000')
         cur.execute('SELECT started_at FROM public.ocm_pv_metadata WHERE singleton=TRUE')
         row = cur.fetchone()
         started_at = row[0].isoformat() if row else None
