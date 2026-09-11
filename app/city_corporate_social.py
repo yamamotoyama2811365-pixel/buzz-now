@@ -52,6 +52,8 @@ def _close_candidate(dsn, seen):
           FROM stores
           WHERE status IN ('closing','closed') AND COALESCE(status,'')<>'excluded'
             AND updated_at >= now()-interval '10 days'
+            AND close_date BETWEEN (now() AT TIME ZONE 'Asia/Tokyo')::date-10 AND (now() AT TIME ZONE 'Asia/Tokyo')::date+180
+            AND COALESCE(TRIM(name),'')<>'' AND COALESCE(TRIM(source_url),'')<>''
           ORDER BY COALESCE(close_date, updated_at::date) DESC, updated_at DESC
           LIMIT 40""")
         for r in cur.fetchall():
@@ -71,7 +73,8 @@ def _bankruptcy_candidate(dsn, seen):
               FROM corporate_events
               WHERE published AND kind='bankruptcy'
                 AND company NOT IN ('運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗')
-                AND reported_date >= current_date-10
+                AND reported_date BETWEEN (now() AT TIME ZONE 'Asia/Tokyo')::date-10 AND (now() AT TIME ZONE 'Asia/Tokyo')::date
+                AND COALESCE(payload->>'source_url','')<>''
               ORDER BY reported_date DESC,id DESC LIMIT 40""")
             for r in cur.fetchall():
                 key='bankruptcy:'+str(r['id'])
@@ -119,6 +122,11 @@ def run(shared_db, sender, now=None):
     slot=current_slot(now)
     if not slot:return {'sent':0,'reason':'outside_posting_window'}
     with shared_db() as c:
+        # CITYCORP_DURABLE_ACTIVATION: serialize reservation across workers.
+        if hasattr(c, '_con'):
+            c.execute('SELECT pg_advisory_xact_lock(3544102)')
+        used=c.execute("SELECT COUNT(*) AS n FROM system_state WHERE key LIKE ? AND value<>'no_candidate'",(PREFIX+'slot:'+now.astimezone(JST).date().isoformat()+'%',)).fetchone()['n']
+        if used >= cfg['daily_cap']:return {'sent':0,'reason':'daily_cap_reached'}
         if _state_get(c,'slot:'+slot['key']):return {'sent':0,'reason':'slot_already_attempted'}
         cutoff=(now.astimezone(JST).date()-timedelta(days=1)).isoformat()
         # keep a small durable sent-key set in system_state; no external-user data is stored.
@@ -134,7 +142,15 @@ def run(shared_db, sender, now=None):
         # X limit is 280 characters; keep link/hashtags but never truncate factual names into ambiguity.
         if len(text)>275:
             text='\n'.join(text.splitlines()[:3])+'\n'+('詳細 → https://open-close-map.onrender.com/store/'+str(row['id']) if slot['kind']=='close' else '詳細 → https://buzz-now-1.onrender.com/corporate/company/'+str(row['id']))
-        result=sender(cfg['channel_id'],text,'','shareNow')
+        # Reserve the item before submitting. An uncertain response must not
+        # cause the same bankruptcy/closure to be sent again in another slot.
+        _state_set(c,'sent:'+key,'pending:'+now.isoformat());c.commit()
+        try:
+            result=sender(cfg['channel_id'],text,'','shareNow')
+        except Exception:
+            _state_set(c,'slot:'+slot['key'],'uncertain');c.commit()
+            return {'sent':0,'reason':'submission_uncertain','kind':slot['kind']}
+
         if result.get('ok'):
             _state_set(c,'sent:'+key,now.isoformat())
             _state_set(c,'slot:'+slot['key'],'sent');c.commit()
