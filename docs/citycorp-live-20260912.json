@@ -1,0 +1,70 @@
+{
+  "verified_at_utc": "2026-09-11T15:58:42.140244+00:00",
+  "runtime_status": {
+    "enabled": true,
+    "channel_configured": true,
+    "sources": {
+      "open_close": true,
+      "corporate": true
+    },
+    "daily_cap": 6,
+    "timezone": "Asia/Tokyo",
+    "slots": [
+      {
+        "time": "08:15",
+        "kind": "close"
+      },
+      {
+        "time": "10:30",
+        "kind": "bankruptcy"
+      },
+      {
+        "time": "13:00",
+        "kind": "close"
+      },
+      {
+        "time": "15:30",
+        "kind": "close"
+      },
+      {
+        "time": "18:15",
+        "kind": "bankruptcy"
+      },
+      {
+        "time": "21:15",
+        "kind": "close"
+      }
+    ],
+    "account_role": "街と企業の変化速報（X専用）",
+    "handle": "machi_to_kigyo",
+    "channel_id_suffix": "4e120d",
+    "channel_id_matches": true,
+    "channel_verification": {
+      "ok": true,
+      "reason": "verified",
+      "handle_matches": true,
+      "id_matches": true,
+      "service": "twitter",
+      "disconnected": false,
+      "locked": false,
+      "queue_paused": false,
+      "checked_at": "2026-09-11T15:58:34.706473+00:00"
+    },
+    "last_run": {
+      "sent": 0,
+      "reason": "outside_posting_window",
+      "checked_at": "2026-09-11T15:58:34.706520+00:00",
+      "publication_verified": false
+    },
+    "next_slot": {
+      "start_jst": "2026-09-12T08:15:00+09:00",
+      "kind": "close"
+    },
+    "note": "sent denotes Buffer acceptance, not verified X publication; slots without eligible facts are skipped."
+  },
+  "live_health_http": 200,
+  "real_post_sent_by_probe": false,
+  "x_publication_verified": false,
+  "implementation_commit": "3d7b1f0799fad05667becf9f6bd8e2b86914b94c",
+  "note": "Read-only verification: Buffer channel identity and running scheduler confirmed; first public post is still pending its scheduled slot."
+}
