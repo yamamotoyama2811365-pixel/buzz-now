@@ -43,7 +43,6 @@ def reserve(c, kind, now, daily_cap=10, cooldown_minutes=60, mixed=False):
         if kind != social_mix.next_kind(c, 'x', now):
             return None, 'content_kind_not_due'
     cutoff = (now - timedelta(hours=24)).isoformat()
-    # Include historical posts predating this rollout and uncertain submissions.
     normal = c.execute('SELECT COUNT(*) AS n FROM social_posts WHERE make_status=1 AND posted_at>=?', (cutoff,)).fetchone()['n']
     quotes = c.execute("SELECT COUNT(*) AS n FROM buzzing_quote_posts WHERE status='sent' AND sent_at>=?", (cutoff,)).fetchone()['n']
     extra = c.execute("SELECT COUNT(*) AS n FROM social_schedule_log WHERE attempted_at>=? AND ((kind='character' AND state='sent') OR state='reserved')", (cutoff,)).fetchone()['n']
@@ -57,7 +56,6 @@ def reserve(c, kind, now, daily_cap=10, cooldown_minutes=60, mixed=False):
     if last:
         return None, 'combined_cooldown'
     c.execute("INSERT INTO social_schedule_log(slot_key,kind,state,attempted_at) VALUES(?,?,'reserved',?)", (slot['key'],kind,now.isoformat()))
-    # Persist before contacting Buffer. An ambiguous outcome is never retried.
     c.commit()
     return slot, 'ok'
 
@@ -73,7 +71,7 @@ NIGHT_PROMPTS = ('夜の捜査室、開けとく。\n「それ本当？」って
 
 def character_text(day, slot):
     prompt = DAY_PROMPTS[day] if slot['start'].hour == 12 else NIGHT_PROMPTS[day]
-    return '🕵️ SNS捜査官｜BUZZ NOW公式AIキャラクター\n\n' + prompt + '\n\n#SNS捜査官 #AIキャラクター'
+    return '🕵️ SNS捜査官｜BUZZ NOW\n\n' + prompt + '\n\n#SNS捜査官'
 
 
 def trial_day(c, now):
