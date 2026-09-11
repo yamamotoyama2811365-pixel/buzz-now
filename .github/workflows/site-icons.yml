@@ -1,0 +1,96 @@
+name: Site icon verification
+on:
+  push:
+    branches: [feat/site-icons-20260911, main]
+    paths:
+      - app/site_icons.py
+      - app/main.py
+      - static/buzz-now-icon.png
+      - static/favicon.ico
+      - static/apple-touch-icon.png
+      - templates/**
+      - tests/test_site_icons.py
+      - scripts/install_site_icons.py
+      - .github/workflows/site-icons.yml
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DEMO_MODE: 'false'
+      REAL_DATA_MODE: 'false'
+      SOCIAL_AUTO_ENABLED: 'false'
+      THREADS_AUTO_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - run: python scripts/install_site_icons.py
+      - run: python -m unittest discover -s tests -p test_site_icons.py -v
+      - run: python -m unittest discover -s tests -p test_shared_api.py -v
+      - run: python -m unittest discover -s tests -p test_visitor_analytics.py -v
+      - run: python -m unittest discover -s tests -p test_social_mix.py -v
+      - run: python -m compileall -q app
+      - run: git diff --check
+  assemble-feature-only:
+    if: github.ref == 'refs/heads/feat/site-icons-20260911'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install Pillow
+      - run: python scripts/install_site_icons.py
+      - name: Commit only tested icon assets and integration to the feature branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/main.py templates/index.html templates/trend.html templates/x_gate.html static/favicon.ico static/apple-touch-icon.png
+          if ! git diff --cached --quiet; then
+            git commit -m 'Wire approved browser and Apple home-screen icons'
+            git push origin HEAD:feat/site-icons-20260911
+          fi
+  production-read-only-check:
+    if: github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Verify production icon bytes and homepage tags without tracking or posting
+        run: |
+          python - <<'PY'
+          import hashlib,json,time
+          from urllib.request import urlopen
+          from urllib.error import HTTPError,URLError
+          base='https://buzz-now-1.onrender.com'
+          for attempt in range(30):
+              try:
+                  with urlopen(base+'/favicon.ico',timeout=10) as r:
+                      ico=r.read();mime=r.headers.get('Content-Type','')
+                  with urlopen(base+'/static/buzz-now-icon.png',timeout=10) as r: png=r.read()
+                  with urlopen(base+'/apple-touch-icon.png',timeout=10) as r: apple=r.read()
+                  with urlopen(base+'/',timeout=15) as r: html=r.read().decode('utf-8')
+                  assert ico.startswith(b'\x00\x00\x01\x00') and 'icon' in mime
+                  assert hashlib.sha256(png).hexdigest()=='b0c28a9751b39ec57a99d93d8b022bb66b1a5b78d58546091295f54586c90bda'
+                  assert apple.startswith(b'\x89PNG\r\n\x1a\n')
+                  assert 'href="/favicon.ico"' in html and 'href="/apple-touch-icon.png"' in html
+                  assert 'href="/static/buzz-now-icon.png"' in html
+                  print(json.dumps({'public_icons':'verified','approved_image_checksum':'match','homepage_tags':'verified','favicon_bytes':len(ico),'apple_icon_bytes':len(apple)}))
+                  break
+              except (HTTPError,URLError,TimeoutError,ValueError,AssertionError):
+                  time.sleep(10)
+          else: raise SystemExit('Production icon deployment not verified')
+          PY
