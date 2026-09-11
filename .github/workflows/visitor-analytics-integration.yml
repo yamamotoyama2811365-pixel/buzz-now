@@ -1,29 +1,27 @@
-name: Visitor analytics integration
+name: Visitor analytics verification
 on:
   push:
-    branches: [feat/visitor-analytics-20260911]
+    branches: [feat/visitor-analytics-20260911, main]
     paths:
+      - app/main.py
       - app/visitor_analytics.py
       - static/visitor-analytics.js
-      - scripts/install_visitor_analytics.py
+      - templates/index.html
+      - templates/trend.html
       - tests/test_visitor_analytics*
       - .github/workflows/visitor-analytics-integration.yml
 permissions:
   contents: read
 jobs:
-  verify-and-integrate:
-    if: github.ref == 'refs/heads/feat/visitor-analytics-20260911'
+  verify:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
       - run: pip install -r requirements.txt
-      - run: python scripts/install_visitor_analytics.py
       - run: python -m unittest discover -s tests -p test_visitor_analytics.py -v
       - run: node tests/test_visitor_analytics_browser.cjs
       - run: python -m unittest discover -s tests -p test_shared_api.py -v
@@ -37,12 +35,39 @@ jobs:
           THREADS_AUTO_ENABLED: 'false'
         run: python -c "import app.main; assert app.main.app.state.visitor_analytics_installed; print('Analytics routes registered')"
       - run: git diff --check
-      - name: Commit verified integration to feature branch only
+  production-diagnostic:
+    if: github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check deployed script and write test-only pageviews
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app/main.py templates/index.html templates/trend.html
-          if ! git diff --cached --quiet; then
-            git commit -m 'Integrate verified first-party visitor analytics'
-            git push origin HEAD:feat/visitor-analytics-20260911
-          fi
+          python - <<'PY'
+          import json, time, uuid
+          from urllib.request import Request, urlopen
+          from urllib.error import HTTPError, URLError
+          base = 'https://buzz-now-1.onrender.com'
+          for attempt in range(30):
+              try:
+                  with urlopen(base + '/api/visitor-analytics/status', timeout=10) as response:
+                      status = json.load(response)
+                  with urlopen(base + '/', timeout=10) as response:
+                      html = response.read().decode('utf-8')
+                  if status.get('ready') and '/static/visitor-analytics.js' in html:
+                      break
+              except (HTTPError, URLError, TimeoutError, ValueError):
+                  pass
+              time.sleep(10)
+          else:
+              raise SystemExit('Deployment not verified: no production visitor counts are claimed')
+          for source in ('x', 'google', 'direct'):
+              payload = json.dumps({'path': '/', 'source': source, 'test': True, 'nonce': str(uuid.uuid4())}).encode()
+              for repeat in range(2):
+                  request = Request(base + '/api/visitor-analytics/pageview', data=payload, method='POST', headers={
+                      'Content-Type': 'application/json', 'Origin': base,
+                      'User-Agent': 'Mozilla/5.0 BUZZNOW-Diagnostic', 'Sec-Fetch-Site': 'same-origin'})
+                  with urlopen(request, timeout=15) as response:
+                      assert response.status == 204
+          print('Production script verified; x/google/direct diagnostic writes accepted. All test=true; not real visitors.')
+          PY
