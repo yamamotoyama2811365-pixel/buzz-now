@@ -10,6 +10,7 @@ from . import social_schedule as plan
 ROOT = Path(__file__).resolve().parent.parent
 CHARACTER_ID = -1
 TRIAL_KEYS = {'x': 'detective_trial_start', 'threads': 'detective_threads_trial_start'}
+APPROVED_ASSET = 'static/detective/approved.jpg'
 
 
 def counts(c, platform):
@@ -46,8 +47,6 @@ def pending(c, platform):
     if platform == 'x':
         return bool(c.execute("SELECT slot_key FROM social_schedule_log WHERE state='reserved' LIMIT 1").fetchone())
     if platform == 'threads':
-        # -3 is an ambiguous submission made by this version. Historical 0 rows
-        # include failures from before the confirmed Threads connection existed.
         return bool(c.execute('SELECT id FROM threads_posts WHERE buffer_status IN (-1,-3) LIMIT 1').fetchone())
     raise ValueError('unsupported platform')
 
@@ -56,17 +55,14 @@ def character_content(c, platform, now):
     day = trial_day(c, platform, now)
     if not 0 <= day < 14:
         return {'ok': False, 'reason': 'character_trial_finished'}
-    local = now.astimezone(plan.JST)
-    noon = 6 <= local.hour < 18
-    relative = 'static/detective/' + ('noon.jpg' if noon else 'night.jpg')
-    if not (ROOT / relative).is_file():
+    if not (ROOT / APPROVED_ASSET).is_file():
         return {'ok': False, 'reason': 'approved_character_image_missing'}
-    slot = {'start': local.replace(hour=12 if noon else 21)}
+    local = now.astimezone(plan.JST)
+    slot = {'start': local.replace(hour=12 if 6 <= local.hour < 18 else 21)}
     text = plan.character_text(day, slot)
-    # Existing approved captions are conservatively within both network limits.
     if len(text) * 2 > 280:
         return {'ok': False, 'reason': 'character_caption_too_long'}
-    return {'ok': True, 'text': text, 'image_url': 'https://buzz-now-1.onrender.com/' + relative}
+    return {'ok': True, 'text': text, 'image_url': 'https://buzz-now-1.onrender.com/' + APPROVED_ASSET}
 
 
 def status(db):
@@ -83,5 +79,6 @@ def status(db):
     return {'version': 2, 'normal_per_10': 8, 'character_per_10': 2,
             'character_positions': [5,10], 'counter_basis': 'buffer_accepted_not_publication_confirmed',
             'trial_days': 14, 'x_counter_scope': 'persistent_slot_ledger',
+            'character_image': '/static/detective/approved.jpg',
             'missed_slots': 'skip; preserve content sequence; never catch up in a burst',
             'platforms': platforms}
