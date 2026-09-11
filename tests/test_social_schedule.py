@@ -12,7 +12,7 @@ class ScheduleTest(unittest.TestCase):
         CREATE TABLE buzzing_quote_posts(sent_at TEXT,status TEXT);
         CREATE TABLE system_state(key TEXT PRIMARY KEY,value TEXT);''')
         p.init(self.c)
-        self.now=datetime(2026,9,11,3,30,tzinfo=timezone.utc) # 12:30 JST
+        self.now=datetime(2026,9,11,3,30,tzinfo=timezone.utc)
     def test_jst_windows_and_no_catchup(self):
         self.assertIsNotNone(p.current_slot(self.now,'character'))
         self.assertIsNone(p.current_slot(self.now,'trend'))
@@ -35,13 +35,15 @@ class ScheduleTest(unittest.TestCase):
     def test_quote_cooldown_applies_to_character(self):
         self.c.execute('INSERT INTO buzzing_quote_posts VALUES(?,?)',((self.now-timedelta(minutes=40)).isoformat(),'sent'))
         self.assertEqual(p.reserve(self.c,'character',self.now)[1],'combined_cooldown')
-    def test_trial_texts_unique_disclosed_and_short(self):
+    def test_trial_texts_unique_and_short_without_ai_label(self):
         texts=[]
         for day in range(14):
             for hour in (12,21):
                 t=p.character_text(day,{'start':self.now.replace(hour=hour)})
-                self.assertIn('AIキャラクター',t)
-                self.assertLessEqual(len(t)*2,280) # conservative double weight
+                self.assertIn('SNS捜査官｜BUZZ NOW',t)
+                self.assertNotIn('公式AIキャラクター',t)
+                self.assertNotIn('#AIキャラクター',t)
+                self.assertLessEqual(len(t)*2,280)
                 texts.append(t)
         self.assertEqual(len(set(texts)),28)
     def test_buffer_pause_never_sends(self):
@@ -60,7 +62,7 @@ class ScheduleTest(unittest.TestCase):
         self.assertEqual(result['sent'],1)
         self.assertEqual(again['sent'],0)
         self.assertEqual(len(sent),1)
-        self.assertTrue(sent[0][1].endswith('/noon.jpg'))
+        self.assertTrue(sent[0][1].endswith('/approved.jpg'))
         self.assertEqual(self.c.execute('SELECT value FROM system_state').fetchone()['value'],'2026-09-11')
     def test_trial_stops_after_fourteen_days(self):
         self.c.execute("INSERT INTO system_state VALUES('detective_trial_start','2026-08-01')")
