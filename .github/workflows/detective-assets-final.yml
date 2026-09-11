@@ -1,40 +1,98 @@
 name: Investigator approved image verification
 on:
   push:
-    branches: [fix/detective-assets-20260911-final]
+    branches: [fix/detective-assets-20260911-final, main]
+    paths: [app/detective_media.py, app/detective_posts.py, app/social_mix.py, app/social_schedule.py, static/detective/**, ops/media-import/**, ops/media-source/**, scripts/finish_detective_assets.py, tests/test_detective_media.py, .github/workflows/detective-assets-final.yml]
 permissions:
   contents: read
 jobs:
-  verify-image:
+  verify-and-prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 6
+    env:
+      DEMO_MODE: 'false'
+      REAL_DATA_MODE: 'false'
+      SOCIAL_AUTO_ENABLED: 'false'
+      THREADS_AUTO_ENABLED: 'false'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: pip install 'Pillow>=11,<12'
-      - name: Verify actual approved JPEG and export for visual review
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          from PIL import Image, ImageFile
-          import hashlib,json
-          ImageFile.LOAD_TRUNCATED_IMAGES=False
-          p=Path('static/detective/approved.jpg')
-          raw=p.read_bytes()
-          print(json.dumps({'bytes':len(raw),'header':raw[:16].hex(),'sha256':hashlib.sha256(raw).hexdigest()}))
-          assert raw.startswith(b'\xff\xd8') and raw.endswith(b'\xff\xd9')
-          with Image.open(p) as im:
-              assert im.format=='JPEG'
-              im.load()
-              assert im.width>=240 and im.height>=300
-              Path('approved-review').mkdir(exist_ok=True)
-              im.save('approved-review/approved.png')
-              print(json.dumps({'format':im.format,'size':im.size,'mode':im.mode}))
-          PY
+      - run: pip install -r requirements.txt
+      - run: python scripts/finish_detective_assets.py
+      - run: python -m unittest discover -s tests -p test_detective_media.py -v
+      - run: python -m unittest discover -s tests -p test_social_schedule.py -v
+      - run: python -m unittest discover -s tests -p test_social_mix.py -v
+      - run: python -m unittest discover -s tests -p test_visitor_analytics.py -v
+      - run: python -m unittest discover -s tests -p test_site_icons.py -v
+      - run: python -m unittest discover -s tests -p test_shared_api.py -v
+      - run: python -m compileall -q app
+      - run: git diff --check
       - uses: actions/upload-artifact@v4
         with:
-          name: approved-investigator-review
-          path: approved-review/approved.png
+          name: verified-investigator-photo
+          path: |
+            static/detective/v20260911/approved.jpg
+            static/detective/v20260911/manifest.json
           retention-days: 1
+  assemble-feature-only:
+    if: github.ref == 'refs/heads/fix/detective-assets-20260911-final'
+    needs: verify-and-prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install 'Pillow>=11,<12'
+      - run: python scripts/finish_detective_assets.py
+      - name: Commit tested image and narrow integration on the feature branch only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/detective_posts.py app/social_mix.py static/detective ops/media-import ops/media-source
+          if ! git diff --cached --quiet; then
+            git commit -m 'Install verified approved photo for both social channels'
+            git push origin HEAD:fix/detective-assets-20260911-final
+          fi
+  production-read-only:
+    if: github.ref == 'refs/heads/main'
+    needs: verify-and-prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Check published image checksum and both active channel settings
+        run: |
+          python - <<'PY'
+          import hashlib,json,time
+          from urllib.request import urlopen
+          from urllib.error import HTTPError,URLError
+          base='https://buzz-now-1.onrender.com'
+          for attempt in range(30):
+              try:
+                  with urlopen(base+'/api/social/schedule',timeout=15) as r: status=json.load(r)
+                  media=status.get('approved_media',{})
+                  assert media.get('revision')=='approved-photo-20260911' and media.get('ready')
+                  assert status['caption_prefix']=='🕵️ SNS捜査官｜BUZZ NOW'
+                  assert status['caption_hashtags']==['#SNS捜査官']
+                  assert status['mix_policy']['character_positions']==[5,10]
+                  assert status['mix_policy']['character_image']==media['image']
+                  assert status['posting_enabled']=={'x':True,'threads':True}
+                  with urlopen(base+media['image'],timeout=15) as r:
+                      image=r.read(); assert 'image/jpeg' in r.headers.get('content-type','')
+                  assert image.startswith(b'\xff\xd8') and image.endswith(b'\xff\xd9')
+                  assert hashlib.sha256(image).hexdigest()==media['sha256']
+                  print(json.dumps({'verified':True,'media':media,'caption_prefix':status['caption_prefix'],
+                    'caption_hashtags':status['caption_hashtags'],'posting_enabled':status['posting_enabled'],
+                    'mix_policy':status['mix_policy'],'buffer_pause':status.get('buffer_pause')},ensure_ascii=False))
+                  break
+              except (HTTPError,URLError,TimeoutError,ValueError,AssertionError,KeyError):
+                  time.sleep(10)
+          else: raise SystemExit('Production approval configuration not verified')
+          PY
