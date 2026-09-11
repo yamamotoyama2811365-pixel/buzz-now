@@ -56,12 +56,11 @@ def character_content(c, platform, now):
     day = trial_day(c, platform, now)
     if not 0 <= day < 14:
         return {'ok': False, 'reason': 'character_trial_finished'}
-    local = now.astimezone(plan.JST)
-    noon = 6 <= local.hour < 18
-    relative = 'static/detective/' + ('noon.jpg' if noon else 'night.jpg')
+    relative = 'static/detective/approved.jpg'
     if not (ROOT / relative).is_file():
         return {'ok': False, 'reason': 'approved_character_image_missing'}
-    slot = {'start': local.replace(hour=12 if noon else 21)}
+    local = now.astimezone(plan.JST)
+    slot = {'start': local.replace(hour=12 if 6 <= local.hour < 18 else 21)}
     text = plan.character_text(day, slot)
     # Existing approved captions are conservatively within both network limits.
     if len(text) * 2 > 280:
