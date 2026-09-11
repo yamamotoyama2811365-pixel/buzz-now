@@ -6851,3 +6851,8 @@ if os.getenv("OPEN_CLOSE_ENABLED", "false").lower() == "true" and not LEGACY_SER
 if os.getenv("CORPORATE_ENABLED", "false").lower() == "true" and not LEGACY_SERVICE:
     from services.corporate.main import app as corporate_app
     app.mount("/corporate", corporate_app)
+
+
+# First-party visitor analytics (independent of modeled traffic metrics).
+from app.visitor_analytics import install_visitor_analytics
+install_visitor_analytics(app, db, is_legacy=LEGACY_SERVICE)
