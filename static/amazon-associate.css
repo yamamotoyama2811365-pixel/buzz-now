@@ -1,0 +1,15 @@
+/* Scoped affiliate card. No remote resources, popups, animation or tracking. */
+.bn-amazon-associate{box-sizing:border-box;margin:28px 0;padding:22px;border:1px solid #536373;border-left:4px solid #c6edbe;border-radius:16px;background:#13202b;color:#f3f6fa;font-family:inherit;overflow-wrap:anywhere}
+.bn-amazon-associate *{box-sizing:border-box}
+.bn-amazon-associate .bn-amazon-label{display:inline-block;margin:0 0 14px;padding:4px 9px;border:1px solid #738497;border-radius:6px;color:#f3f6fa;font-size:12px;line-height:1.6;font-weight:700}
+.bn-amazon-layout{display:flex;align-items:center;gap:24px}
+.bn-amazon-copy{flex:1;min-width:0}
+.bn-amazon-associate h2{margin:0 0 8px;color:#fff;font-size:21px;line-height:1.45;letter-spacing:0}
+.bn-amazon-associate p{font-size:14px;line-height:1.85;margin:8px 0;color:#d3deea}
+.bn-amazon-associate .bn-amazon-lead{color:#edf4fb;font-weight:700;font-size:15px}
+.bn-amazon-associate .bn-amazon-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;flex:0 1 240px;min-height:48px;max-width:100%;padding:14px 18px;background:#c6edbe;border:2px solid #c6edbe;border-radius:10px;color:#142319;font-size:15px;line-height:1.6;font-weight:700;text-decoration:none;text-align:center}
+.bn-amazon-associate .bn-amazon-button:hover{background:#e0f7da;border-color:#e0f7da;color:#142319}
+.bn-amazon-associate .bn-amazon-button:focus-visible{outline:3px solid #fff;outline-offset:4px}
+.bn-amazon-associate .bn-amazon-note{font-size:13px;margin:16px 0 0;color:#c8d5e3}
+.bn-amazon-associate .bn-amazon-disclosure{font-size:13px;line-height:1.8;margin:12px 0 0;padding-top:12px;border-top:1px solid #536373;color:#edf4fb}
+@media(max-width:680px){.bn-amazon-associate{padding:18px}.bn-amazon-layout{flex-direction:column;align-items:stretch;gap:12px}.bn-amazon-associate .bn-amazon-button{flex:auto;width:100%}}
