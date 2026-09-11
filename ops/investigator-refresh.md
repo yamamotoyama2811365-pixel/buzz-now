@@ -1,0 +1,1 @@
+Approved investigator image refresh pending final route wiring.
