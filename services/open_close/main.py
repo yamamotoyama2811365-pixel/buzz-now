@@ -1472,3 +1472,7 @@ def backfill_status():
 from services.open_close.inquiries import install_inquiries
 install_inquiries(app, db_conn, require_admin)
 
+
+# Independent aggregate PV counter; schema is migrated explicitly.
+from services.open_close.traffic import install as install_first_party_traffic
+install_first_party_traffic(app, DATABASE_URL, PUBLIC_SITE_ORIGIN, require_admin)
