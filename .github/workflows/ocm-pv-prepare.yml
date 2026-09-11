@@ -1,0 +1,81 @@
+name: Prepare and test Open Close Map PV
+on:
+  push:
+    branches: [work/ocm-pv-20260911]
+    paths:
+      - services/open_close/traffic.py
+      - services/open_close/tests/test_traffic.py
+      - migrations/open_close_pv.sql
+      - .github/workflows/ocm-pv-prepare.yml
+permissions:
+  contents: write
+concurrency:
+  group: ocm-pv-preparation
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pv_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install existing dependencies
+        run: pip install -r requirements.txt
+      - name: Apply minimal startup registration on this branch only
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib, subprocess
+          p=pathlib.Path('services/open_close/main.py')
+          marker='install_first_party_traffic(app, DATABASE_URL, PUBLIC_SITE_ORIGIN, require_admin)'
+          if marker not in p.read_text():
+              sha=subprocess.check_output(['git','hash-object',str(p)],text=True).strip()
+              assert sha=='09fcc05c0d80d57b01dde0e3d47a12b685b9b989', 'Source changed; review before modifying'
+              with p.open('a') as f:
+                  f.write('\n# Independent aggregate PV counter; schema is migrated explicitly.\nfrom services.open_close.traffic import install as install_first_party_traffic\n'+marker+'\n')
+          PY
+      - name: Test privacy, storage, authentication and test exclusion
+        env:
+          OCM_PV_TEST_DSN: postgresql://postgres:postgres@localhost:5432/pv_test
+        run: |
+          python -m py_compile services/open_close/main.py services/open_close/traffic.py
+          python -m unittest discover -s services/open_close/tests -p 'test_traffic.py' -v
+      - name: Verify real app integration and private report
+        run: |
+          python - <<'PY'
+          from services.open_close.main import app
+          from fastapi.testclient import TestClient
+          c=TestClient(app)
+          assert c.get('/api/pv-report').status_code in (401,403)
+          assert c.post('/api/page-view',json={'page':'/','source':'google'}).status_code==403
+          paths=[r.path for r in app.routes]
+          assert paths.count('/api/page-view')==1
+          assert '/api/stores' in paths and '/health' in paths
+          print('Real app registration and access checks passed')
+          PY
+      - name: Commit tested registration to preparation branch, never main
+        shell: bash
+        run: |
+          test "$GITHUB_REF" = refs/heads/work/ocm-pv-20260911
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add services/open_close/main.py
+          if ! git diff --cached --quiet; then
+            git commit -m 'Register tested independent Open Close Map PV routes'
+            git push origin HEAD:work/ocm-pv-20260911
+          fi
+          git rev-parse HEAD
+          git hash-object services/open_close/main.py
