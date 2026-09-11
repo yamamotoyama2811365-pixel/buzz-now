@@ -1,15 +1,14 @@
-"""Two-week character trial, gated on approved scene assets."""
+"""Two-week character trial, gated on the approved investigator asset."""
 from pathlib import Path
 from datetime import datetime, timezone
 from . import social_schedule as plan
 
 ROOT = Path(__file__).resolve().parent.parent
+APPROVED_ASSET = 'static/detective/approved.jpg'
 
 
 def media(day, slot):
-    period = 'noon' if 6 <= slot['start'].hour < 18 else 'night'
-    relative = f'static/detective/{period}.jpg'
-    return relative if (ROOT / relative).is_file() else None
+    return APPROVED_ASSET if (ROOT / APPROVED_ASSET).is_file() else None
 
 
 def run(db, sender, pause, enabled, configured, init_quote, cap, cooldown, mixed=False):
@@ -42,7 +41,6 @@ def run(db, sender, pause, enabled, configured, init_quote, cap, cooldown, mixed
             return {'sent':1,'slot':slot['key'],'post_id':response.get('post_id')}
         if response.get('status_code') == 429:
             plan.finish(c, reserved, False, reason='buffer_rate_limited')
-        # Keep reserved on failure: an ambiguous submission must not be duplicated.
         return {'sent':0,'reason':response.get('reason','buffer_submission_uncertain')}
 
 
@@ -53,6 +51,6 @@ def status(db):
         row = c.execute("SELECT value FROM system_state WHERE key='detective_trial_start'").fetchone()
         day = plan.trial_day(c, now)
     return {**plan.status(), 'trial_start_jst':row['value'] if row else None,
-            'approved_scene_images':len(list((ROOT/'static/detective').glob('*.jpg'))),
-            'character_state':'trial_finished' if day>=14 else ('awaiting_approved_images' if not any((ROOT/'static/detective').glob('*.jpg')) else 'ready'),
-            'profile_update':'not_performed; every character post discloses AI identity'}
+            'approved_scene_images':1 if (ROOT/APPROVED_ASSET).is_file() else 0,
+            'character_state':'trial_finished' if day>=14 else ('awaiting_approved_images' if not (ROOT/APPROVED_ASSET).is_file() else 'ready'),
+            'profile_update':'not_performed'}
