@@ -13,7 +13,7 @@ def current_slot(now, kind):
     local = now.astimezone(JST)
     for hour, minute, role in SLOTS:
         start = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if role == kind and start <= local < start + timedelta(minutes=WINDOW_MINUTES):
+        if (kind == 'mixed' or role == kind) and start <= local < start + timedelta(minutes=WINDOW_MINUTES):
             return {'key': start.strftime('%Y-%m-%dT%H:%M'), 'kind': kind,
                     'start': start, 'end': start + timedelta(minutes=WINDOW_MINUTES)}
     return None
@@ -25,8 +25,10 @@ def init(c):
         attempted_at TEXT NOT NULL, post_id TEXT, reason TEXT)''')
 
 
-def reserve(c, kind, now, daily_cap=10, cooldown_minutes=60):
-    slot = current_slot(now, kind)
+def reserve(c, kind, now, daily_cap=10, cooldown_minutes=60, mixed=False):
+    slot = current_slot(now, 'mixed' if mixed else kind)
+    if slot and mixed:
+        slot['kind'] = kind
     if not slot:
         return None, 'outside_posting_window'
     init(c)
@@ -34,6 +36,12 @@ def reserve(c, kind, now, daily_cap=10, cooldown_minutes=60):
         c.execute('SELECT pg_advisory_xact_lock(3544101)')
     if c.execute('SELECT slot_key FROM social_schedule_log WHERE slot_key=?', (slot['key'],)).fetchone():
         return None, 'slot_already_attempted'
+    if mixed:
+        from . import social_mix
+        if social_mix.pending(c, 'x'):
+            return None, 'uncertain_submission_requires_review'
+        if kind != social_mix.next_kind(c, 'x', now):
+            return None, 'content_kind_not_due'
     cutoff = (now - timedelta(hours=24)).isoformat()
     # Include historical posts predating this rollout and uncertain submissions.
     normal = c.execute('SELECT COUNT(*) AS n FROM social_posts WHERE make_status=1 AND posted_at>=?', (cutoff,)).fetchone()['n']

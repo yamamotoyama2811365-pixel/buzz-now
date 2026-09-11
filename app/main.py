@@ -59,7 +59,7 @@ YAHOO_QUOTE_AUTO_MIN_REPOSTS = max(0, int(os.getenv("YAHOO_QUOTE_AUTO_MIN_REPOST
 YAHOO_QUOTE_DAILY_CAP = max(1, int(os.getenv("YAHOO_QUOTE_DAILY_CAP", "5")))
 YAHOO_QUOTE_GLOBAL_COOLDOWN_MINUTES = max(0, int(os.getenv("YAHOO_QUOTE_GLOBAL_COOLDOWN_MINUTES", "60")))
 YAHOO_QUOTE_KEYWORD_COOLDOWN_HOURS = max(0, int(os.getenv("YAHOO_QUOTE_KEYWORD_COOLDOWN_HOURS", "24")))
-YAHOO_QUOTE_MAX_PER_RUN = max(1, min(int(os.getenv("YAHOO_QUOTE_MAX_PER_RUN", "1")), 3))
+YAHOO_QUOTE_MAX_PER_RUN = min(1, max(1, min(int(os.getenv("YAHOO_QUOTE_MAX_PER_RUN", "1")), 3)))
 
 
 SITE_NAME = os.getenv("SITE_NAME", "BUZZ NOW")
@@ -2770,6 +2770,9 @@ def _threads_post_allowed(c, row, now_dt):
         if last_dt and now_dt - last_dt < timedelta(minutes=THREADS_GLOBAL_COOLDOWN_MINUTES):
             return False, "global_cooldown"
 
+    if row['id'] == social_mix.CHARACTER_ID:
+        return True, 'ok'
+
     last_same = c.execute(
         "SELECT posted_at FROM threads_posts WHERE buffer_status<>2 AND trend_id=? ORDER BY id DESC LIMIT 1",
         (row["id"],),
@@ -2930,25 +2933,43 @@ def auto_post_threads():
         channel_id = channel['channel_id']
         now = datetime.now(timezone.utc)
         ts = now.isoformat()
+        if social_mix.pending(c, 'threads'):
+            return {**result, 'reason': 'uncertain_submission_requires_review'}
+        kind = social_mix.next_kind(c, 'threads', now)
         chosen = None
-        for row in _social_candidate_rows(c, limit=30):
-            allowed, reason = _threads_post_allowed(c, row, now)
+        character = {}
+        if kind == 'character':
+            allowed, reason = _threads_post_allowed(c, {'id': social_mix.CHARACTER_ID}, now)
             if not allowed:
-                result['skipped'].append({'keyword': row['keyword'], 'reason': reason})
-                continue
-            if not str(row['reason_title'] or '').strip():
-                continue
-            text = _build_threads_post_text(row)
-            if len(text) > 500:
-                continue
-            chosen = dict(row)
-            break
+                return {**result, 'reason': reason}
+            character = social_mix.character_content(c, 'threads', now)
+            if not character.get('ok'):
+                return {**result, 'reason': character.get('reason')}
+            text = character['text']
+            chosen = {'id': social_mix.CHARACTER_ID, 'keyword': 'SNS捜査官の日常',
+                      'pre_buzz_score': 0, 'traffic_potential': 0}
+        else:
+            for row in _social_candidate_rows(c, limit=30):
+                allowed, reason = _threads_post_allowed(c, row, now)
+                if not allowed:
+                    result['skipped'].append({'keyword': row['keyword'], 'reason': reason})
+                    continue
+                if not str(row['reason_title'] or '').strip():
+                    continue
+                text = _build_threads_post_text(row)
+                if len(text) > 500:
+                    continue
+                chosen = dict(row)
+                break
         if chosen is None:
             c.commit()
             return {**result, 'reason': 'no_eligible_candidate'}
         # Existing images are already committed and publicly fetchable by Buffer.
-        cached = c.execute('SELECT trend_id FROM social_images WHERE trend_id=?', (chosen['id'],)).fetchone()
-        image_url = _social_image_url(chosen['id']) if cached else ''
+        if kind == 'character':
+            image_url = character['image_url']
+        else:
+            cached = c.execute('SELECT trend_id FROM social_images WHERE trend_id=?', (chosen['id'],)).fetchone()
+            image_url = _social_image_url(chosen['id']) if cached else ''
         claim = c.execute('''INSERT INTO threads_posts
             (trend_id,keyword,pre_buzz_score,traffic_potential,post_text,buffer_status,buffer_post_id,posted_at)
             VALUES(?,?,?,?,?,-1,'',?) RETURNING id''',
@@ -2962,7 +2983,9 @@ def auto_post_threads():
         history = db()
         try:
             history.execute('UPDATE threads_posts SET buffer_status=?,buffer_post_id=? WHERE id=?',
-                            (1 if accepted else (2 if response.get('status_code') == 429 else 0), str(response.get('post_id') or ''), claim))
+                            (1 if accepted else (2 if response.get('status_code') == 429 else -3), str(response.get('post_id') or ''), claim))
+            if accepted and kind == 'character':
+                social_mix.start_trial(history, 'threads', now)
             history.commit()
         finally:
             history.close()
@@ -2972,7 +2995,7 @@ def auto_post_threads():
             logger.warning('V35.39 Threads Buffer outcome unknown or failed: %s', response.get('reason'))
             result['errors'].append({'keyword': chosen['keyword'], 'error': response.get('reason', 'Buffer response unknown')})
         return {**result, 'sent': int(accepted), 'accepted': int(accepted),
-                'last_keyword': chosen['keyword'], 'last_post_id': response.get('post_id'),
+                'last_keyword': chosen['keyword'], 'kind': kind, 'last_post_id': response.get('post_id'),
                 'status': 'buffer_accepted' if accepted else 'unknown_or_failed'}
     except Exception:
         logger.exception('V35.39 Threads failed; collector data remains committed')
@@ -6787,7 +6810,8 @@ def google_site_verification():
 
 
 # X slots are shared by normal posts, quote posts and the character trial.
-from app import social_schedule, detective_posts
+from app import social_schedule, detective_posts, social_mix
+# Social content rotation v2: separate accepted-post counters for X and Threads.
 
 def auto_post_social(c, ts: str):
     now_dt = _parse_iso_datetime(ts) or datetime.now(timezone.utc)
@@ -6799,7 +6823,7 @@ def auto_post_social(c, ts: str):
     if not any(_social_post_allowed(c, row, now_dt)[0] for row in _social_candidate_rows(c, limit=30)):
         return {"sent": 0, "reason": "no_eligible_candidate"}
     _ensure_quote_post_log(c)
-    slot, reason = social_schedule.reserve(c, "trend", now_dt, SOCIAL_DAILY_CAP, SOCIAL_GLOBAL_COOLDOWN_MINUTES)
+    slot, reason = social_schedule.reserve(c, "trend", now_dt, SOCIAL_DAILY_CAP, SOCIAL_GLOBAL_COOLDOWN_MINUTES, mixed=True)
     if not slot:
         return {"sent": 0, "reason": reason}
     result = _auto_post_social_unscheduled(c, ts)
@@ -6815,7 +6839,7 @@ def auto_quote_yahoo_buzzing_now():
         return {"posted_count": 0, **pause}
     with db() as c:
         _ensure_quote_post_log(c)
-        slot, reason = social_schedule.reserve(c, "trend", datetime.now(timezone.utc), SOCIAL_DAILY_CAP, SOCIAL_GLOBAL_COOLDOWN_MINUTES)
+        slot, reason = social_schedule.reserve(c, "trend", datetime.now(timezone.utc), SOCIAL_DAILY_CAP, SOCIAL_GLOBAL_COOLDOWN_MINUTES, mixed=True)
         if not slot:
             return {"posted_count": 0, "reason": reason}
     result = _auto_quote_yahoo_buzzing_now_unscheduled()
@@ -6827,19 +6851,24 @@ def auto_quote_yahoo_buzzing_now():
 def run_scheduled_social():
     if LEGACY_SERVICE:
         return
-    if social_schedule.current_slot(datetime.now(timezone.utc), "character"):
+    now_dt = datetime.now(timezone.utc)
+    if not social_schedule.current_slot(now_dt, 'mixed'):
+        return {'sent': 0, 'reason': 'outside_posting_window'}
+    with db() as c:
+        social_schedule.init(c)
+        kind = social_mix.next_kind(c, 'x', now_dt)
+    if kind == 'character':
         return detective_posts.run(db, _send_to_buffer_direct, _buffer_pause,
             SOCIAL_AUTO_ENABLED, bool(BUFFER_API_KEY and BUFFER_CHANNEL_ID),
-            _ensure_quote_post_log, SOCIAL_DAILY_CAP, SOCIAL_GLOBAL_COOLDOWN_MINUTES)
-    if social_schedule.current_slot(datetime.now(timezone.utc), "trend"):
-        with db() as c:
-            result = auto_post_social(c, now_iso())
-            c.commit()
-            return result
+            _ensure_quote_post_log, SOCIAL_DAILY_CAP, SOCIAL_GLOBAL_COOLDOWN_MINUTES, mixed=True)
+    with db() as c:
+        result = auto_post_social(c, now_iso())
+        c.commit()
+        return result
 
 @app.get("/api/social/schedule")
 def social_schedule_status():
-    return {**detective_posts.status(db), "buffer_pause": _buffer_pause()}
+    return {**detective_posts.status(db), "buffer_pause": _buffer_pause(), "mix_policy": social_mix.status(db), "posting_enabled": {"x": SOCIAL_AUTO_ENABLED, "threads": THREADS_AUTO_ENABLED}}
 
 
 # Separate app and database configuration under the shared paid service.
