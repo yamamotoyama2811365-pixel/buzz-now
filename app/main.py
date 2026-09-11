@@ -23,6 +23,7 @@ import feedparser
 from PIL import Image, ImageDraw, ImageFont
 from app.migration_control import MigrationMaintenance, migration_settings
 from app import traffic_retention
+from app import city_corporate_social
 
 BASE = Path(__file__).resolve().parent.parent
 DB_PATH = BASE / "buzznow.db"
@@ -5087,6 +5088,9 @@ def startup():
                       id="editorial_worker", replace_existing=True, max_instances=1)
     scheduler.add_job(run_scheduled_social, "interval", minutes=3,
                       id="scheduled_social", replace_existing=True, max_instances=1)
+    # Separate account: closure + bankruptcy facts only. Disabled until its own Buffer channel is configured.
+    scheduler.add_job(lambda: city_corporate_social.run(db, _send_to_buffer_channel), "interval", minutes=3,
+                      id="city_corporate_social", replace_existing=True, max_instances=1)
     if not scheduler.running:
         scheduler.start()
 
