@@ -2,13 +2,15 @@
 from pathlib import Path
 from datetime import datetime, timezone
 from . import social_schedule as plan
+from . import detective_media
+# Verified approved-photo integration.
 
 ROOT = Path(__file__).resolve().parent.parent
-APPROVED_ASSET = 'static/detective/approved.jpg'
+APPROVED_ASSET = detective_media.ASSET
 
 
 def media(day, slot):
-    return APPROVED_ASSET if (ROOT / APPROVED_ASSET).is_file() else None
+    return APPROVED_ASSET if detective_media.inspect(ROOT)['ready'] else None
 
 
 def run(db, sender, pause, enabled, configured, init_quote, cap, cooldown, mixed=False):
@@ -51,6 +53,8 @@ def status(db):
         row = c.execute("SELECT value FROM system_state WHERE key='detective_trial_start'").fetchone()
         day = plan.trial_day(c, now)
     return {**plan.status(), 'trial_start_jst':row['value'] if row else None,
-            'approved_scene_images':1 if (ROOT/APPROVED_ASSET).is_file() else 0,
-            'character_state':'trial_finished' if day>=14 else ('awaiting_approved_images' if not (ROOT/APPROVED_ASSET).is_file() else 'ready'),
+            'approved_scene_images':int(detective_media.inspect(ROOT)['ready']),
+            'approved_media':detective_media.inspect(ROOT),
+            'caption_prefix':'🕵️ SNS捜査官｜BUZZ NOW', 'caption_hashtags':['#SNS捜査官'],
+            'character_state':'trial_finished' if day>=14 else ('awaiting_approved_images' if not detective_media.inspect(ROOT)['ready'] else 'ready'),
             'profile_update':'not_performed'}

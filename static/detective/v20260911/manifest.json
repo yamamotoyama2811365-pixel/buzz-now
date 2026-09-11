@@ -1,0 +1,9 @@
+{
+  "revision": "approved-photo-20260911",
+  "file": "approved.jpg",
+  "source_sha256": "b2b402d084786d14e410dff6e27917abf124071c2d7736ec9bbe088007f2e891",
+  "sha256": "41de100a2304b33120975474a1a55ff6ebc18efdb072c36ae945dd654a71b69c",
+  "width": 640,
+  "height": 800,
+  "rotation": "fixed_approved_photo"
+}
