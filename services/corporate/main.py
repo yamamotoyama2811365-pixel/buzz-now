@@ -18,6 +18,7 @@ from .traffic import install as install_traffic, tracking_tag
 from .model import validate, identity, normalized_name, PREFECTURES, INDUSTRIES, preserve_profile, same_entity
 from .news import render_reports, validate_reports
 from .reference import render_reference
+from .profile_fields import combine_profiles, usable_value
 
 app=FastAPI(title='企業倒産・新規法人情報サイト',docs_url=None,redoc_url=None)
 BASE=os.getenv('CORPORATE_PUBLIC_URL','https://buzz-now-1.onrender.com/corporate').rstrip('/')
@@ -185,13 +186,11 @@ def detail(event_id:str):
     facts=[('状況',p['stage']), (p.get('date_label','確認日'),p['reported_date']),('都道府県',p.get('prefecture') or '未確認'),('業種',p.get('industry') or '未確認'),('所在地',p.get('address') or '未確認'),('法人番号',p.get('corporate_number') or '未照合'),('業種の確認方法',p.get('classification_basis') or '確認できる情報なし')]
     web_profile=p.get('web_profile',{})
     profile=web_profile if web_profile.get('verification_status')!='reference' else {}
-    if profile:
-        facts.extend([('公式サイト記載の事業分野','、'.join(profile.get('business_tags') or profile.get('industries',[])) or '分類未確認'),('公式サイトの照合方法',profile['match_basis']),('公式サイト確認日',profile['checked_at'][:10])])
     web_html=''
-    if profile:
-        web_html='<h2>公式サイトから確認した情報</h2><p><a class="source" href="'+e(profile['website_url'],quote=True)+'" target="_blank" rel="noopener noreferrer">公式サイトを確認する ↗</a></p><p class="small">公式サイトに残る事業情報です。現在の営業継続を示すものではありません。</p><div class="links">'+''.join('<a href="'+e(url,quote=True)+'" target="_blank" rel="noopener noreferrer">確認元 '+str(i+1)+' ↗</a>' for i,url in enumerate(profile['evidence_urls']))+'</div>'
-        web_html+='<dl class="facts">'+''.join('<dt>'+e(d['label'])+'</dt><dd>'+e(d['value'])+' <a class="source" href="'+e(d['source_url'],quote=True)+'" target="_blank" rel="noopener noreferrer">出典 ↗</a></dd>' for d in profile.get('details',[]))+'</dl>'
-    web_html+=render_reference(p.get('web_reference_profile') or web_profile,ROOT+'/company/'+event_id+'/correction')
+    matched=combine_profiles(p.get('web_reference_profile'),web_profile)
+    web_html+=render_reference(matched,ROOT+'/company/'+event_id+'/correction')
+    if not matched:
+        web_html+='<section class="panel side"><h2>ウェブから収集した参考情報（未確定）</h2><p>社名・住所から代表者とウェブサイトを調査しています。</p><dl class="facts"><dt>代表者（参考）</dt><dd>未取得（確認中）</dd><dt>ウェブサイトURL（候補）</dt><dd>未取得（確認中）</dd></dl><p class="small">照合結果は取得できた項目から掲載します。誤りがあれば<a href="'+ROOT+'/company/'+event_id+'/correction">修正依頼はこちら</a>へお知らせください。</p></section>'
     web_html+=render_reports(p.get('news_reports',[]))
     web_html+='<p class="small"><a href="'+ROOT+'/company/'+event_id+'/correction">掲載情報の修正依頼はこちら</a></p>'
     facts_html='<dl class="facts">'+''.join('<dt>'+e(k)+'</dt><dd>'+e(v)+'</dd>' for k,v in facts)+'</dl>'
@@ -357,8 +356,8 @@ async def save_news_enrichment(request:Request):
 @app.get('/api/enrichment-candidates')
 def enrichment_candidates(request:Request,search_enabled:bool=False):
     authorize(request)
-    eligible="((jsonb_array_length(COALESCE(payload->'website_candidates','[]'::jsonb))>0 OR jsonb_array_length(COALESCE(payload->'news_reports','[]'::jsonb))>0 OR payload ? 'web_profile')"+(" OR kind IN ('registration','bankruptcy')" if search_enabled else '')+")"
-    rows=query("SELECT id,payload FROM corporate_events WHERE published AND "+eligible+" AND (COALESCE(payload->>'web_version','')<>'2' OR COALESCE(payload->>'web_checked_at','')='' OR (payload->>'web_checked_at')::timestamptz<now()-interval '7 days') ORDER BY CASE WHEN jsonb_array_length(COALESCE(payload->'website_candidates','[]'::jsonb))>0 OR payload ? 'web_profile' THEN 0 ELSE 1 END, CASE WHEN kind='bankruptcy' THEN 0 ELSE 1 END, COALESCE(payload->>'web_checked_at',''),reported_date DESC,id LIMIT 6")
+    eligible="((jsonb_array_length(COALESCE(payload->'website_candidates','[]'::jsonb))>0 OR jsonb_array_length(COALESCE(payload->'news_reports','[]'::jsonb))>0 OR payload ? 'web_profile' OR (kind='bankruptcy' AND corporate_number<>''))"+(" OR kind IN ('registration','bankruptcy')" if search_enabled else '')+")"
+    rows=query("SELECT id,payload FROM corporate_events WHERE published AND "+eligible+" AND (COALESCE(payload->>'web_version','')<>'3' OR COALESCE(payload->>'web_checked_at','')='' OR (payload->>'web_checked_at')::timestamptz<now()-CASE WHEN payload->>'web_check_status'='search_deferred' THEN interval '1 day' ELSE interval '7 days' END) ORDER BY CASE WHEN kind='bankruptcy' THEN 0 ELSE 1 END, CASE WHEN jsonb_array_length(COALESCE(payload->'website_candidates','[]'::jsonb))>0 OR payload ? 'web_profile' THEN 0 WHEN corporate_number<>'' OR jsonb_array_length(COALESCE(payload->'news_reports','[]'::jsonb))>0 THEN 1 ELSE 2 END, COALESCE(payload->>'web_checked_at',''),reported_date DESC,id LIMIT 6")
     return {'items':rows}
 
 @app.post('/api/enrichment')
@@ -371,11 +370,15 @@ async def save_enrichment(request:Request):
         if not isinstance(items,list) or len(items)>10:raise ValueError()
         for item in items:
             if not isinstance(item.get('id'),str) or not isinstance(item.get('entity'),dict):raise ValueError()
+            if not isinstance(item.get('search_deferred',False),bool):raise ValueError()
             profile=item.get('profile')
             if profile:
                 from urllib.parse import urlsplit
                 urls=[profile['website_url']]+profile['evidence_urls']
                 if not 1<=len(urls)<=5:raise ValueError()
+                if profile.get('company_website_url'):
+                    if profile.get('website_source_url') not in profile['evidence_urls']:raise ValueError()
+                    urls.append(profile['company_website_url'])
                 for url in urls:
                     p=urlsplit(url)
                     if p.scheme not in {'http','https'} or not p.hostname or p.username or p.password or len(url)>2000:raise ValueError()
@@ -387,6 +390,7 @@ async def save_enrichment(request:Request):
                 if not isinstance(details,list) or len(details)>6:raise ValueError()
                 for detail in details:
                     if detail['label'] not in {'代表者','店舗・ブランド'} or not isinstance(detail['value'],str) or len(detail['value'])>100 or detail['source_url'] not in profile['evidence_urls']:raise ValueError()
+                    if not usable_value(detail['value']):raise ValueError()
                 if profile.get('verification_status','official') not in {'official','reference'}:raise ValueError()
                 if not isinstance(profile.get('source_title',''),str) or len(profile.get('source_title',''))>200:raise ValueError()
                 profile['checked_at']=datetime.now(timezone.utc).isoformat(timespec='seconds')
@@ -399,7 +403,8 @@ async def save_enrichment(request:Request):
                 hit=cur.fetchone()
                 if not hit or not same_entity(hit[0],item['entity']):continue
                 p=hit[0];profile=item.get('profile')
-                p['web_checked_at']=datetime.now(timezone.utc).isoformat(timespec='seconds');p['web_version']=2
+                p['web_checked_at']=datetime.now(timezone.utc).isoformat(timespec='seconds');p['web_version']=3
+                p['web_check_status']='search_deferred' if item.get('search_deferred') else 'checked'
                 if profile and profile.get('verification_status')=='reference' and p.get('web_profile') and p['web_profile'].get('verification_status')!='reference':
                     p['web_reference_profile']=profile
                 if profile and not (profile.get('verification_status')=='reference' and p.get('web_profile') and p['web_profile'].get('verification_status')!='reference'):

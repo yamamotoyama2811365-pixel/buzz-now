@@ -103,6 +103,7 @@ def preserve_profile(row,old):
             row['industry']=old['industry'];row['classification_basis']=old['classification_basis']
         if old.get('web_checked_at'):row['web_checked_at']=old['web_checked_at']
         if old.get('web_version'):row['web_version']=old['web_version']
+        if old.get('web_check_status'):row['web_check_status']=old['web_check_status']
         if old.get('web_profile'):row['web_profile']=old['web_profile']
         if old.get('web_reference_profile'):row['web_reference_profile']=old['web_reference_profile']
         if not row.get('industry') and old.get('web_profile',{}).get('primary_industry') and old['web_profile'].get('verification_status')!='reference':
