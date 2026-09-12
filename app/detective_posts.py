@@ -1,4 +1,4 @@
-"""Two-week character trial, gated on the approved investigator asset."""
+"""Legacy X character sender is disabled; approved media remains for Threads."""
 from pathlib import Path
 from datetime import datetime, timezone
 from . import social_schedule as plan
@@ -14,6 +14,10 @@ def media(day, slot):
 
 
 def run(db, sender, pause, enabled, configured, init_quote, cap, cooldown, mixed=False):
+    # Owner requested X's two character turns become normal news on 2026-09-12.
+    # Block even a direct/legacy invocation before claiming a slot or calling Buffer.
+    if not plan.X_CHARACTER_POSTS_ENABLED:
+        return {'sent': 0, 'reason': 'x_character_posts_disabled'}
     if not enabled or not configured:
         return {'sent':0, 'reason':'social_not_configured'}
     blocked = pause()
@@ -56,5 +60,6 @@ def status(db):
             'approved_scene_images':int(detective_media.inspect(ROOT)['ready']),
             'approved_media':detective_media.inspect(ROOT),
             'caption_prefix':'🕵️ SNS捜査官｜BUZZ NOW', 'caption_hashtags':['#SNS捜査官'],
-            'character_state':'trial_finished' if day>=14 else ('awaiting_approved_images' if not detective_media.inspect(ROOT)['ready'] else 'ready'),
+            'character_enabled':plan.X_CHARACTER_POSTS_ENABLED,
+            'character_state':'disabled_on_x' if not plan.X_CHARACTER_POSTS_ENABLED else ('trial_finished' if day>=14 else ('awaiting_approved_images' if not detective_media.inspect(ROOT)['ready'] else 'ready')),
             'profile_update':'not_performed'}

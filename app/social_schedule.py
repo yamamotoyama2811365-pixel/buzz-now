@@ -3,10 +3,12 @@ import json
 from datetime import datetime, timedelta, timezone
 
 JST = timezone(timedelta(hours=9))
-SLOTS = ((7,0,'trend'), (9,0,'trend'), (11,0,'trend'), (12,30,'character'),
+SLOTS = ((7,0,'trend'), (9,0,'trend'), (11,0,'trend'), (12,30,'trend'),
          (14,0,'trend'), (16,0,'trend'), (18,0,'trend'), (19,30,'trend'),
-         (21,0,'character'), (22,30,'trend'))
+         (21,0,'trend'), (22,30,'trend'))
 WINDOW_MINUTES = 30
+X_CHARACTER_POSTS_ENABLED = False
+# X-only news policy applied: 2026-09-12.
 
 
 def current_slot(now, kind):
@@ -26,6 +28,8 @@ def init(c):
 
 
 def reserve(c, kind, now, daily_cap=10, cooldown_minutes=60, mixed=False):
+    if kind == 'character' and not X_CHARACTER_POSTS_ENABLED:
+        return None, 'x_character_posts_disabled'
     slot = current_slot(now, 'mixed' if mixed else kind)
     if slot and mixed:
         slot['kind'] = kind
@@ -84,5 +88,5 @@ def trial_day(c, now):
 def status():
     return {'timezone':'Asia/Tokyo', 'window_minutes':WINDOW_MINUTES,
             'slots':[{'time':f'{h:02d}:{m:02d}','kind':k} for h,m,k in SLOTS],
-            'trend_slots':8,'character_slots':2,'character_trial_days':14,
+            'trend_slots':10,'character_slots':0,'character_trial_days':14,
             'missed_slots':'skip; no catch-up'}
