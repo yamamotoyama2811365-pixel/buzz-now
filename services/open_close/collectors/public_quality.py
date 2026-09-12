@@ -7,6 +7,10 @@ def valid_store_name(value):
     name = (value or "").strip()
     if not name or len(name) > 100:
         return False
+    # Punctuation/markup fragments (for example "＜") are not enough to
+    # identify a store. Keep the source record; only suppress public claims.
+    if not any(char.isalnum() for char in unicodedata.normalize("NFKC", name)):
+        return False
     if any(name.count(a) != name.count(b) for a, b in [("「", "」"), ("『", "』")]):
         return False
     return not re.search(r"に新店舗|に新店|がオープン|が開店|が閉店|をオープン|を出店|オープン予定|閉店予定|という|について", name)
@@ -31,7 +35,6 @@ def public_store(record):
     result["quality_pending"] = not valid_store_name(record.get("name"))
     if result["quality_pending"]:
         result["name"] = "店舗名未確認"
-        for field in ("category", "facility_name", "floor", "open_date", "close_date", "confidence"):
+        for field in ("status", "category", "facility_name", "floor", "open_date", "close_date", "confidence"):
             result[field] = None
     return result
-
