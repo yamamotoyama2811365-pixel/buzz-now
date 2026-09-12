@@ -1,7 +1,7 @@
-"""Per-platform 8:2 content rotation based on durable Buffer acceptances.
+"""Per-platform posting policy: X news only; Threads retains its 8:2 trial.
 
-Acceptance is not proof of network publication. Unknown submissions pause the
-channel rather than advancing its sequence or risking a duplicate.
+Counters record Buffer acceptance, not independently confirmed publication.
+Unknown submissions still block retries. Historical counters are never reset.
 """
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +15,15 @@ TRIAL_KEYS = {'x': 'detective_trial_start', 'threads': 'detective_threads_trial_
 APPROVED_ASSET = detective_media.ASSET
 
 
+def policy(platform):
+    if platform not in TRIAL_KEYS:
+        raise ValueError('unsupported platform')
+    enabled = platform == 'threads' or plan.X_CHARACTER_POSTS_ENABLED
+    return {'character_enabled': enabled, 'normal_per_10': 8 if enabled else 10,
+            'character_per_10': 2 if enabled else 0,
+            'character_positions': [5, 10] if enabled else []}
+
+
 def counts(c, platform):
     if platform == 'x':
         row = c.execute("SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN kind='character' THEN 1 ELSE 0 END),0) AS characters FROM social_schedule_log WHERE state='sent'").fetchone()
@@ -26,8 +35,7 @@ def counts(c, platform):
 
 
 def trial_day(c, platform, now):
-    key = TRIAL_KEYS[platform]
-    row = c.execute('SELECT value FROM system_state WHERE key=?', (key,)).fetchone()
+    row = c.execute('SELECT value FROM system_state WHERE key=?', (TRIAL_KEYS[platform],)).fetchone()
     if not row:
         return 0
     return (now.astimezone(plan.JST).date() - datetime.fromisoformat(row['value']).date()).days
@@ -39,10 +47,17 @@ def start_trial(c, platform, now):
 
 
 def next_kind(c, platform, now=None):
+    if not policy(platform)['character_enabled']:
+        return 'trend'
     now = now or datetime.now(timezone.utc)
     if not 0 <= trial_day(c, platform, now) < 14:
         return 'trend'
     return 'character' if (counts(c, platform)['accepted'] + 1) % 5 == 0 else 'trend'
+
+
+def ordinary_news_turn(c):
+    """Reclaimed fifth/tenth X turns go to original news, not quote posts."""
+    return not plan.X_CHARACTER_POSTS_ENABLED and (counts(c, 'x')['accepted'] + 1) % 5 == 0
 
 
 def pending(c, platform):
@@ -54,6 +69,8 @@ def pending(c, platform):
 
 
 def character_content(c, platform, now):
+    if not policy(platform)['character_enabled']:
+        return {'ok': False, 'reason': 'x_character_posts_disabled'}
     day = trial_day(c, platform, now)
     if not 0 <= day < 14:
         return {'ok': False, 'reason': 'character_trial_finished'}
@@ -74,14 +91,17 @@ def status(db):
         platforms = {}
         for platform in ('x', 'threads'):
             row = c.execute('SELECT value FROM system_state WHERE key=?', (TRIAL_KEYS[platform],)).fetchone()
-            platforms[platform] = {**counts(c, platform), 'next_kind': next_kind(c, platform, now),
+            rules = policy(platform)
+            platforms[platform] = {**counts(c, platform), **rules,
+                'next_kind': next_kind(c, platform, now),
                 'blocked_by_uncertain_submission': pending(c, platform),
                 'trial_start_jst': row['value'] if row else None,
-                'trial_active': 0 <= trial_day(c, platform, now) < 14}
-    return {'version': 2, 'normal_per_10': 8, 'character_per_10': 2,
-            'character_positions': [5,10], 'counter_basis': 'buffer_accepted_not_publication_confirmed',
+                'trial_active': rules['character_enabled'] and 0 <= trial_day(c, platform, now) < 14}
+    return {'version': 3, 'policy_revision': 'x-news-only-20260912',
+            'legacy_top_level_scope': 'x', **policy('x'),
+            'counter_basis': 'buffer_accepted_not_publication_confirmed',
             'trial_days': 14, 'x_counter_scope': 'persistent_slot_ledger',
-            'character_image': '/' + APPROVED_ASSET,
-            'media_revision': detective_media.REVISION,
+            'reclaimed_x_positions': [5, 10], 'reclaimed_x_content': 'ordinary_why_trending_news',
+            'character_image': '/' + APPROVED_ASSET, 'media_revision': detective_media.REVISION,
             'missed_slots': 'skip; preserve content sequence; never catch up in a burst',
             'platforms': platforms}

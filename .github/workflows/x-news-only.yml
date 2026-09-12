@@ -1,0 +1,86 @@
+name: X news-only policy verification
+on:
+  push:
+    branches: [fix/x-news-only-20260912, main]
+    paths: [app/main.py, app/social_mix.py, app/social_schedule.py, app/detective_posts.py, tests/test_x_news_only.py, tests/test_social_mix.py, tests/test_social_schedule.py, scripts/install_x_news_only.py, .github/workflows/x-news-only.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      DEMO_MODE: 'false'
+      REAL_DATA_MODE: 'false'
+      SOCIAL_AUTO_ENABLED: 'false'
+      THREADS_AUTO_ENABLED: 'false'
+      YAHOO_QUOTE_AUTO_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - run: python scripts/install_x_news_only.py
+      - run: python -m unittest discover -s tests -p test_x_news_only.py -v
+      - run: python -m unittest discover -s tests -p test_social_schedule.py -v
+      - run: python -m unittest discover -s tests -p test_social_mix.py -v
+      - run: python -m unittest discover -s tests -p test_detective_media.py -v
+      - run: python -m unittest discover -s tests -p test_shared_api.py -v
+      - run: python -m unittest discover -s tests -p test_visitor_analytics.py -v
+      - run: python -m unittest discover -s tests -p test_amazon_associate.py -v
+      - run: python -m compileall -q app scripts tests
+      - run: git diff --check
+  assemble-feature-only:
+    if: github.ref == 'refs/heads/fix/x-news-only-20260912'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - run: python scripts/install_x_news_only.py
+      - name: Commit only verified policy integration on the feature branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/main.py app/social_schedule.py tests/test_social_mix.py .github/workflows/social-mix.yml .github/workflows/detective-assets-final.yml
+          if ! git diff --cached --quiet; then
+            git commit -m 'Apply tested X news-only policy; preserve Threads rotation'
+            git push origin HEAD:fix/x-news-only-20260912
+          fi
+  production-read-only:
+    if: github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Verify live X policy and unchanged Threads without sending a post
+        run: |
+          python - <<'PY'
+          import json,time
+          from urllib.request import urlopen
+          from urllib.error import HTTPError,URLError
+          base='https://buzz-now-1.onrender.com'
+          for attempt in range(30):
+              try:
+                  with urlopen(base+'/api/social/schedule',timeout=15) as r: data=json.load(r)
+                  policy=data['mix_policy']; x=policy['platforms']['x']; threads=policy['platforms']['threads']
+                  assert policy['policy_revision']=='x-news-only-20260912'
+                  assert (x['normal_per_10'],x['character_per_10'],x['next_kind'])==(10,0,'trend')
+                  assert x['character_enabled'] is False and x['character_positions']==[]
+                  assert (threads['normal_per_10'],threads['character_per_10'])==(8,2)
+                  assert threads['character_enabled'] is True and threads['character_positions']==[5,10]
+                  assert data['character_state']=='disabled_on_x'
+                  assert data['trend_slots']==10 and data['character_slots']==0
+                  assert all(s['kind']=='trend' for s in data['slots'])
+                  assert data['posting_enabled']=={'x':True,'threads':True}
+                  with urlopen(base+'/health',timeout=15) as r: assert json.load(r)['ok']
+                  print(json.dumps({'verified':True,'policy':policy,'posting_enabled':data['posting_enabled'],'slots':data['slots'],'buffer_pause':data.get('buffer_pause'),'manual_post_sent':False},ensure_ascii=False))
+                  break
+              except (HTTPError,URLError,TimeoutError,ValueError,KeyError,AssertionError):time.sleep(10)
+          else:raise SystemExit('Live X policy not verified')
+          PY
