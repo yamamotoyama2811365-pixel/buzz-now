@@ -1,5 +1,6 @@
 from __future__ import annotations
 from .public_quality import public_store
+from .text_rules import city_conflicts_with_prefecture
 
 import html
 import json
@@ -340,6 +341,13 @@ def breadcrumb_json(origin, items):
 def render_area(database_url, origin, prefecture, city=None, page=1, per_page=40, status='all'):
     prefecture = (prefecture or "").strip()
     city = (city or "").strip() or None
+    if city_conflicts_with_prefecture(prefecture, city):
+        # Preserve the URL for review, but do not present contradictory data as
+        # an authoritative local guide or redirect it to an unverified region.
+        path = f"/area/{qpath(prefecture)}/{qpath(city)}"
+        body = '<main class="wrap panel"><h1>地域情報を確認中です</h1><p>都道府県と市区町村の分類に不一致があるため、この地域一覧の表示を停止しています。</p><p><a href="/">地域を選び直す</a></p></main>'
+        return page_shell(origin, f"地域情報を確認中｜{SITE_NAME}",
+                          "地域分類の確認が必要なページです。", path, body, noindex=True)
     page = max(1,int(page))
     status = (status or "all").strip().lower()
     if status not in ("all","opening","closing"):
@@ -537,6 +545,8 @@ def render_area(database_url, origin, prefecture, city=None, page=1, per_page=40
     facet_html = []
     for name,count in facets:
         if not name:
+            continue
+        if facet_type == "city" and city_conflicts_with_prefecture(prefecture, name):
             continue
         href = f"/area/{qpath(prefecture)}/{qpath(name)}" if facet_type=="city" else f"/category/{qpath(name)}"
         facet_html.append(f'<a class="facet" href="{href}">{esc(name)} <strong>{count}</strong></a>')
@@ -1265,6 +1275,8 @@ def sitemap_xml(database_url, origin, max_urls=45000):
                 ORDER BY prefecture,city
             """)
             for pref,city in cur.fetchall():
+                if city_conflicts_with_prefecture(pref, city):
+                    continue
                 urls.append(site_url(origin,f"/area/{qpath(pref)}/{qpath(city)}"))
 
             cur.execute("""
@@ -1300,5 +1312,3 @@ def robots_txt(origin):
         "Disallow: /api/\n"
         f"Sitemap: {origin.rstrip('/')}/sitemap.xml\n"
     )
-
-

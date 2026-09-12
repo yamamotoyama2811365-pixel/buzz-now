@@ -1,0 +1,24 @@
+name: Store data quality regression tests
+on:
+  push:
+    branches: [main]
+    paths: ['services/open_close/collectors/**', 'services/open_close/tests/**', '.github/workflows/store-quality-tests.yml']
+  pull_request:
+    paths: ['services/open_close/collectors/**', 'services/open_close/tests/**', '.github/workflows/store-quality-tests.yml']
+permissions:
+  contents: read
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Geography and public output tests (no database or network)
+        env:
+          PYTHONPATH: .
+        run: |
+          python -m unittest discover -s services/open_close/tests -p test_geography.py -v
+          python -m unittest discover -s services/open_close/tests -p test_public_quality.py -v

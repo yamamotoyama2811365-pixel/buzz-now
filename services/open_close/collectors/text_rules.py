@@ -131,10 +131,28 @@ def detect_prefecture(text):
 
 def detect_city(text):
     t=text or ""
-    m=re.search(r'([一-龥ぁ-んァ-ヶー]{1,10}市[一-龥ぁ-んァ-ヶー]{1,10}区)',t)
+    # Do not combine a prefecture chosen elsewhere with another area's city.
+    # Mixed-prefecture article text needs a verified address, not a guess.
+    mentioned = [p for p in PREFECTURES if p in t]
+    if len(mentioned) > 1:
+        return None
+    if mentioned:
+        t = t.replace(mentioned[0], " ")
+    chars = r"一-龥々ぁ-んァ-ヶー"
+    m=re.search(rf'([{chars}]{{1,15}}市[{chars}]{{1,10}}区)',t)
     if m:return m.group(1)
-    m=re.search(r'([一-龥ぁ-んァ-ヶー]{1,15}(?:市|区|町|村))',t)
+    # Prefer the municipality to the following neighbourhood (帯広市稲田町).
+    # Keep towns whose name contains 市, such as 上市町 and 下市町.
+    m=re.search(rf'([{chars}]{{1,15}}市)(?![町村])',t)
+    if m:return m.group(1)
+    m=re.search(rf'([{chars}]{{1,15}}(?:区|町|村))',t)
     return m.group(1) if m else None
+
+def city_conflicts_with_prefecture(prefecture, city):
+    """Only flag explicit contradictions; this is not a municipality registry."""
+    if not prefecture or not city:
+        return False
+    return any(p != prefecture and p in city for p in PREFECTURES)
 
 def detect_category(text, store_name=None):
     """
@@ -707,5 +725,3 @@ def exact_event_date_from_text(text, status):
                 pass
 
     return None
-
-
