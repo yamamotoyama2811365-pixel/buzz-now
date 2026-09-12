@@ -1,3 +1,4 @@
+# X-only news policy applied: 2026-09-12.
 name: Investigator approved image verification
 on:
   push:
@@ -67,7 +68,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 7
     steps:
-      - name: Check published image checksum and both active channel settings
+      - name: Check published image checksum and active Threads character settings
         run: |
           python - <<'PY'
           import hashlib,json,time
@@ -81,7 +82,8 @@ jobs:
                   assert media.get('revision')=='approved-photo-20260911' and media.get('ready')
                   assert status['caption_prefix']=='🕵️ SNS捜査官｜BUZZ NOW'
                   assert status['caption_hashtags']==['#SNS捜査官']
-                  assert status['mix_policy']['character_positions']==[5,10]
+                  assert status['mix_policy']['platforms']['threads']['character_positions']==[5,10]
+                  assert status['mix_policy']['platforms']['x']['character_positions']==[]
                   assert status['mix_policy']['character_image']==media['image']
                   assert status['posting_enabled']=={'x':True,'threads':True}
                   with urlopen(base+media['image'],timeout=15) as r:

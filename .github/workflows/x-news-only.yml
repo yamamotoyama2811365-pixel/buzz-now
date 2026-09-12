@@ -43,11 +43,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
       - run: python scripts/install_x_news_only.py
-      - name: Commit only verified policy integration on the feature branch
+      - name: Commit only verified source integration; no workflow writes
         run: |
+          git diff --exit-code -- .github/workflows
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app/main.py app/social_schedule.py tests/test_social_mix.py .github/workflows/social-mix.yml .github/workflows/detective-assets-final.yml
+          git add app/main.py app/social_schedule.py tests/test_social_mix.py
           if ! git diff --cached --quiet; then
             git commit -m 'Apply tested X news-only policy; preserve Threads rotation'
             git push origin HEAD:fix/x-news-only-20260912
