@@ -6845,6 +6845,10 @@ def auto_quote_yahoo_buzzing_now():
         return {"posted_count": 0, **pause}
     with db() as c:
         _ensure_quote_post_log(c)
+        # X-only news policy applied: 2026-09-12.
+        social_schedule.init(c)
+        if social_mix.ordinary_news_turn(c):
+            return {"posted_count": 0, "reason": "reserved_for_ordinary_news"}
         slot, reason = social_schedule.reserve(c, "trend", datetime.now(timezone.utc), SOCIAL_DAILY_CAP, SOCIAL_GLOBAL_COOLDOWN_MINUTES, mixed=True)
         if not slot:
             return {"posted_count": 0, "reason": reason}

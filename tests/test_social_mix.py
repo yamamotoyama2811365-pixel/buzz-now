@@ -1,3 +1,4 @@
+# X-only news policy applied: 2026-09-12.
 import os
 os.environ['DEMO_MODE'] = 'false'
 os.environ['REAL_DATA_MODE'] = 'false'
@@ -31,26 +32,27 @@ class MixTest(unittest.TestCase):
         else:
             self.c.execute('INSERT INTO threads_posts VALUES(?,?,1)', (n, -1 if kind=='character' else n+1))
 
-    def test_each_platform_has_two_per_ten(self):
-        for platform in ('x','threads'):
-            sequence=[]
-            for n in range(1,31):
-                kind=mix.next_kind(self.c,platform,self.now)
+    def test_x_news_only_and_threads_two_per_ten(self):
+        for platform in ('x', 'threads'):
+            sequence = []
+            for n in range(1, 31):
+                kind = mix.next_kind(self.c, platform, self.now)
                 sequence.append(kind)
-                self.accepted(platform,kind,n)
-            self.assertEqual([i+1 for i,k in enumerate(sequence) if k=='character'], [5,10,15,20,25,30])
+                self.accepted(platform, kind, n)
+            expected = [] if platform == 'x' else [5, 10, 15, 20, 25, 30]
+            self.assertEqual([i+1 for i, k in enumerate(sequence) if k == 'character'], expected)
             for start in range(21):
-                self.assertEqual(sequence[start:start+10].count('character'),2)
+                self.assertEqual(sequence[start:start+10].count('character'), 0 if platform == 'x' else 2)
 
     def test_independent_counters(self):
         for n in range(1,5): self.accepted('x','trend',n)
-        self.assertEqual(mix.next_kind(self.c,'x',self.now),'character')
+        self.assertEqual(mix.next_kind(self.c,'x',self.now),'trend')
         self.assertEqual(mix.next_kind(self.c,'threads',self.now),'trend')
 
     def test_skips_and_failures_do_not_advance(self):
         for n in range(1,5): self.accepted('x','trend',n)
         self.c.execute("INSERT INTO social_schedule_log VALUES('skip','character','skipped',?,'','')", (self.now.isoformat(),))
-        self.assertEqual(mix.next_kind(self.c,'x',self.now),'character')
+        self.assertEqual(mix.next_kind(self.c,'x',self.now),'trend')
         self.c.execute('INSERT INTO threads_posts VALUES(1,42,2)')
         self.assertEqual(mix.counts(self.c,'threads')['accepted'],0)
 
@@ -64,27 +66,29 @@ class MixTest(unittest.TestCase):
         self.c.execute('INSERT INTO threads_posts VALUES(1,42,0)')
         self.assertFalse(mix.pending(self.c,'threads'))
 
-    def test_mixed_slot_uses_count_not_old_time_role(self):
-        for n in range(1,5): self.accepted('x','trend',n)
-        self.assertIsNone(plan.current_slot(self.now,'character'))
-        slot, reason = plan.reserve(self.c,'character',self.now,mixed=True)
-        self.assertEqual(reason,'ok')
-        self.assertEqual(slot['kind'],'character')
-        self.assertEqual(plan.reserve(self.c,'character',self.now,mixed=True)[1],'slot_already_attempted')
+    def test_fifth_x_turn_accepts_news(self):
+        for n in range(1, 5): self.accepted('x', 'trend', n)
+        self.assertTrue(mix.ordinary_news_turn(self.c))
+        slot, reason = plan.reserve(self.c, 'trend', self.now, mixed=True)
+        self.assertEqual(reason, 'ok')
+        self.assertEqual(slot['kind'], 'trend')
+        self.assertEqual(plan.reserve(self.c, 'trend', self.now, mixed=True)[1], 'slot_already_attempted')
 
-    def test_news_cannot_take_character_turn(self):
-        for n in range(1,5): self.accepted('x','trend',n)
-        self.assertEqual(plan.reserve(self.c,'trend',self.now,mixed=True)[1],'content_kind_not_due')
+    def test_character_cannot_take_reassigned_news_turn(self):
+        for n in range(1, 5): self.accepted('x', 'trend', n)
+        self.assertEqual(plan.reserve(self.c, 'character', self.now, mixed=True)[1], 'x_character_posts_disabled')
+        self.assertEqual(plan.reserve(self.c, 'trend', self.now, mixed=True)[1], 'ok')
 
-    def test_trial_is_separate_and_not_extended(self):
-        mix.start_trial(self.c,'x',self.now-timedelta(days=14))
-        for n in range(1,5): self.accepted('x','trend',n)
-        self.assertEqual(mix.next_kind(self.c,'x',self.now),'trend')
-        self.assertEqual(mix.character_content(self.c,'x',self.now)['reason'],'character_trial_finished')
-        self.assertTrue(mix.character_content(self.c,'threads',self.now)['ok'])
+    def test_threads_trial_is_not_extended_by_x_change(self):
+        mix.start_trial(self.c, 'x', self.now-timedelta(days=14))
+        self.assertEqual(mix.next_kind(self.c, 'x', self.now), 'trend')
+        self.assertEqual(mix.character_content(self.c, 'x', self.now)['reason'], 'x_character_posts_disabled')
+        self.assertTrue(mix.character_content(self.c, 'threads', self.now)['ok'])
+        mix.start_trial(self.c, 'threads', self.now-timedelta(days=14))
+        self.assertEqual(mix.character_content(self.c, 'threads', self.now)['reason'], 'character_trial_finished')
 
     def test_existing_asset_and_simplified_caption(self):
-        for platform in ('x','threads'):
+        for platform in ('threads',):
             content=mix.character_content(self.c,platform,self.now)
             self.assertTrue(content['ok'])
             self.assertIn('SNS捜査官｜BUZZ NOW',content['text'])
