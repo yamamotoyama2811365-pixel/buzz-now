@@ -25,6 +25,7 @@ from app.migration_control import MigrationMaintenance, migration_settings
 from app import traffic_retention
 from app import city_corporate_social
 from app import city_corporate_activation
+from app import social_tracking
 
 BASE = Path(__file__).resolve().parent.parent
 DB_PATH = BASE / "buzznow.db"
@@ -2671,10 +2672,11 @@ def _social_reason_from_row(row, keyword: str) -> str:
     return f"{label}の関連情報を確認中。注目の原因はまだ特定できていません。"
 
 
-def _build_social_post_text(row) -> str:
+def _build_social_post_text(row, tracking_content: str = "news_context_v1") -> str:
     reason = _social_reason_from_row(row, str(row["keyword"]))
     url = (SOCIAL_PUBLIC_BASE_URL + _social_detail_path(row["slug"])
-           + "?utm_source=x&utm_medium=social&utm_campaign=prebuzz&utm_content=news_context_v1")
+           + "?utm_source=x&utm_medium=social&utm_campaign=prebuzz&utm_content="
+           + quote(tracking_content, safe=""))
     return f"BUZZ NOW｜話題をチェック\n{reason}\n背景・出典を確認 ↓\n{url}"
 
 
@@ -3045,8 +3047,8 @@ def _social_post_allowed(c, row, now_dt):
 def _auto_post_social_unscheduled(c, ts: str):
     """V30 production social dispatcher.
 
-    Uses only BUZZ NOW's own scored trend state. It sends qualifying topics to the
-    existing Make webhook, where Buffer publishes to X. Deduplication, cooldowns
+    Uses BUZZ NOW's source-backed trend state and the existing direct Buffer API
+    to publish to X. Deduplication, cooldowns
     and a daily cap live in PostgreSQL so restarts do not reset posting history.
     """
     result = {
@@ -3077,7 +3079,8 @@ def _auto_post_social_unscheduled(c, ts: str):
             result["skipped"].append({"keyword": row["keyword"], "reason": reason})
             continue
 
-        post_text = _build_social_post_text(row)
+        tracking_content = social_tracking.new_content_id()
+        post_text = _build_social_post_text(row, tracking_content)
 
         # Generate a contextual visual only for a topic that is actually about to post.
         # If image generation is disabled or fails, posting safely falls back to text+link.
@@ -3129,6 +3132,9 @@ def _auto_post_social_unscheduled(c, ts: str):
                 row["id"], row["keyword"], payload["pre_buzz_score"],
                 payload["traffic_potential"], post_text, 1 if ok else 0, ts
             ))
+
+            social_tracking.record(c, row["id"], ts, tracking_content,
+                                   buffer_result, post_text)
 
             if ok:
                 result["sent"] += 1
@@ -6317,10 +6323,15 @@ def social_history(limit: int = 20):
     limit = max(1, min(int(limit), 100))
     with db() as c:
         rows = c.execute("""
-            SELECT keyword,pre_buzz_score,traffic_potential,make_status,posted_at
+            SELECT trend_id,keyword,pre_buzz_score,traffic_potential,make_status,posted_at
             FROM social_posts ORDER BY id DESC LIMIT ?
         """, (limit,)).fetchall()
-    return {"ok": True, "items": [dict(r) for r in rows]}
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["tracking"] = social_tracking.lookup(c, item.pop("trend_id"), item["posted_at"])
+            items.append(item)
+    return {"ok": True, "tracking_version": 1, "items": items}
 
 
 @app.post("/api/collect-now")

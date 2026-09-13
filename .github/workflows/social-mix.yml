@@ -19,6 +19,7 @@ jobs:
       - run: python scripts/install_social_mix.py
       - run: python -m unittest discover -s tests -p test_social_mix.py -v
       - run: python -m unittest discover -s tests -p test_social_schedule.py -v
+      - run: python -m unittest discover -s tests -p test_social_tracking.py -v
       - run: python -m unittest discover -s tests -p test_visitor_analytics.py -v
       - run: python -m unittest discover -s tests -p test_shared_api.py -v
       - run: python -m unittest discover -s tests -p test_traffic_retention.py -v
