@@ -208,7 +208,12 @@ def detail(event_id:str):
     rows=query('SELECT id,payload FROM corporate_events WHERE id=%s AND published',[event_id])
     if not rows or rows[0]['payload']['company'] in {'運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗'}:raise HTTPException(404)
     p=rows[0]['payload']; title=p['company']+'｜'+p['stage']
-    facts=[('状況',p['stage']), (p.get('date_label','確認日'),p['reported_date']),('都道府県',p.get('prefecture') or '未確認'),('業種',p.get('industry') or '未確認'),('所在地',p.get('address') or '未確認'),('法人番号',p.get('corporate_number') or '未照合'),('業種の確認方法',p.get('classification_basis') or '確認できる情報なし')]
+    facts=[('状況',p['stage'])]
+    if p['kind']=='bankruptcy':
+        if p.get('event_date'):facts.append((p.get('event_date_label') or '手続日',p['event_date']))
+        facts.append(('報道日',p['reported_date']))
+    else:facts.append((p.get('date_label','確認日'),p['reported_date']))
+    facts.extend([('都道府県',p.get('prefecture') or '未確認'),('業種',p.get('industry') or '未確認'),('所在地',p.get('address') or '未確認'),('法人番号',p.get('corporate_number') or '未照合'),('業種の確認方法',p.get('classification_basis') or '確認できる情報なし')])
     web_profile=p.get('web_profile',{})
     profile=web_profile if web_profile.get('verification_status')!='reference' else {}
     web_html=''
@@ -220,7 +225,11 @@ def detail(event_id:str):
     web_html+='<p class="small"><a href="'+ROOT+'/company/'+event_id+'/correction">掲載情報の修正依頼はこちら</a></p>'
     facts_html='<dl class="facts">'+''.join('<dt>'+e(k)+'</dt><dd>'+e(v)+'</dd>' for k,v in facts)+'</dl>'
     paragraph=e(p['company'])+'について、公開情報を整理しました。'
-    if p['kind']=='bankruptcy':paragraph+=' 手続きの状況は「'+e(p['stage'])+'」です。報道時点の情報のため、その後の変更は出典でもご確認ください。'
+    if p['kind']=='bankruptcy':
+        paragraph+=' 手続きの状況は「'+e(p['stage'])+'」です。'
+        if p.get('event_date'):paragraph+=' 出典本文に明記された'+e(p.get('event_date_label') or '手続日')+'は'+e(p['event_date'])+'、報道日は'+e(p['reported_date'])+'です。'
+        else:paragraph+=' 手続き自体の日付は確認できていないため、表示している日付は報道日です。'
+        paragraph+=' 報道時点の情報のため、その後の変更は出典でもご確認ください。'
     else:paragraph+=' 表示日は法人番号の指定日です。設立年月日を確認した情報ではありません。'
     causes=p.get('causes',[])
     note=('<h2>出典に記載された背景</h2><p>'+e('、'.join(causes))+'に関する記述を検出しました。記事の語句から自動抽出した項目で、影響の大きさや因果関係を評価したものではありません。</p>') if causes else '<p class="small">背景要因は確認できていません。確認できない原因を推測して掲載しません。</p>'
@@ -237,7 +246,8 @@ def detail(event_id:str):
         links.append((p['industry']+'の倒産・新規法人情報','/industry/'+quote(p['industry'])))
     trail.append((p['company'],'/company/'+event_id))
     browse='<h2>地域・業種の掲載情報を見る</h2><div class="links">'+''.join('<a href="'+ROOT+url+'">'+e(label)+'</a>' for label,url in links)+'</div>'
-    description=p['company']+('（'+p['prefecture']+'）' if p.get('prefecture') else '')+'の'+topic+'。'+p['reported_date']+'、'+p['stage']+'。'
+    date_description=((p.get('event_date_label') or '手続日')+' '+p['event_date']+'、報道日 '+p['reported_date'] if p.get('event_date') else p['reported_date'])
+    description=p['company']+('（'+p['prefecture']+'）' if p.get('prefecture') else '')+'の'+topic+'。'+date_description+'、'+p['stage']+'。'
     description+=('業種：'+p['industry']+'。' if p.get('industry') else '')+'所在地と公開情報を出典付きで整理しています。'
     if p['kind']=='registration': description+='表示日は法人番号指定日で、設立日とは限りません。'
     return shell(title,'<div class="detail">'+breadcrumbs(trail)+'<div class="panel"><div class="eyebrow">COMPANY REPORT</div><h1>'+e(p['company'])+'</h1><span class="tag '+p['kind']+'">'+e(p['stage'])+'</span><p>'+paragraph+'</p>'+facts_html+web_html+note+'<p><a class="source" href="'+e(p['source_url'],quote=True)+'" target="_blank" rel="noopener noreferrer">出典：'+e(p['source_name'])+'で確認する ↗</a></p><h2>関連情報を調べる</h2><p><a class="source" href="'+search_url+'" target="_blank" rel="noopener noreferrer">会社名・所在地でGoogleマップを検索 ↗</a></p><p class="small">検索結果のリンクです。同名企業との一致、営業状況、口コミは未確認です。</p>'+browse+'</div></div>','/company/'+event_id,description=description)
