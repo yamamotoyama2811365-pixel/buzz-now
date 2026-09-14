@@ -5,6 +5,7 @@ from html import escape
 from urllib.parse import quote, urlencode
 from datetime import date
 from services.corporate.regional_editorial import summarize, render, banner
+from services.corporate.model import parse_news
 
 END = date(2026, 9, 13)
 
@@ -50,6 +51,31 @@ class RegionalTests(unittest.TestCase):
         for anchor in ['bankruptcy-feature','registration-feature']:
             self.assertIn('#'+anchor,banner('北海道'))
             self.assertIn('id="'+anchor+'"',html)
+
+    def test_explicit_proceeding_date_is_separate_from_report_date(self):
+        row=parse_news(
+            '【北海道】（株）CLAP／破産手続き開始決定',
+            '同社は、令和8年（2026年）8月26日に札幌地裁にて破産手続きの開始決定を受けました。',
+            'https://n-seikei.jp/2026/09/clapweb.html','2026-09-04','株式会社CLAP')
+        self.assertEqual(row['event_date'],'2026-08-26')
+        self.assertEqual(row['event_date_label'],'破産手続開始決定日')
+        self.assertEqual(row['reported_date'],'2026-09-04')
+
+    def test_unstated_or_future_proceeding_date_is_not_invented(self):
+        unstated=parse_news('【北海道】事例（株）／自己破産申請準備',
+                            '同社は自己破産申請の準備に入った。',
+                            'https://n-seikei.jp/2026/09/example.html','2026-09-04','事例株式会社')
+        future=parse_news('【北海道】事例（株）／破産手続き開始決定',
+                          '同社は2026年9月5日に破産手続きの開始決定を受けた。',
+                          'https://n-seikei.jp/2026/09/example2.html','2026-09-04','事例株式会社')
+        self.assertNotIn('event_date',unstated)
+        self.assertNotIn('event_date',future)
+
+    def test_regional_timeline_labels_event_and_report_dates(self):
+        html=render('北海道',[row(event_date='2026-08-26',event_date_label='破産手続開始決定日',
+                                  day='2026-09-04',stage='破産関連（報道）')],END)
+        self.assertIn('破産手続開始決定日 2026-08-26',html)
+        self.assertIn('報道日 2026-09-04',html)
 
     def test_listing_preserves_canonical_and_scopes_feature(self):
         # 実際のlisting関数を実行。DBと外部タグだけ境界で置換する。

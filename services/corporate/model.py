@@ -23,7 +23,10 @@ def validate(row):
     if row.get('kind') not in {'bankruptcy','registration'}: raise ValueError('invalid kind')
     for k in ['company','stage','reported_date','source_url','source_name']:
         if not isinstance(row.get(k),str) or not row[k] or len(row[k])>1000: raise ValueError(k)
-    date.fromisoformat(row['reported_date'])
+    reported=date.fromisoformat(row['reported_date'])
+    if row.get('event_date'):
+        event=date.fromisoformat(row['event_date'])
+        if event>reported or not row.get('event_date_label'):raise ValueError('event date')
     host=urlparse(row['source_url']).hostname
     if host not in {'n-seikei.jp','www.n-seikei.jp','www.houjin-bangou.nta.go.jp'}: raise ValueError('source host')
     if row['kind']=='registration' and not re.fullmatch(r'\d{13}',row.get('corporate_number','')): raise ValueError('corporate number')
@@ -38,6 +41,25 @@ def stage_from_title(title):
     if '民事再生' in title: return '民事再生（報道）'
     if '特別清算' in title: return '特別清算（報道）'
     return ''
+
+PROCEEDING_DATE_PATTERNS=(
+    (r'(20\d{2})年[）)]?\s*(\d{1,2})月\s*(\d{1,2})日[^。]{0,120}?破産手続(?:き)?(?:の)?開始決定','破産手続開始決定日'),
+    (r'(20\d{2})年[）)]?\s*(\d{1,2})月\s*(\d{1,2})日[^。]{0,120}?民事再生手続(?:き)?(?:の)?開始決定','民事再生手続開始決定日'),
+    (r'(20\d{2})年[）)]?\s*(\d{1,2})月\s*(\d{1,2})日[^。]{0,120}?特別清算(?:の)?開始命令','特別清算開始命令日'),
+)
+
+def proceeding_date(body,published):
+    """Extract a court-proceeding date only when source text states year and procedure."""
+    report_day=date.fromisoformat(published)
+    for pattern,label in PROCEEDING_DATE_PATTERNS:
+        match=re.search(pattern,body[:6000])
+        if not match:continue
+        try:day=date(*map(int,match.groups()))
+        except ValueError:continue
+        # A proceeding cannot be confirmed from a report dated before it.
+        if day>report_day:continue
+        return day.isoformat(),label
+    return '',''
 
 GENERIC_NAMES={'運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗'}
 
@@ -77,7 +99,12 @@ def parse_news(title, body, url, published, company_hint=''):
     title_industries=[k for k,words in INDUSTRIES.items() if any(w in title for w in words)]
     industry=title_industries[0] if len(title_industries)==1 else industries[0] if len(industries)==1 else ''
     causes=[k for k,words in CAUSES.items() if any(w in body for w in words)]
-    return validate(dict(kind='bankruptcy',company=company,corporate_number='',prefecture=pref,industry=industry,stage=stage,reported_date=published,source_name='JC-NET',source_url=url,causes=causes,address='',classification_basis='記事の記載から自動分類' if industry else '',date_label='報道日'))
+    row=dict(kind='bankruptcy',company=company,corporate_number='',prefecture=pref,industry=industry,stage=stage,reported_date=published,source_name='JC-NET',source_url=url,causes=causes,address='',classification_basis='記事の記載から自動分類' if industry else '',date_label='報道日')
+    event_date,event_label=proceeding_date(body,published)
+    if event_date:
+        row['event_date']=event_date
+        row['event_date_label']=event_label
+    return validate(row)
 
 def parse_registration(node):
     get=lambda tag:(node.findtext(tag) or '').strip()
