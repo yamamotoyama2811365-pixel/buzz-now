@@ -42,7 +42,7 @@ def _source(referrer,base):
     except ValueError:return 'other'
     if not host:return 'direct'
     if host==own:return 'internal'
-    if host=='google.com' or host.endswith('.google.com'):return 'google'
+    if host in {'google.com','google.co.jp','www.google.co.jp'} or host.endswith('.google.com'):return 'google'
     if host=='yahoo.co.jp' or host.endswith('.yahoo.co.jp'):return 'yahoo'
     if host=='bing.com' or host.endswith('.bing.com'):return 'bing'
     return 'referral'
