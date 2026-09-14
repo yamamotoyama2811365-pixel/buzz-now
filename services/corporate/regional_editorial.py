@@ -46,10 +46,17 @@ def banner(prefecture, root='/corporate'):
 def examples(rows, registration, root):
     if not rows:
         return '<p>この期間に出典付きで掲載できる事案はありません。地域全体で発生・設立がなかったという意味ではありません。</p>'
-    parts = ['<div class="feature-table"><table><caption>掲載データのうち日付が新しい順、最大5件</caption><thead><tr><th scope="col">法人・出典</th><th scope="col">' + ('法人番号指定日' if registration else '報道日・掲載時の状況') + '</th><th scope="col">所在地（掲載情報）</th></tr></thead><tbody>']
+    parts = ['<div class="feature-table"><table><caption>掲載データのうち日付が新しい順、最大5件</caption><thead><tr><th scope="col">法人・出典</th><th scope="col">' + ('法人番号指定日' if registration else '出来事日・報道日・状況') + '</th><th scope="col">所在地（掲載情報）</th></tr></thead><tbody>']
     for row in rows[:5]:
         p = row['payload']
-        parts.append('<tr><td><a href="' + root + '/company/' + quote(row['id'], safe='') + '">' + escape(p['company']) + '</a><br><a class="source" href="' + escape(p['source_url'], quote=True) + '" rel="noopener noreferrer" target="_blank">' + escape(p.get('source_name') or '出典') + ' ↗</a></td><td>' + escape(p['reported_date']) + ('' if registration else '<br>' + escape(p.get('stage') or '確認中')) + '</td><td>' + escape(p.get('address') or '詳しい所在地は未確認') + '</td></tr>')
+        if registration:
+            timeline=escape(p['reported_date'])
+        else:
+            timeline=''
+            if p.get('event_date'):
+                timeline=escape(p.get('event_date_label') or '手続日')+' '+escape(p['event_date'])+'<br>'
+            timeline+='報道日 '+escape(p['reported_date'])+'<br>'+escape(p.get('stage') or '確認中')
+        parts.append('<tr><td><a href="' + root + '/company/' + quote(row['id'], safe='') + '">' + escape(p['company']) + '</a><br><a class="source" href="' + escape(p['source_url'], quote=True) + '" rel="noopener noreferrer" target="_blank">' + escape(p.get('source_name') or '出典') + ' ↗</a></td><td>' + timeline + '</td><td>' + escape(p.get('address') or '詳しい所在地は未確認') + '</td></tr>')
     return ''.join(parts) + '</tbody></table></div>'
 
 def render(prefecture, rows, end, root='/corporate', truncated=False, checked_at=None):
