@@ -5,6 +5,8 @@ Buffer API key but never the BUZZ NOW X channel id. Posts only factual fields
 already published by the two sites; no generated claims or inferred causes.
 """
 import os
+import json
+from . import city_corporate_digest as digest
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -132,18 +134,25 @@ def run(shared_db, sender, now=None):
         # keep a small durable sent-key set in system_state; no external-user data is stored.
         rows=c.execute("SELECT key FROM system_state WHERE key LIKE ?",(PREFIX+'sent:%',)).fetchall()
         seen={r['key'].removeprefix(PREFIX+'sent:') for r in rows}
-        candidate=_close_candidate(cfg['open_close_dsn'],seen) if slot['kind']=='close' else _bankruptcy_candidate(cfg['corporate_dsn'],seen)
+        regional = slot['kind']=='bankruptcy' and slot['start'].hour==18
+        doc = digest.candidate(cfg['corporate_dsn'],seen,now.astimezone(JST).date()) if regional else None
+        candidate = (('digest:'+doc['id'], doc) if doc else None) if regional else (_close_candidate(cfg['open_close_dsn'],seen) if slot['kind']=='close' else _bankruptcy_candidate(cfg['corporate_dsn'],seen))
         _state_set(c,'slot:'+slot['key'],'reserved');c.commit()
         if not candidate:
             _state_set(c,'slot:'+slot['key'],'no_candidate');c.commit()
             return {'sent':0,'reason':'no_fresh_candidate','kind':slot['kind']}
         key,row=candidate
-        text=close_text(row) if slot['kind']=='close' else bankruptcy_text(row)
+        text=digest.post_text(doc) if regional else (close_text(row) if slot['kind']=='close' else bankruptcy_text(row))
         # X limit is 280 characters; keep link/hashtags but never truncate factual names into ambiguity.
-        if len(text)>275:
+        if not regional and len(text)>275:
             text='\n'.join(text.splitlines()[:3])+'\n'+('詳細 → https://open-close-map.onrender.com/store/'+str(row['id']) if slot['kind']=='close' else '詳細 → https://buzz-now-1.onrender.com/corporate/company/'+str(row['id']))
         # Reserve the item before submitting. An uncertain response must not
         # cause the same bankruptcy/closure to be sent again in another slot.
+        if regional:
+            _state_set(c,'digest:'+doc['id'],json.dumps(doc,ensure_ascii=False))
+            for item in doc['items']:
+                _state_set(c,'sent:bankruptcy:'+item['id'],'pending:'+now.isoformat())
+            _state_set(c,'tracking:'+doc['id'],json.dumps({'format':'regional','utm_content':doc['id'],'attempted_at':now.isoformat(),'buffer_post_id':None}))
         _state_set(c,'sent:'+key,'pending:'+now.isoformat());c.commit()
         try:
             result=sender(cfg['channel_id'],text,'','shareNow')
@@ -151,6 +160,8 @@ def run(shared_db, sender, now=None):
             _state_set(c,'slot:'+slot['key'],'uncertain');c.commit()
             return {'sent':0,'reason':'submission_uncertain','kind':slot['kind']}
 
+        if regional:
+            _state_set(c,'tracking:'+doc['id'],json.dumps({'format':'regional','utm_content':doc['id'],'attempted_at':now.isoformat(),'buffer_post_id':result.get('post_id'),'buffer_accepted':bool(result.get('ok'))}))
         if result.get('ok'):
             _state_set(c,'sent:'+key,now.isoformat())
             _state_set(c,'slot:'+slot['key'],'sent');c.commit()
@@ -165,4 +176,6 @@ def status():
             'sources':{'open_close':bool(cfg['open_close_dsn']),'corporate':bool(cfg['corporate_dsn'])},
             'daily_cap':cfg['daily_cap'],'timezone':'Asia/Tokyo',
             'slots':[{'time':f'{h:02d}:{m:02d}','kind':kind} for h,m,kind in SLOTS],
-            'account_role':'街と企業の変化速報（X専用）'}
+            'account_role':'街と企業の変化速報（X専用）',
+            'regional_pilot':{'version':digest.VERSION,'slot':'18:15','target_minimum_items':3,'fallback_minimum_items':1,'maximum_items':5,'period_days':7,'insufficient_items':'expand_prefecture_block_eastwest_national','comparison_slot':'10:30'}}
+

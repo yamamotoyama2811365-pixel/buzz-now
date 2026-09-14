@@ -6905,6 +6905,9 @@ if os.getenv("OPEN_CLOSE_ENABLED", "false").lower() == "true" and not LEGACY_SER
 # Corporate Signal shares this instance but has its own Neon database and collector identity.
 if os.getenv("CORPORATE_ENABLED", "false").lower() == "true" and not LEGACY_SERVICE:
     from services.corporate.main import app as corporate_app
+    from app.city_corporate_digest import install as install_city_digest
+    from services.corporate.main import shell as corporate_shell
+    install_city_digest(corporate_app, db, corporate_shell)
     app.mount("/corporate", corporate_app)
 
 
@@ -6922,3 +6925,4 @@ app.include_router(site_icons_router)
 def city_corporate_x_status():
     """Read only: cached configuration/identity; no posting or credentials."""
     return city_corporate_activation.status()
+

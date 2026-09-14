@@ -13,7 +13,7 @@ _lock = threading.Lock()
 _last_run = {}
 # Count only our generated, ASCII detail URLs as t.co links. Other text is
 # counted conservatively (non-ASCII as two) rather than risking overlong posts.
-_LINK = re.compile(r'https://(?:open-close-map\.onrender\.com/store/[0-9]+|buzz-now-1\.onrender\.com/corporate/company/[a-zA-Z0-9_-]+)(?=\s|$)')
+_LINK = re.compile(r'https://(?:open-close-map\.onrender\.com/store/[0-9]+|buzz-now-1\.onrender\.com/corporate/(?:company/[a-zA-Z0-9_-]+|roundup/[a-f0-9]{20}(?:\?utm_source=twitter&utm_medium=social&utm_campaign=citycorp_regional&utm_content=[a-f0-9]{20})?))(?=\s|$)')
 
 
 def weighted_length(text):
@@ -125,3 +125,4 @@ def status():
             'last_run': dict(_last_run),
             'next_slot': slots[0] if slots else None,
             'note': 'sent denotes Buffer acceptance, not verified X publication; slots without eligible facts are skipped.'}
+
