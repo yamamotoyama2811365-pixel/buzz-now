@@ -19,6 +19,7 @@ from .model import validate, identity, normalized_name, PREFECTURES, INDUSTRIES,
 from .news import render_reports, validate_reports
 from .reference import render_reference
 from .profile_fields import combine_profiles, usable_value
+from .regional_editorial import banner as regional_banner, render as render_regional_editorial
 
 app=FastAPI(title='企業倒産・新規法人情報サイト',docs_url=None,redoc_url=None)
 BASE=os.getenv('CORPORATE_PUBLIC_URL','https://buzz-now-1.onrender.com/corporate').rstrip('/')
@@ -140,6 +141,18 @@ def kind_tabs(kind,path,prefecture='',industry='',q=''):
         links.append('<a class="status-tab '+(value or 'all')+(' active' if active else '')+'" href="'+e(href,quote=True)+'"'+(' aria-current="page"' if active else '')+'>'+label+'</a>')
     return '<nav class="status-tabs" aria-label="企業情報の切り替え">'+''.join(links)+'</nav>'
 
+def regional_feature(prefecture):
+    end=datetime.now(timezone(timedelta(hours=9))).date()-timedelta(days=1)
+    def read():
+        rows=query("SELECT id,payload,first_seen,updated_at FROM corporate_events WHERE published AND prefecture=%s AND reported_date BETWEEN %s AND %s AND company NOT IN ('運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗') ORDER BY reported_date DESC,id DESC LIMIT 5001",[prefecture,end-timedelta(days=29),end])
+        latest=max((r['updated_at'] for r in rows),default=None)
+        stamp=latest.astimezone(timezone(timedelta(hours=9))).strftime('%Y-%m-%d %H:%M JST') if latest else None
+        return render_regional_editorial(prefecture,rows[:5000],end,ROOT,truncated=len(rows)>5000,checked_at=stamp)
+    try:
+        return cached(('regional-editorial',prefecture,str(end)),read,300)
+    except psycopg2.Error:
+        return '<section class="panel region-feature"><h2>地域の編集特集</h2><p>集計情報を一時的に取得できません。取得できない件数はゼロとして表示しません。下の一覧と出典をご確認ください。</p></section>'
+
 def listing(title,kind='',prefecture='',industry='',q='',page=1,path='/',search=False):
     if kind not in {'','bankruptcy','registration'}:raise HTTPException(400,'Invalid kind')
     result=records(kind,prefecture,industry,q,page)
@@ -151,12 +164,18 @@ def listing(title,kind='',prefecture='',industry='',q='',page=1,path='/',search=
     intro='<div class="eyebrow">BUSINESS INTELLIGENCE / JAPAN</div><div class="hero"><div><h1>'+e(title).replace('・','・<wbr>')+'</h1><p>会社の変化を、いち早く。<br>倒産速報と新しい法人の情報を、地域・業種・出典から読み解く。</p></div><div class="live"><strong>●</strong>公開情報を自動収集</div></div>'
     if path!='/': intro=breadcrumbs([('ホーム','/'),(title,path)])+intro
     intro+='<p>'+e(description)+'</p>'
+    feature=''
+    if prefecture and path.startswith('/area/') and page==1:
+        intro+=regional_banner(prefecture,ROOT)
+        if not kind:
+            feature=regional_feature(prefecture)
+            description+=' 地域特集で直近の掲載事案・月次統計と編集部の見方を解説。'
     if path=='/':
         a=analysis();intro+='<div class="metrics"><div class="metric"><span>直近30日・収集倒産事案</span><strong>'+str(a['bankruptcies'])+'</strong><span>名寄せによる参考件数</span></div><div class="metric"><span>直近30日・新規法人番号</span><strong>'+format(a['registrations'],',')+'</strong><span>収集済みの指定データ</span></div><div class="metric"><span>業種を分類できた事案</span><strong>'+str(a['classified'])+'</strong><span>本文に記載のある情報から分類</span></div></div>'
     if kind=='registration': intro+='<div class="notice">国税庁が新たに法人番号を指定した会社を掲載しています。指定日は設立日と一致するとは限りません。</div>'
     page_url=lambda n:ROOT+path+'?'+urlencode(dict(kind=kind,prefecture=prefecture,industry=industry,q=q,page=n))
     pages='<div class="pager">'+('<a href="'+e(page_url(page-1),quote=True)+'">← 前のページ</a>' if page>1 else '<span></span>')+('<a href="'+e(page_url(page+1),quote=True)+'">次のページ →</a>' if result['total']>page*40 else '')+'</div>'
-    return shell(title,intro+kind_tabs(kind,path,prefecture,industry,q)+filters(kind,prefecture,industry,q)+'<div class="layout"><section class="panel"><h2>掲載情報 <span class="small">'+str(result['total'])+'件</span></h2>'+cards(result['items'])+pages+'</section>'+side()+'</div>',path+('?' + urlencode({**({'kind':kind} if kind and (path.startswith('/area/') or path.startswith('/industry/')) else {}),**({'page':page} if page>1 else {})}) if page>1 or (kind and (path.startswith('/area/') or path.startswith('/industry/'))) else ''),noindex=search or not result['items'],description=description+(' '+str(page)+'ページ目。' if page>1 else ''))
+    return shell(title,intro+kind_tabs(kind,path,prefecture,industry,q)+filters(kind,prefecture,industry,q)+'<div class="layout"><div>'+feature+'<section class="panel"><h2>掲載情報 <span class="small">'+str(result['total'])+'件</span></h2>'+cards(result['items'])+pages+'</section></div>'+side()+'</div>',path+('?' + urlencode({**({'kind':kind} if kind and (path.startswith('/area/') or path.startswith('/industry/')) else {}),**({'page':page} if page>1 else {})}) if page>1 or (kind and (path.startswith('/area/') or path.startswith('/industry/'))) else ''),noindex=search or not result['items'],description=description+(' '+str(page)+'ページ目。' if page>1 else ''))
 
 @app.get('/health')
 def health():return {'ok':True,'database_configured':bool(DSN),'hosting':'shared','news_enrichment_version':2,'reference_enrichment_version':2}
