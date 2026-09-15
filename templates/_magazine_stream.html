@@ -1,18 +1,19 @@
 {% if viral_posts %}
-<section class="section bn-mag-social" aria-label="SNSで話題の公開投稿" data-magazine-stream="x">
-  <div class="bn-mag-head">
-    <div><div class="kicker">SOCIAL BUZZ</div><h2>SNSで話題の投稿</h2></div>
-    <span class="bn-live-pill">X PUBLIC POSTS</span>
+<section class="section bn-mag-social" aria-label="注目のトピック" data-magazine-stream="x">
+  <div class="bn-mag-head bn-mag-head-centered">
+    <div><div class="kicker">SOCIAL BUZZ</div><h2>💬 注目のトピック</h2></div>
+    <span class="bn-live-pill">PUBLIC POSTS</span>
   </div>
-  <p class="mini">関連投稿を優先し、BUZZ NOWが最近検出した公開投稿をX公式の埋め込みで表示しています。投稿本文や画像をBUZZ NOW側へ転載保存しているものではありません。</p>
-  <div class="bn-x-grid">
+  <p class="mini">いま反応が集まっている公開投稿を、関連度の高い順に公式埋め込みで表示しています。BUZZ NOW側で投稿本文や画像を転載保存していません。</p>
+  <div class="bn-x-stack">
     {% for post in viral_posts %}
-    <div class="bn-x-card">
+    <article class="bn-x-quote-card">
+      <div class="bn-x-quote-mark" aria-hidden="true">“</div>
       <span class="bn-x-label">{% if post.is_related %}この話題に関連{% else %}SNS注目{% endif %} · {{ post.keyword }}</span>
       <blockquote class="twitter-tweet" data-theme="dark" data-dnt="true" data-conversation="none">
         <a href="{{ post.tweet_url }}" target="_blank" rel="nofollow noopener noreferrer">Xの公開投稿を見る ↗</a>
       </blockquote>
-    </div>
+    </article>
     {% endfor %}
   </div>
   <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
@@ -20,19 +21,28 @@
 {% endif %}
 
 {% if magazine_rows %}
-<section class="section bn-mag-related" aria-label="いま読まれている話題" data-magazine-stream="internal">
+<section class="section bn-mag-related" aria-label="新着・注目記事" data-magazine-stream="internal">
   <div class="bn-mag-head">
-    <div><div class="kicker">BUZZ MAGAZINE</div><h2>いま読まれている・伸びている話題</h2></div>
+    <div><div class="kicker">BUZZ MAGAZINE</div><h2>📰 新着・注目記事</h2></div>
     <span class="bn-live-pill">KEEP READING</span>
   </div>
-  <div class="bn-mag-grid">
+  <div class="bn-mag-news-list">
     {% for item in magazine_rows %}
-    <a class="bn-mag-card" href="/trend/{{ item.slug|urlencode }}" data-reading-placement="magazine_stream">
-      <span class="bn-mag-rank">{{ loop.index }}</span>
-      <span class="bn-mag-card-copy"><strong>{{ item.keyword }}</strong><small>{{ item.status }}{% if item.views %} · 直近7日 {{ item.views }}PV{% endif %}</small></span>
-      <span aria-hidden="true">→</span>
+    <a class="bn-mag-news-card" href="/trend/{{ item.slug|urlencode }}" data-reading-placement="magazine_stream">
+      <span class="bn-mag-thumb" aria-hidden="true">
+        <img src="/api/social/image/{{ item.id }}.jpg" alt="" loading="lazy" decoding="async" onerror="this.style.display='none';this.parentElement.classList.add('bn-mag-thumb-fallback')">
+        <span class="bn-mag-thumb-word">{{ item.keyword[:6] }}</span>
+      </span>
+      <span class="bn-mag-news-copy">
+        <small>{% if item.views %}直近7日 {{ item.views }}PV{% else %}いま注目{% endif %} · {{ item.status }}</small>
+        <strong>【話題】{{ item.keyword }}はなぜ注目？いま確認できる情報を整理</strong>
+      </span>
+      <span class="bn-mag-arrow" aria-hidden="true">›</span>
     </a>
     {% endfor %}
+  </div>
+  <div class="bn-mag-more-wrap">
+    <a class="bn-mag-more" href="/" data-reading-placement="magazine_more">⌕ 他のトピックを探す</a>
   </div>
 </section>
 {% endif %}
