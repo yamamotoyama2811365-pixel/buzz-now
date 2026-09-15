@@ -1,0 +1,25 @@
+name: Verify magazine click JS fix
+on:
+  push:
+    branches: [fix/magazine-click-js-20260915]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DEMO_MODE: 'false'
+      REAL_DATA_MODE: 'false'
+      SOCIAL_AUTO_ENABLED: 'false'
+      THREADS_AUTO_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - run: pip install -r requirements.txt
+      - run: node tests/test_visitor_analytics_browser.cjs
+      - run: python -m unittest discover -s tests -p test_magazine_click_tracking.py -v
+      - run: python -m unittest discover -s tests -p test_visitor_analytics.py -v
+      - run: python -m compileall -q app scripts tests
+      - run: git diff --check
