@@ -160,9 +160,20 @@ def validate_reports(reports):
     return reports
 
 def render_reports(reports):
-    if not reports: return ''
+    """Render cited reports plus a durable guide for interpreting company pages.
+
+    The guide is intentionally useful even when no secondary report has been found.
+    It explains what dates and labels mean without inventing any company-specific fact.
+    """
     e = escape
-    html = '<h2>関連する倒産ニュース</h2><p class="small">各記事の報道内容を整理しています。代表者・店舗との関係は報道時点の記載で、店舗の現在の営業状況を示すものではありません。</p>'
+    html = '<section class="panel side"><h2>この企業情報の読み方</h2>'
+    html += '<p>このページは、公開された報道や法人情報から確認できた項目を整理したものです。会社名、所在地、業種、手続きの状況、報道日などは、確認できた情報と未確認の情報を分けて表示しています。</p>'
+    html += '<p>倒産関連のページでは、報道日と破産・民事再生・特別清算などの手続日が同じとは限りません。出典で手続日を確認できない場合は推測で補わず、報道日だけを表示します。新規法人のページでは、法人番号の指定日を会社の設立日として扱いません。</p>'
+    html += '<p class="small">代表者、ウェブサイト、事業内容などの補足情報は社名・所在地等で照合し、出典を確認できたものだけを参考情報として掲載します。現在の営業状況や信用状態を評価するページではありません。</p></section>'
+    if not reports:
+        html += '<p class="small">追加の関連報道は現在確認中です。確認できない情報を推測で補完しません。</p>'
+        return html
+    html += '<h2>関連する倒産ニュース</h2><p class="small">各記事の報道内容を整理しています。代表者・店舗との関係は報道時点の記載で、店舗の現在の営業状況を示すものではありません。</p>'
     for r in reports:
         html += '<section class="panel side"><h3><a class="source" target="_blank" rel="noopener noreferrer" href="'+e(r['url'],quote=True)+'">'+e(r['title'])+' ↗</a></h3>'
         html += '<p class="small">出典：'+e(r['publisher'])+' ｜ 掲載日：'+e(r['published_date'] or '未確認')+' ｜ 確認日：'+e(r['checked_at'][:10])+'</p>'
