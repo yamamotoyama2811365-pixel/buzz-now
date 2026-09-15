@@ -2990,7 +2990,7 @@ def auto_post_threads():
         c.commit()
         c.close()
         c = None
-        if SOCIAL_TEXT_ONLY:
+        if SOCIAL_TEXT_ONLY and kind != 'character':
             image_url = ''
         response = _send_to_buffer_channel(channel_id, text, image_url, 'shareNow')
         accepted = bool(response.get('ok'))
