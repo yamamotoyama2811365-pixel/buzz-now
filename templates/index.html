@@ -14,6 +14,18 @@
 <style>
   .top-tab{text-decoration:none;display:flex;align-items:center;justify-content:center;cursor:pointer;}
   html{scroll-behavior:smooth;}
+  .about-buzznow-copy{margin-top:14px;padding:22px;border:1px solid rgba(148,163,184,.22);border-radius:20px;background:rgba(15,23,42,.38);}
+  .about-buzznow-copy h2{margin:0 0 10px;font-size:clamp(22px,4vw,32px);}
+  .about-buzznow-copy p{margin:8px 0;color:#cbd5e1;line-height:1.9;}
+  .about-buzznow-links{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:16px;}
+  .about-buzznow-links a{display:block;padding:14px;border:1px solid rgba(148,163,184,.24);border-radius:14px;color:inherit;text-decoration:none;background:rgba(30,41,59,.45);}
+  .about-buzznow-links strong{display:block;margin-bottom:4px;}
+  .about-buzznow-links span{font-size:12px;color:#94a3b8;line-height:1.5;}
+  .top-fresh-list{display:grid;gap:8px;margin-top:16px;}
+  .top-fresh-list a{display:block;padding:12px 14px;border-radius:12px;border:1px solid rgba(148,163,184,.18);color:inherit;text-decoration:none;}
+  .top-fresh-list strong{display:block;}
+  .top-fresh-list span{display:block;margin-top:3px;color:#94a3b8;font-size:12px;line-height:1.6;}
+  @media(max-width:720px){.about-buzznow-links{grid-template-columns:1fr;}}
 </style>
     <!-- Google AdSense -->
     <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5776658615046901" crossorigin="anonymous"></script>
@@ -23,7 +35,7 @@
   "@context": "https://schema.org",
   "@type": "WebSite",
   "name": "BUZZ NOW",
-  "url": "https://buzz-now.onrender.com/",
+  "url": "https://buzz-now-1.onrender.com/",
   "description": "BUZZ NOWは、いま話題のキーワードだけでなく、次にバズる可能性のある話題をデータから先読みするトレンド発見サイトです。",
   "inLanguage": "ja"
 }
@@ -75,11 +87,29 @@
     <section class="about-buzznow" aria-label="BUZZ NOWについて" style="margin:18px 0 24px;">
       <img
         src="/static/buzz-now-about-banner.png"
-        alt="バズった後じゃなく「バズる直前」を見つけよう！ BUZZ NOWは、これから注目が集まりそうなキーワードをデータから先読みするトレンド発見サイトです。"
+        alt="バズった後じゃなく『バズる直前』を見つけよう。BUZZ NOWは、これから注目が集まりそうなキーワードをデータから先読みするトレンド発見サイトです。"
         loading="eager"
         decoding="async"
         style="display:block;width:100%;height:auto;border-radius:22px;border:1px solid rgba(148,163,184,.22);"
       >
+      <div class="about-buzznow-copy">
+        <h2>いま話題の「名前」だけでなく、なぜ今話題なのかまで。</h2>
+        <p>BUZZ NOWは、Google TrendsやWikimediaなどの公開データをもとに、いま検索・閲覧が伸びている人物、出来事、作品、企業やニュースの話題を整理するトレンド情報サイトです。単に急上昇ワードを並べるのではなく、話題になった背景、確認できた出典、関連ニュースを各トピックページで確認できるようにしています。</p>
+        <p>「総合ランキング」では現在の注目度を、「バズりそう」ではこれから伸びる兆しを、「爆発中」では直近で勢いが強いキーワードを確認できます。気になる言葉を見つけたら詳細ページへ進み、何が起きたのかを短時間で把握できます。データは自動取得を基本とし、取得できていない情報を事実として補完しません。</p>
+        <div class="about-buzznow-links" aria-label="主要コンテンツ">
+          <a href="#ranking"><strong>いま話題のランキング</strong><span>急上昇・Pre-Buzz・爆発中のキーワードを見る</span></a>
+          <a href="#categoryTabs"><strong>カテゴリから探す</strong><span>ニュース、エンタメ、スポーツ、ビジネスなどから探す</span></a>
+          <a href="/corporate/"><strong>企業倒産・新規法人情報</strong><span>企業の倒産・設立動向を地域別に確認する</span></a>
+        </div>
+        <div class="top-fresh-list" aria-label="新着トピック">
+          {% for item in trends[:8] if item['is_indexable'] %}
+          <a href="/trend/{{ item['slug']|urlencode }}">
+            <strong>{{ item['keyword'] }}</strong>
+            <span>{{ item['why_now'] or item['summary'] or 'いま話題になっている理由と確認できた出典を整理しています。' }}</span>
+          </a>
+          {% endfor %}
+        </div>
+      </div>
     </section>
 
 <section class="summary-grid">
