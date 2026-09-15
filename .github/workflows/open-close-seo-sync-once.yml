@@ -1,0 +1,43 @@
+name: Mounted Open Close SEO sync once
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/open-close-seo-sync-once.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync sitemap and municipality SEO guards
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('services/open_close/collectors/seo_pages.py')
+          s=p.read_text()
+          s=s.replace('from .text_rules import city_conflicts_with_prefecture\n\nimport html\nimport json\n', 'from .text_rules import city_conflicts_with_prefecture, PREFECTURES\n\nimport html\nimport json\nimport re\n', 1)
+          marker='SITE_NAME = "開店閉店マップ"\n'
+          helper='''SITE_NAME = "開店閉店マップ"\n\n_MUNICIPALITY_RE = re.compile(r"^(?:[一-龥々ぁ-んァ-ヶー]{1,12}市[一-龥々ぁ-んァ-ヶー]{1,8}区|[一-龥々ぁ-んァ-ヶー]{1,16}(?:市|区|町|村))$")\n\ndef city_is_indexable(prefecture, city):\n    value=(city or "").strip()\n    if not value or value in {"都市", "市区町村", "地域"}:\n        return False\n    if city_conflicts_with_prefecture(prefecture, value):\n        return False\n    if any(p in value for p in PREFECTURES):\n        return False\n    if len(value) > 16 or not _MUNICIPALITY_RE.fullmatch(value):\n        return False\n    if re.fullmatch(r"[ァ-ヶー]{2,}市", value):\n        return False\n    return True\n'''
+          if marker not in s: raise SystemExit('site marker not found')
+          s=s.replace(marker,helper,1)
+          s=s.replace('if city_conflicts_with_prefecture(prefecture, city):\n        # Preserve the URL for review', 'if city and not city_is_indexable(prefecture, city):\n        # Preserve the URL for review', 1)
+          s=s.replace('if facet_type == "city" and city_conflicts_with_prefecture(prefecture, name):\n            continue', 'if facet_type == "city" and (count < 2 or not city_is_indexable(prefecture, name)):\n            continue', 1)
+          s=s.replace('return page_shell(origin,title,desc,canonical_path,body,breadcrumb_json(origin,crumbs),noindex=(total==0))\n\ndef render_category', 'return page_shell(origin,title,desc,canonical_path,body,breadcrumb_json(origin,crumbs),noindex=(total==0 or (city and all_total < 2)))\n\ndef render_category', 1)
+          s=s.replace('urls=[origin.rstrip("/")+"/"]', 'urls=[origin.rstrip("/")+"/", origin.rstrip("/")+"/open/", origin.rstrip("/")+"/close/"]', 1)
+          old='''                SELECT DISTINCT prefecture,city FROM stores\n                WHERE COALESCE(status,'') <> 'excluded'\n                  AND prefecture IS NOT NULL AND prefecture<>''\n                  AND city IS NOT NULL AND city<>''\n                ORDER BY prefecture,city\n            """)\n            for pref,city in cur.fetchall():\n                if city_conflicts_with_prefecture(pref, city):\n                    continue\n                urls.append(site_url(origin,f"/area/{qpath(pref)}/{qpath(city)}"))'''
+          new='''                SELECT prefecture,city,COUNT(*) FROM stores\n                WHERE COALESCE(status,'') <> 'excluded'\n                  AND prefecture IS NOT NULL AND prefecture<>''\n                  AND city IS NOT NULL AND city<>''\n                GROUP BY prefecture,city\n                HAVING COUNT(*) >= 2\n                ORDER BY prefecture,city\n            """)\n            for pref,city,count in cur.fetchall():\n                if not city_is_indexable(pref, city):\n                    continue\n                urls.append(site_url(origin,f"/area/{qpath(pref)}/{qpath(city)}"))'''
+          if old not in s: raise SystemExit('sitemap city block not found')
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+      - name: Syntax check
+        run: python -m py_compile services/open_close/collectors/seo_pages.py
+      - name: Commit sync
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add services/open_close/collectors/seo_pages.py
+          git commit -m 'Sync mounted open-close SEO quality guards'
+          git push
