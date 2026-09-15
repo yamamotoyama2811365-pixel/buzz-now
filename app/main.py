@@ -109,6 +109,7 @@ SOCIAL_MAX_POSTS_PER_RUN = int(os.getenv("SOCIAL_MAX_POSTS_PER_RUN", "1"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2").strip()
 SOCIAL_AI_IMAGE_ENABLED = os.getenv("SOCIAL_AI_IMAGE_ENABLED", "false").lower() == "true"
+SOCIAL_TEXT_ONLY = os.getenv("SOCIAL_TEXT_ONLY", "true").lower() == "true"
 
 # X/SNS landing ad gate. The gate activates only when an i-mobile ad tag exists.
 ADSENSE_ENABLED = os.getenv("ADSENSE_ENABLED", "false").lower() == "true"
@@ -2481,6 +2482,8 @@ def _generate_ai_social_image(row) -> tuple[bytes, str, str]:
 
 def _ensure_social_safe_card(c, row, ts: str):
     """Use a BUZZ NOW-owned data card instead of an AI context image when confidence is low."""
+    if SOCIAL_TEXT_ONLY:
+        return {"ok": False, "reason": "SOCIAL_TEXT_ONLY=true"}
     existing = c.execute(
         "SELECT trend_id,mime_type,created_at FROM social_images WHERE trend_id=?",
         (row["id"],),
@@ -2525,6 +2528,8 @@ def _ensure_social_safe_card(c, row, ts: str):
 
 def _ensure_social_ai_image(c, row, ts: str):
     """Generate once and persist in PostgreSQL so Buffer can fetch a stable HTTPS URL."""
+    if SOCIAL_TEXT_ONLY:
+        return {"ok": False, "reason": "SOCIAL_TEXT_ONLY=true"}
     existing = c.execute(
         "SELECT trend_id,mime_type,created_at FROM social_images WHERE trend_id=?",
         (row["id"],),
@@ -2982,6 +2987,8 @@ def auto_post_threads():
         c.commit()
         c.close()
         c = None
+        if SOCIAL_TEXT_ONLY:
+            image_url = ''
         response = _send_to_buffer_channel(channel_id, text, image_url, 'shareNow')
         accepted = bool(response.get('ok'))
         history = db()
@@ -3112,7 +3119,7 @@ def _auto_post_social_unscheduled(c, ts: str):
             # V33 production route:
             # BUZZ NOW -> cached AI JPEG -> Buffer official API -> X.
             # Make's Buffer module is intentionally not used.
-            image_url = payload.get("image_url", "") if payload.get("image_ready") else ""
+            image_url = "" if SOCIAL_TEXT_ONLY else (payload.get("image_url", "") if payload.get("image_ready") else "")
             if image_url:
                 _prewarm_social_jpeg(row["id"])
 
@@ -5682,7 +5689,7 @@ def social_status():
         "buffer_api_key_configured": bool(BUFFER_API_KEY),
         "buffer_channel_id_configured": bool(BUFFER_CHANNEL_ID),
         "make_webhook_configured": bool(MAKE_WEBHOOK_URL),
-        "social_image_mode": "ai_context_visual",
+        "social_image_mode": "text_only" if SOCIAL_TEXT_ONLY else "ai_context_visual",
         "social_ai_image_enabled": SOCIAL_AI_IMAGE_ENABLED,
         "openai_api_key_configured": bool(OPENAI_API_KEY),
         "openai_image_model": OPENAI_IMAGE_MODEL,
