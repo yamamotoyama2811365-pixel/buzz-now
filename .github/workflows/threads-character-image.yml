@@ -1,0 +1,49 @@
+name: Threads character image isolation
+on:
+  push:
+    branches: [fix/threads-character-image-20260915]
+    paths:
+      - scripts/fix_threads_character_media.py
+      - .github/workflows/threads-character-image.yml
+      - app/main.py
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DEMO_MODE: 'false'
+      REAL_DATA_MODE: 'false'
+      SOCIAL_AUTO_ENABLED: 'false'
+      THREADS_AUTO_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - run: pip install -r requirements.txt
+      - run: python scripts/fix_threads_character_media.py
+      - run: python -m unittest discover -s tests -p test_social_mix.py -v
+      - run: python -m unittest discover -s tests -p test_social_schedule.py -v
+      - run: python -m unittest discover -s tests -p test_magazine_mode.py -v
+      - run: python -m compileall -q app scripts tests
+      - run: git diff --check
+  assemble:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: '${{ github.sha }}'}
+      - run: python scripts/fix_threads_character_media.py
+      - name: Commit verified source fix only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/main.py
+          if ! git diff --cached --quiet; then
+            git commit -m 'Preserve Threads character image under text-only X policy'
+            git push origin HEAD:fix/threads-character-image-20260915
+          fi
