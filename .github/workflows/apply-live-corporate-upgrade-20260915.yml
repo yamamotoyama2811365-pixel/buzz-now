@@ -1,0 +1,31 @@
+name: Apply live corporate upgrade 20260915
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/apply_live_corporate_upgrade_20260915.py'
+      - '.github/workflows/apply-live-corporate-upgrade-20260915.yml'
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply targeted patch
+        run: python scripts/apply_live_corporate_upgrade_20260915.py
+      - name: Validate Python
+        run: python -m py_compile services/corporate/*.py
+      - name: Commit live package
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add services/corporate
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Enable corporate public-risk and multi-source discovery'
+          git push origin HEAD:main
