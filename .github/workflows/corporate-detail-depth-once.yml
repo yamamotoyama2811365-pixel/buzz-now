@@ -1,0 +1,51 @@
+name: Corporate detail content depth once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/corporate-detail-depth-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Add durable explanatory context to company pages
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('services/corporate/main.py')
+          s=p.read_text(encoding='utf-8')
+          marker='# CORPORATE_DETAIL_CONTEXT_20260915'
+          if marker not in s:
+              anchor="    facts_html='<dl class=\"facts\">'+''.join('<dt>'+e(k)+'</dt><dd>'+e(v)+'</dd>' for k,v in facts)+'</dl>'\n"
+              if anchor not in s:
+                  raise SystemExit('facts_html anchor not found')
+              addition=anchor+'''    # CORPORATE_DETAIL_CONTEXT_20260915\n    context_html=(\n        '<section class="panel side"><h2>この企業情報の見方</h2>'\n        '<p>このページは、公開された報道や法人情報をもとに、会社名、所在地、業種、手続きの状況、報道日、確認できた出典を整理しています。倒産関連情報では、破産、民事再生、特別清算などを同じ意味として扱わず、出典で確認できる表現を優先します。</p>'\n        '<p>報道日と実際の手続日が異なることがあります。手続日を確認できない場合は、報道日を手続日として推測せず、確認できていないことを明記します。新規法人情報では法人番号の指定日を表示しており、会社の設立日そのものと一致するとは限りません。</p>'\n        '<h2>所在地・代表者・ウェブサイトについて</h2>'\n        '<p>所在地や代表者、公式ウェブサイトは、同名企業や移転、情報更新の時差があるため、確認できた情報だけを掲載します。ウェブ検索による照合結果は確定情報と分け、候補や未確認項目として表示します。誤りが確認された場合は修正依頼からお知らせください。</p>'\n        '<h2>信用評価ではありません</h2>'\n        '<p>当サイトは個別企業の信用力、支払能力、取引可否を評価するものではありません。公開情報を検索・比較しやすく整理することを目的としており、取引や投資などの判断では元の公表資料や専門家の確認もあわせてご利用ください。</p></section>'\n    )\n'''
+              s=s.replace(anchor,addition,1)
+              needle="+facts_html+web_html+note+"
+              if needle not in s:
+                  raise SystemExit('detail body anchor not found')
+              s=s.replace(needle,"+facts_html+context_html+web_html+note+",1)
+          p.write_text(s,encoding='utf-8')
+          PY
+      - name: Validate syntax
+        run: python -m py_compile services/corporate/main.py
+      - name: Commit company-page depth fix
+        run: |
+          if git diff --quiet -- services/corporate/main.py; then
+            echo 'No changes needed'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add services/corporate/main.py
+          git commit -m 'Expand corporate company detail context'
+          git push origin HEAD:main
