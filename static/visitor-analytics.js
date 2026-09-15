@@ -33,5 +33,24 @@
   }
   document.addEventListener('visibilitychange', send);
   document.addEventListener('prerenderingchange', send);
-\n  document.addEventListener('click', (event) => {\n    const link = event.target && event.target.closest ? event.target.closest('a[data-reading-placement]') : null;\n    if (!link || navigator.webdriver || navigator.doNotTrack === '1' || navigator.globalPrivacyControl) return;\n    let target;\n    try { target = new URL(link.href, location.href); } catch (_) { return; }\n    if (target.origin !== location.origin) return;\n    const sourcePath = location.pathname;\n    if (!sourcePath.startsWith('/trend/')) return;\n    const placement = link.dataset.readingPlacement || '';\n    if (!['magazine_stream','magazine_more','article_top'].includes(placement)) return;\n    const q = new URLSearchParams(location.search);\n    const nonce = crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint32Array(4)), v => v.toString(16).padStart(8, '0')).join('');\n    fetch('/api/visitor-analytics/internal-click', {\n      method: 'POST', mode: 'cors', credentials: 'omit', referrerPolicy: 'no-referrer', keepalive: true,\n      headers: {'Content-Type':'application/json'},\n      body: JSON.stringify({source_path: sourcePath, target_path: target.pathname, placement, test: q.get('bn_analytics_test') === '1', nonce})\n    }).catch(() => {});\n  }, {capture: true});\n  send();
+
+  document.addEventListener('click', (event) => {
+    const link = event.target && event.target.closest ? event.target.closest('a[data-reading-placement]') : null;
+    if (!link || navigator.webdriver || navigator.doNotTrack === '1' || navigator.globalPrivacyControl) return;
+    let target;
+    try { target = new URL(link.href, location.href); } catch (_) { return; }
+    if (target.origin !== location.origin) return;
+    const sourcePath = location.pathname;
+    if (!sourcePath.startsWith('/trend/')) return;
+    const placement = link.dataset.readingPlacement || '';
+    if (!['magazine_stream','magazine_more','article_top'].includes(placement)) return;
+    const q = new URLSearchParams(location.search);
+    const nonce = crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint32Array(4)), v => v.toString(16).padStart(8, '0')).join('');
+    fetch('/api/visitor-analytics/internal-click', {
+      method: 'POST', mode: 'cors', credentials: 'omit', referrerPolicy: 'no-referrer', keepalive: true,
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({source_path: sourcePath, target_path: target.pathname, placement, test: q.get('bn_analytics_test') === '1', nonce})
+    }).catch(() => {});
+  }, {capture: true});
+  send();
 })();
