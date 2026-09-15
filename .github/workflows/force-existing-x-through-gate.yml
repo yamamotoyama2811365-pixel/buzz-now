@@ -1,0 +1,31 @@
+name: Force existing X links through gate
+on:
+  push:
+    paths:
+      - scripts/force_existing_x_through_gate.py
+      - .github/workflows/force-existing-x-through-gate.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Apply redirect fix
+        run: python3 scripts/force_existing_x_through_gate.py
+      - name: Validate Python
+        run: python3 -m py_compile app/main.py app/migration_control.py
+      - name: Commit generated change
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/main.py app/migration_control.py
+          if git diff --cached --quiet; then
+            echo "No generated changes"
+          else
+            git commit -m "Route existing X links through i-mobile gate once"
+            git push
+          fi
