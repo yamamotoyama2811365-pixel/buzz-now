@@ -24,6 +24,8 @@ def apply():
     if call_pos < briefing_pos:
         text = text.replace(CALL, "", 1)
         text = text.replace(BRIEFING, BRIEFING + CALL, 1)
+        # Removing an indented statement can leave an indented blank line.
+        text = text.replace("\n    \n", "\n\n")
     elif call_pos == briefing_pos:
         raise ValueError("unexpected overlapping anchors")
 
