@@ -3,6 +3,9 @@
 Core content tables (trends, sources, related_keywords, corporate_items and social
 posts) are intentionally excluded. Forecast traffic history is rolled up to daily
 summaries; disposable signal/history tables are pruned by age in bounded batches.
+Large AI source PNG rows are retained through the 72-hour social repost cooldown,
+then removed only when a durable JPEG derivative already exists. The public JPEG
+URL therefore remains valid while the heaviest duplicate blob stops growing forever.
 """
 from datetime import datetime, timedelta, timezone
 import logging
@@ -13,6 +16,8 @@ logger = logging.getLogger(__name__)
 KEEP = 100
 BATCH_SIZE = 20000
 PRUNE_BATCH_SIZE = 10000
+SOCIAL_SOURCE_PRUNE_BATCH_SIZE = 1000
+SOCIAL_SOURCE_KEEP_HOURS = 72
 SUMMARY_DAYS = 365
 LOCK_KEY = 748290163
 RUN_INTERVAL_SECONDS = 6 * 60 * 60
@@ -111,6 +116,14 @@ def _table_has_column(c, table, column):
     return bool(row and row['present'])
 
 
+def _table_exists(c, table):
+    row = c.execute('''SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema='public' AND table_name=?
+    ) AS present''', (table,)).fetchone()
+    return bool(row and row['present'])
+
+
 def _prune_by_age(c, table, timestamp_column, days):
     """Delete at most one bounded batch and return only the count to the app."""
     if not _table_has_column(c, table, timestamp_column):
@@ -126,6 +139,31 @@ def _prune_by_age(c, table, timestamp_column, days):
         DELETE FROM {table} t USING doomed d WHERE t.id=d.id RETURNING 1
     ) SELECT count(*) AS deleted FROM removed'''
     row = c.execute(sql, (cutoff,)).fetchone()
+    return int(row['deleted'] if row else 0)
+
+
+def _prune_social_source_pngs(c):
+    """Drop old heavy source-image rows only after a JPEG derivative is durable.
+
+    social_images is a generation cache, not the public historical asset. Public X /
+    Threads links use social_image_derivatives through /social-image/{id}.jpg. Keeping
+    the source for 72 hours covers the configured repost cooldown; after that, a rare
+    future repost may regenerate a fresh source image rather than retaining every PNG.
+    """
+    if not (_table_exists(c, 'social_images') and _table_exists(c, 'social_image_derivatives')):
+        return 0
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=SOCIAL_SOURCE_KEEP_HOURS)).isoformat()
+    row = c.execute(f'''WITH doomed AS MATERIALIZED (
+        SELECT si.trend_id
+        FROM social_images si
+        JOIN social_image_derivatives d ON d.trend_id=si.trend_id
+        WHERE si.created_at < ? AND COALESCE(d.byte_length,0) > 0
+        ORDER BY si.created_at,si.trend_id
+        LIMIT {SOCIAL_SOURCE_PRUNE_BATCH_SIZE}
+    ), removed AS (
+        DELETE FROM social_images si USING doomed d
+        WHERE si.trend_id=d.trend_id RETURNING 1
+    ) SELECT count(*) AS deleted FROM removed''', (cutoff,)).fetchone()
     return int(row['deleted'] if row else 0)
 
 
@@ -169,6 +207,7 @@ def run(db_factory):
             pruned = {}
             for table, column, days in RETENTION_POLICIES:
                 pruned[table] = _prune_by_age(c, table, column, days)
+            pruned['social_images_source_png'] = _prune_social_source_pngs(c)
             sizes_after = _largest_tables(c)
             result.update({'pruned': pruned, 'largest_before': sizes_before, 'largest_after': sizes_after})
 
