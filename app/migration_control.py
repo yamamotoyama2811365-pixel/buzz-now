@@ -1,4 +1,4 @@
-"""Reversible migration controls; no credentials or database writes here."""
+"""Reversible migration controls and database-outage protection."""
 import json
 
 
@@ -14,20 +14,79 @@ def migration_settings(env):
     return paused, backend, url
 
 
+def _is_database_unavailable(exc):
+    """Return True only for connection/quota failures, not ordinary app bugs."""
+    seen = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        module = type(current).__module__.lower()
+        name = type(current).__name__.lower()
+        text = str(current).lower()
+        if (
+            (module.startswith("psycopg") and name in {"operationalerror", "databaseerror"})
+            or "data transfer quota" in text
+            or "connection failed" in text
+            or "network is unreachable" in text
+        ):
+            return True
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    return False
+
+
+def _fallback_html(path):
+    if path.startswith("/corporate"):
+        title = "企業倒産・新規法人情報サイト"
+        description = "全国の企業倒産・新規法人情報を地域別に整理する情報サイトです。現在、最新データの更新処理を行っています。"
+        canonical = "https://buzz-now-1.onrender.com/corporate/"
+        heading = "企業倒産・新規法人情報"
+        lead = "最新データを更新しています。ページ自体は正常に公開中です。しばらくしてから再読み込みしてください。"
+    else:
+        title = "Buzz Now｜いま話題のトピック"
+        description = "いま話題になっているキーワードと、その理由をわかりやすく整理するBuzz Now。"
+        canonical = "https://buzz-now-1.onrender.com/"
+        heading = "Buzz Now"
+        lead = "最新トピックを更新しています。ページ自体は正常に公開中です。しばらくしてから再読み込みしてください。"
+    return f"""<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title><meta name=\"description\" content=\"{description}\"><meta name=\"robots\" content=\"index,follow,max-image-preview:large\"><link rel=\"canonical\" href=\"{canonical}\"><style>body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#f6f7fb;color:#171923}}main{{max-width:860px;margin:0 auto;padding:72px 24px}}.card{{background:#fff;border-radius:24px;padding:40px;box-shadow:0 12px 40px rgba(20,30,60,.08)}}h1{{font-size:clamp(38px,7vw,72px);margin:0 0 18px}}p{{font-size:18px;line-height:1.8;color:#525866}}a{{color:#2457ff}}</style></head><body><main><div class=\"card\"><h1>{heading}</h1><p>{lead}</p><p><a href=\"{canonical}\">再読み込み</a></p></div></main></body></html>""".encode("utf-8")
+
+
 class MigrationMaintenance:
     def __init__(self, app, paused=False):
         self.app = app
         self.paused = paused
 
     async def __call__(self, scope, receive, send):
-        if not self.paused or scope['type'] not in {'http', 'websocket'}:
+        if scope['type'] not in {'http', 'websocket'}:
             return await self.app(scope, receive, send)
-        if scope['type'] == 'websocket':
-            return await send({'type': 'websocket.close', 'code': 1013})
-        if scope.get('path') == '/health':
+
+        if self.paused:
+            if scope['type'] == 'websocket':
+                return await send({'type': 'websocket.close', 'code': 1013})
+            if scope.get('path') == '/health':
+                return await self.app(scope, receive, send)
+            body = json.dumps({'detail': 'データ移設のため一時メンテナンス中です。'}, ensure_ascii=False).encode()
+            await send({'type': 'http.response.start', 'status': 503, 'headers': [
+                (b'content-type', b'application/json; charset=utf-8'),
+                (b'retry-after', b'600'), (b'cache-control', b'no-store')]})
+            return await send({'type': 'http.response.body', 'body': body})
+
+        try:
             return await self.app(scope, receive, send)
-        body = json.dumps({'detail': 'データ移設のため一時メンテナンス中です。'}, ensure_ascii=False).encode()
-        await send({'type': 'http.response.start', 'status': 503, 'headers': [
-            (b'content-type', b'application/json; charset=utf-8'),
-            (b'retry-after', b'600'), (b'cache-control', b'no-store')]})
-        await send({'type': 'http.response.body', 'body': body})
+        except Exception as exc:
+            if scope['type'] != 'http' or not _is_database_unavailable(exc):
+                raise
+
+            path = scope.get('path') or '/'
+            if path in {'/', '/corporate', '/corporate/'}:
+                body = _fallback_html(path)
+                await send({'type': 'http.response.start', 'status': 200, 'headers': [
+                    (b'content-type', b'text/html; charset=utf-8'),
+                    (b'cache-control', b'public, max-age=60'),
+                    (b'x-buzz-now-degraded', b'database-unavailable')]})
+                return await send({'type': 'http.response.body', 'body': body})
+
+            body = json.dumps({'detail': '最新データを更新中です。しばらくしてから再試行してください。'}, ensure_ascii=False).encode()
+            await send({'type': 'http.response.start', 'status': 503, 'headers': [
+                (b'content-type', b'application/json; charset=utf-8'),
+                (b'retry-after', b'300'), (b'cache-control', b'no-store')]})
+            return await send({'type': 'http.response.body', 'body': body})
