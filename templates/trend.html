@@ -53,6 +53,7 @@
 <script defer src="/static/visitor-analytics.js?v=1"></script>
 {% include "_site_icons.html" %}
 <link rel="stylesheet" href="/static/amazon-associate.css?v=20260911">
+<link rel="stylesheet" href="/static/magazine.css?v=20260915">
 </head>
 <body>
 
@@ -81,6 +82,7 @@
   <article class="detail">
     <div class="kicker">{{ trend['category'] }} / TREND</div>
     <h1>{{ trend['keyword'] }}はなぜ話題？<br>確認できた関連ニュース</h1>
+    {% include "_magazine_points.html" %}
     {% if editorial %}
     <section class="section editorial" aria-label="記事本文から読み解く注目の動き">
       <h2>いま何が起きている？</h2>
@@ -112,6 +114,8 @@
       <p>今回の注目につながる出来事は確認中です。古い記事や断片的な見出しから理由を推測せず、出典を確認できた情報を掲載します。</p>
       {% endif %}
     </section>
+
+    {% include "_magazine_stream.html" %}
 
     <aside class="section a8-advertisement" aria-label="広告">
       <p style="font-size:12px;color:#b8c3d1;margin:0 0 10px">広告・PR</p>

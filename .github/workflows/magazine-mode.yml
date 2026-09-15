@@ -1,0 +1,85 @@
+name: BUZZ NOW magazine-mode verification
+on:
+  push:
+    branches: [feat/magazine-mode-20260915, main]
+    paths:
+      - app/main.py
+      - app/magazine.py
+      - templates/trend.html
+      - templates/_magazine_points.html
+      - templates/_magazine_stream.html
+      - static/magazine.css
+      - scripts/install_magazine_mode.py
+      - tests/test_magazine_mode.py
+      - .github/workflows/magazine-mode.yml
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DEMO_MODE: 'false'
+      REAL_DATA_MODE: 'false'
+      SOCIAL_AUTO_ENABLED: 'false'
+      THREADS_AUTO_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - run: pip install -r requirements.txt
+      - run: python scripts/install_magazine_mode.py
+      - run: python -m unittest discover -s tests -p test_magazine_mode.py -v
+      - run: python -m unittest discover -s tests -p test_visitor_analytics.py -v
+      - run: python -m unittest discover -s tests -p test_social_schedule.py -v
+      - run: python -m unittest discover -s tests -p test_shared_api.py -v
+      - run: python -m compileall -q app scripts tests
+      - run: git diff --check
+  assemble-feature-only:
+    if: github.ref == 'refs/heads/feat/magazine-mode-20260915'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: '${{ github.sha }}'}
+      - run: python scripts/install_magazine_mode.py
+      - name: Commit verified wiring on feature branch only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/main.py templates/trend.html
+          if ! git diff --cached --quiet; then
+            git commit -m 'Wire magazine-style circulation into trend pages and X copy'
+            git push origin HEAD:feat/magazine-mode-20260915
+          fi
+  production-read-only:
+    if: github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Verify live article without clicking X embeds
+        run: |
+          python - <<'PY'
+          import json,time
+          from urllib.request import urlopen
+          from urllib.parse import quote
+          from urllib.error import HTTPError,URLError
+          base='https://buzz-now-1.onrender.com'
+          for _ in range(30):
+              try:
+                  with urlopen(base+'/api/v9/dashboard?limit=1',timeout=15) as r:data=json.load(r)
+                  slug=data['items'][0]['slug']
+                  with urlopen(base+'/trend/'+quote(slug,safe=''),timeout=15) as r:html=r.read().decode('utf-8')
+                  assert 'ざっくり3POINT' in html
+                  assert 'data-magazine-stream="internal"' in html
+                  assert '/static/magazine.css?v=20260915' in html
+                  assert 'BUZZ NOW｜話題をチェック' not in html
+                  print(json.dumps({'verified':True,'slug':slug,'x_embed_present':'data-magazine-stream="x"' in html,'external_link_clicked':False},ensure_ascii=False))
+                  break
+              except (HTTPError,URLError,TimeoutError,ValueError,AssertionError,KeyError,IndexError):time.sleep(10)
+          else:raise SystemExit('Magazine mode production verification failed')
+          PY
