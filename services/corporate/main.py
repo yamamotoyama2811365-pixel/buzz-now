@@ -109,7 +109,7 @@ def shell(title,body,path='/',noindex=False,description='全国の企業倒産�
         'inLanguage':'ja-JP'
     }
     schema_tag='<script type="application/ld+json">'+json.dumps(schema,ensure_ascii=False).replace('<','\\u003c')+'</script>'
-    return HTMLResponse('<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/svg+xml" sizes="any" href="/corporate/favicon.svg?v=20260914"><title>'+e(page_title)+'</title><meta name="description" content="'+e(description,quote=True)+'"><meta name="robots" content="'+('noindex,follow' if noindex else 'index,follow')+'"><link rel="canonical" href="'+e(canonical,quote=True)+'"><meta property="og:title" content="'+e(page_title,quote=True)+'"><meta property="og:description" content="'+e(description,quote=True)+'"><meta property="og:url" content="'+e(canonical,quote=True)+'">'+schema_tag+analytics_tag()+'<style>'+STYLE+'</style></head><body><header><div class="bar"><a class="logo" href="'+ROOT+'/">企業倒産・新規法人情報サイト</a><nav><a href="'+ROOT+'/bankruptcies">倒産速報</a><a href="'+ROOT+'/registrations">新設・新規法人</a><a href="'+ROOT+'/signals">地域・業種の動き</a></nav></div></header><main>'+body+'</main><footer><strong>企業倒産・新規法人情報サイト</strong><p>公開情報を出典付きで整理する企業情報サイト。報道日・法人番号指定日を表示しています。休廃業・登記閉鎖だけを倒産とは判定しません。</p><a href="'+ROOT+'/about">掲載方針・訂正について</a>　｜　<a href="'+ROOT+'/sources">収集状況</a>　｜　<a href="'+ROOT+'/sitemap.xml">サイトマップ</a></footer>'+tracking_tag(path,ROOT,DSN)+'</body></html>',headers={'Cache-Control':'public, max-age=60','X-Content-Type-Options':'nosniff'})
+    return HTMLResponse('<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/svg+xml" sizes="any" href="/corporate/favicon.svg?v=20260914"><title>'+e(page_title)+'</title><meta name="description" content="'+e(description,quote=True)+'"><meta name="robots" content="'+('noindex,follow' if noindex else 'index,follow')+'"><link rel="canonical" href="'+e(canonical,quote=True)+'"><meta property="og:title" content="'+e(page_title,quote=True)+'"><meta property="og:description" content="'+e(description,quote=True)+'"><meta property="og:url" content="'+e(canonical,quote=True)+'">'+schema_tag+analytics_tag()+'<style>'+STYLE+'</style></head><body><header><div class="bar"><a class="logo" href="'+ROOT+'/">企業倒産・新規法人情報サイト</a><nav><a href="'+ROOT+'/bankruptcies">倒産速報</a><a href="'+ROOT+'/registrations">新設・新規法人</a><a href="'+ROOT+'/risks">公表リスク情報</a><a href="'+ROOT+'/signals">地域・業種の動き</a></nav></div></header><main>'+body+'</main><footer><strong>企業倒産・新規法人情報サイト</strong><p>公開情報を出典付きで整理する企業情報サイト。報道日・法人番号指定日を表示しています。休廃業・登記閉鎖だけを倒産とは判定しません。</p><a href="'+ROOT+'/about">掲載方針・訂正について</a>　｜　<a href="'+ROOT+'/sources">収集状況</a>　｜　<a href="'+ROOT+'/sitemap.xml">サイトマップ</a></footer>'+tracking_tag(path,ROOT,DSN)+'</body></html>',headers={'Cache-Control':'public, max-age=60','X-Content-Type-Options':'nosniff'})
 
 def breadcrumbs(items):
     links=' / '.join('<a href="'+e(BASE+path,quote=True)+'">'+e(label)+'</a>' for label,path in items)
@@ -123,7 +123,7 @@ def cards(items):
     if not items:return '<p class="empty">該当する情報はありません。地域や業種の条件を変えてお試しください。</p>'
     html=''
     for r in items:
-        p=r['payload'];kind=p['kind']; label='倒産速報' if kind=='bankruptcy' else '新規法人'
+        p=r['payload'];kind=p['kind']; label='倒産速報' if kind=='bankruptcy' else '公表情報' if kind=='risk' else '新規法人'
         html+='<article class="row"><div><span class="tag '+kind+'">'+label+'</span><span class="meta">'+e(p['reported_date'])+' · '+e(p.get('prefecture') or '地域確認中')+'</span></div><h3><a href="'+ROOT+'/company/'+r['id']+'">'+e(p['company'])+'</a></h3><div>'+e(p['stage'])+'</div><div class="meta">'+e(p.get('industry') or '業種未確認')+'　｜　出典：'+e(p['source_name'])+'</div></article>'
     return html
 
@@ -137,9 +137,9 @@ def side():
 
 def kind_tabs(kind,path,prefecture='',industry='',q=''):
     links=[]
-    for value,label in [('', 'すべて'),('bankruptcy','倒産'),('registration','新規法人')]:
-        if path in {'/','/bankruptcies','/registrations'}:
-            target={'':'/','bankruptcy':'/bankruptcies','registration':'/registrations'}[value]
+    for value,label in [('', 'すべて'),('bankruptcy','倒産'),('registration','新規法人'),('risk','公表リスク')]:
+        if path in {'/','/bankruptcies','/registrations','/risks'}:
+            target={'':'/','bankruptcy':'/bankruptcies','registration':'/registrations','risk':'/risks'}[value]
             params={}
         elif path.startswith('/area/') or path.startswith('/industry/'):
             target=path;params={'kind':value} if value else {}
@@ -163,9 +163,9 @@ def regional_feature(prefecture):
         return '<section class="panel region-feature"><h2>地域の編集特集</h2><p>集計情報を一時的に取得できません。取得できない件数はゼロとして表示しません。下の一覧と出典をご確認ください。</p></section>'
 
 def listing(title,kind='',prefecture='',industry='',q='',page=1,path='/',search=False):
-    if kind not in {'','bankruptcy','registration'}:raise HTTPException(400,'Invalid kind')
+    if kind not in {'','bankruptcy','registration','risk'}:raise HTTPException(400,'Invalid kind')
     result=records(kind,prefecture,industry,q,page)
-    topic=('倒産速報' if kind=='bankruptcy' else '新規法人情報' if kind=='registration' else '企業の倒産・新規法人情報')
+    topic=('倒産速報' if kind=='bankruptcy' else '新規法人情報' if kind=='registration' else '公表リスク情報' if kind=='risk' else '企業の倒産・新規法人情報')
     scope='・'.join(x for x in (prefecture,industry) if x)
     description=(scope+'の' if scope else '全国の')+topic+'を掲載。会社名・所在地・'+('法人番号指定日' if kind=='registration' else '報道日・手続きの状況')+'を出典付きで確認できます。'
     if kind=='registration': description+='法人番号指定日は設立日とは限りません。'
@@ -202,6 +202,8 @@ def home(page:int=Query(1,ge=1,le=10000)):return listing('企業倒産・新規�
 def bankruptcies(page:int=Query(1,ge=1,le=10000)):return listing('倒産速報',kind='bankruptcy',page=page,path='/bankruptcies')
 @app.get('/registrations')
 def registrations(page:int=Query(1,ge=1,le=10000)):return listing('新設・新規法人情報',kind='registration',page=page,path='/registrations')
+@app.get('/risks')
+def risks(page:int=Query(1,ge=1,le=10000)):return listing('公表リスク情報',kind='risk',page=page,path='/risks')
 @app.get('/search')
 def search(kind:str='',prefecture:str='',industry:str='',q:str=Query('',max_length=100),page:int=Query(1,ge=1,le=10000)):return listing('企業情報を検索',kind,prefecture,industry,q,page,'/search',True)
 @app.get('/area/{prefecture}')
@@ -233,6 +235,7 @@ def detail(event_id:str):
     web_html+=render_reports(p.get('news_reports',[]))
     web_html+='<p class="small"><a href="'+ROOT+'/company/'+event_id+'/correction">掲載情報の修正依頼はこちら</a></p>'
     facts_html='<dl class="facts">'+''.join('<dt>'+e(k)+'</dt><dd>'+e(v)+'</dd>' for k,v in facts)+'</dl>'
+    if p['kind']=='risk':facts_html+='<h2>公表された内容</h2><dl class="facts"><dt>区分</dt><dd>'+e(p.get('risk_type') or '公表情報')+'</dd><dt>公表内容</dt><dd>'+e(p.get('risk_summary') or p['stage'])+'</dd><dt>公表機関</dt><dd>'+e(p.get('risk_agency') or p['source_name'])+'</dd></dl><p class="small">公的機関等の公表内容を整理したものです。当サイトが企業の信用状態を評価・予測したものではありません。</p>'
     # CORPORATE_DETAIL_CONTEXT_20260915
     context_html=(
         '<section class="panel side"><h2>この企業情報の見方</h2>'
@@ -249,12 +252,13 @@ def detail(event_id:str):
         if p.get('event_date'):paragraph+=' 出典本文に明記された'+e(p.get('event_date_label') or '手続日')+'は'+e(p['event_date'])+'、報道日は'+e(p['reported_date'])+'です。'
         else:paragraph+=' 手続き自体の日付は確認できていないため、表示している日付は報道日です。'
         paragraph+=' 報道時点の情報のため、その後の変更は出典でもご確認ください。'
+    elif p['kind']=='risk':paragraph+=' 行政機関等が公表した事実を整理したもので、当サイトによる信用評価・倒産予測ではありません。'
     else:paragraph+=' 表示日は法人番号の指定日です。設立年月日を確認した情報ではありません。'
     causes=p.get('causes',[])
     note=('<h2>出典に記載された背景</h2><p>'+e('、'.join(causes))+'に関する記述を検出しました。記事の語句から自動抽出した項目で、影響の大きさや因果関係を評価したものではありません。</p>') if causes else '<p class="small">背景要因は確認できていません。確認できない原因を推測して掲載しません。</p>'
     search_url='https://www.google.com/maps/search/?api=1&query='+quote(p['company']+' '+(p.get('address') or p.get('prefecture','')))
-    topic='倒産速報' if p['kind']=='bankruptcy' else '新規法人情報'
-    topic_path='/bankruptcies' if p['kind']=='bankruptcy' else '/registrations'
+    topic='倒産速報' if p['kind']=='bankruptcy' else '公表リスク情報' if p['kind']=='risk' else '新規法人情報'
+    topic_path='/bankruptcies' if p['kind']=='bankruptcy' else '/risks' if p['kind']=='risk' else '/registrations'
     trail=[('ホーム','/'),(topic,topic_path)]
     links=[(topic+'の一覧',topic_path)]
     if p.get('prefecture') in PREFECTURES:
@@ -319,7 +323,20 @@ async def ingest(request:Request):
             existing=dict(cur.fetchall())
             rows=[preserve_profile(r,existing.get(identity(r))) for r in rows]
             for row in rows:
-                row['entity_key']=('n'+row['corporate_number']) if row.get('corporate_number') else (normalized_name(row['company'])+'|'+row['prefecture'] if row.get('prefecture') else identity(row))
+                fallback_key=(normalized_name(row['company'])+'|'+row['prefecture']) if row.get('prefecture') else ''
+                if row['kind']=='bankruptcy' and fallback_key:
+                    cur.execute("SELECT id,payload FROM corporate_events WHERE published AND kind='bankruptcy' AND payload->>'entity_key'=%s ORDER BY reported_date DESC LIMIT 2",[fallback_key])
+                    matches=cur.fetchall()
+                    if len(matches)==1 and matches[0][0]!=identity(row):
+                        existing_id,payload=matches[0];sources=payload.get('discovery_sources',[])
+                        evidence={'source_name':row['source_name'],'source_url':row['source_url'],'reported_date':row['reported_date'],'stage':row['stage']}
+                        if not any(x.get('source_url')==row['source_url'] for x in sources):sources.append(evidence)
+                        payload['discovery_sources']=sources[-8:]
+                        if not payload.get('industry') and row.get('industry'):
+                            payload['industry']=row['industry'];payload['classification_basis']=row.get('classification_basis','')
+                        cur.execute('UPDATE corporate_events SET payload=%s,industry=%s,updated_at=now() WHERE id=%s',[Json(payload),payload.get('industry',''),existing_id]);changed+=cur.rowcount
+                        continue
+                row['entity_key']=('n'+row['corporate_number']) if row.get('corporate_number') else (fallback_key if fallback_key else identity(row))
                 cur.execute('''INSERT INTO corporate_events(id,kind,company,corporate_number,prefecture,industry,stage,reported_date,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(id) DO UPDATE SET company=EXCLUDED.company,prefecture=EXCLUDED.prefecture,industry=EXCLUDED.industry,stage=EXCLUDED.stage,payload=EXCLUDED.payload,updated_at=now() WHERE corporate_events.payload IS DISTINCT FROM EXCLUDED.payload''', [identity(row),row['kind'],row['company'],row.get('corporate_number',''),row.get('prefecture',''),row.get('industry',''),row['stage'],row['reported_date'],Json(row)])
                 changed+=cur.rowcount
@@ -338,7 +355,7 @@ async def ingest(request:Request):
                 cur.execute('''UPDATE corporate_events SET company=%s,prefecture=%s,payload=payload || %s,published=%s,updated_at=now()
                  WHERE id=%s AND kind='registration' AND (payload IS DISTINCT FROM payload || %s OR published IS DISTINCT FROM %s)''', [change['company'],change['prefecture'],Json(patch),change['published'],'n'+number,Json(patch),change['published']])
             for status in body.get('sources',[]):
-                if status.get('source') not in {'JC-NET','国税庁','公式サイト補完','ニュース補完'}:raise HTTPException(422,'Invalid source')
+                if status.get('source') not in {'JC-NET','国税庁','公式サイト補完','ニュース補完','公開報道探索','国交省公表情報'}:raise HTTPException(422,'Invalid source')
                 cur.execute('INSERT INTO corporate_runs(source,status,received,detail) VALUES(%s,%s,%s,%s) ON CONFLICT(source) DO UPDATE SET checked_at=now(),status=EXCLUDED.status,received=EXCLUDED.received,detail=EXCLUDED.detail',[status['source'],status['status'],status.get('received',0),status.get('detail','')[:200]])
     finally:con.close()
     with _lock:_cache.clear()
@@ -487,7 +504,7 @@ def sitemap_page(page:int):
     if not rows and page>1:raise HTTPException(404)
     body='<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
     if page==1:
-        for path in ['/','/bankruptcies','/registrations','/signals','/about']:body+='<url><loc>'+e(BASE+path)+'</loc></url>'
+        for path in ['/','/bankruptcies','/registrations','/risks','/signals','/about']:body+='<url><loc>'+e(BASE+path)+'</loc></url>'
         for p in query("SELECT DISTINCT prefecture FROM corporate_events WHERE published AND company NOT IN ('運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗') AND prefecture<>''"):
             body+='<url><loc>'+e(BASE+'/area/'+quote(p['prefecture']))+'</loc></url>'
         for p in query("SELECT DISTINCT industry FROM corporate_events WHERE published AND company NOT IN ('運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗') AND industry<>''"):

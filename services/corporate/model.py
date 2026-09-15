@@ -16,19 +16,26 @@ def normalized_name(name):
 
 def identity(row):
     if row['kind']=='registration': return 'n'+row['corporate_number']
+    if row['kind']=='risk': return 'r'+hashlib.sha256(row['source_url'].encode()).hexdigest()[:24]
     # Without an exact corporate number, use source URL: do not silently merge namesakes.
     return 'b'+hashlib.sha256(row['source_url'].encode()).hexdigest()[:24]
 
 def validate(row):
-    if row.get('kind') not in {'bankruptcy','registration'}: raise ValueError('invalid kind')
+    if row.get('kind') not in {'bankruptcy','registration','risk'}: raise ValueError('invalid kind')
     for k in ['company','stage','reported_date','source_url','source_name']:
         if not isinstance(row.get(k),str) or not row[k] or len(row[k])>1000: raise ValueError(k)
     reported=date.fromisoformat(row['reported_date'])
     if row.get('event_date'):
         event=date.fromisoformat(row['event_date'])
         if event>reported or not row.get('event_date_label'):raise ValueError('event date')
-    host=urlparse(row['source_url']).hostname
-    if host not in {'n-seikei.jp','www.n-seikei.jp','www.houjin-bangou.nta.go.jp'}: raise ValueError('source host')
+    parsed=urlparse(row['source_url']);host=(parsed.hostname or '').lower()
+    if parsed.scheme not in {'http','https'} or not host: raise ValueError('source host')
+    if row['kind']=='registration' and host!='www.houjin-bangou.nta.go.jp': raise ValueError('source host')
+    if row['kind']=='bankruptcy':
+        jc=host in {'n-seikei.jp','www.n-seikei.jp'}
+        open_news=row.get('discovery_channel')=='GDELT' and parsed.scheme=='https' and host not in {'news.google.com','google.com','www.google.com','search.yahoo.co.jp','www.tdb.co.jp','tdb.co.jp','www.tsr-net.co.jp','tsr-net.co.jp'}
+        if not (jc or open_news): raise ValueError('source host')
+    if row['kind']=='risk' and host not in {'www.mlit.go.jp','mlit.go.jp','jsite.mhlw.go.jp','www.caa.go.jp','caa.go.jp','www.fsa.go.jp','fsa.go.jp'}: raise ValueError('source host')
     if row['kind']=='registration' and not re.fullmatch(r'\d{13}',row.get('corporate_number','')): raise ValueError('corporate number')
     if row.get('prefecture','') not in PREFECTURES+['']: raise ValueError('prefecture')
     if row.get('industry','') not in list(INDUSTRIES)+['']: raise ValueError('industry')
@@ -40,6 +47,7 @@ def stage_from_title(title):
     if '破産' in title: return '破産関連（報道）'
     if '民事再生' in title: return '民事再生（報道）'
     if '特別清算' in title: return '特別清算（報道）'
+    if '会社更生' in title: return '会社更生（報道）'
     return ''
 
 PROCEEDING_DATE_PATTERNS=(
@@ -68,11 +76,11 @@ def clean_company(name):
     for abbreviated,full in [('(株)','株式会社'),('(有)','有限会社'),('(同)','合同会社'),('(資)','合資会社'),('(名)','合名会社')]:name=name.replace(abbreviated,full)
     return name.strip(' ・「」')
 
-def parse_news(title, body, url, published, company_hint=''):
+def parse_news(title, body, url, published, company_hint='', source_name='JC-NET', discovery_channel=''):
     stage=stage_from_title(title)
     if not stage or re.search('一覧|件数|過去最多|倒産件数|前年|予測|リスク|ランキング',title): return None
     t=re.sub(r'【[^】]+】|〖[^〗]+〗|追報[：:]?|続報[：:]?','',title).strip()
-    m=re.search(r'^(.{2,100}?)(?:が|に(?:対し)?|、|／|\s[/／]\s)(?:.*?)(?:破産|民事再生|特別清算)',t)
+    m=re.search(r'^(.{2,100}?)(?:が|に(?:対し)?|、|／|\s[/／]\s)(?:.*?)(?:破産|民事再生|特別清算|会社更生)',t)
     if not m and not company_hint:return None
     company=m.group(1).strip() if m else company_hint
     quoted=re.search(r'「([^」]+)」$',company)
@@ -99,7 +107,8 @@ def parse_news(title, body, url, published, company_hint=''):
     title_industries=[k for k,words in INDUSTRIES.items() if any(w in title for w in words)]
     industry=title_industries[0] if len(title_industries)==1 else industries[0] if len(industries)==1 else ''
     causes=[k for k,words in CAUSES.items() if any(w in body for w in words)]
-    row=dict(kind='bankruptcy',company=company,corporate_number='',prefecture=pref,industry=industry,stage=stage,reported_date=published,source_name='JC-NET',source_url=url,causes=causes,address='',classification_basis='記事の記載から自動分類' if industry else '',date_label='報道日')
+    row=dict(kind='bankruptcy',company=company,corporate_number='',prefecture=pref,industry=industry,stage=stage,reported_date=published,source_name=source_name,source_url=url,causes=causes,address='',classification_basis='記事の記載から自動分類' if industry else '',date_label='報道日')
+    if discovery_channel: row['discovery_channel']=discovery_channel
     event_date,event_label=proceeding_date(body,published)
     if event_date:
         row['event_date']=event_date
@@ -124,7 +133,7 @@ def preserve_profile(row,old):
     # A subsequent news/registry import must not erase independently verified facts.
     row=dict(row)
     if old and same_entity(row,old):
-        for key in ('news_reports','news_checked_at','news_check_status','news_version'):
+        for key in ('news_reports','news_checked_at','news_check_status','news_version','discovery_sources'):
             if old.get(key):row[key]=old[key]
         if not row.get('industry') and old.get('classification_basis')=='速報の出典記事に記載された事業から自動分類':
             row['industry']=old['industry'];row['classification_basis']=old['classification_basis']

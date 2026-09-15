@@ -19,7 +19,7 @@ BUSINESS['飲食業']=BUSINESS['飲食業']+['割烹','仕出し','ケータリ�
 BUSINESS['運輸業']=BUSINESS['運輸業']+['物流業務']
 BUSINESS['サービス業']=BUSINESS['サービス業']+['広告事業','広告代理','デジタルマーケティング']
 BLOCKED={'n-seikei.jp','google.com','google.co.jp','facebook.com','instagram.com','x.com','twitter.com','youtube.com','tabelog.com','houjin-bangou.nta.go.jp'}
-DIRECTORIES={'houjin.jp','cnavi.g-search.or.jp','salesnow.jp','biz-maps.com','tsukulink.net','companydata.tsujigawa.com','baseconnect.in','newsdig.tbs.co.jp'}
+DIRECTORIES={'houjin.jp','info.gbiz.go.jp','cnavi.g-search.or.jp','salesnow.jp','biz-maps.com','tsukulink.net','companydata.tsujigawa.com','baseconnect.in','newsdig.tbs.co.jp'}
 
 def public_url(url):
     p=urlsplit(url)
@@ -229,7 +229,7 @@ def website_links(soup,url):
     result=[]
     for el in soup.find_all(['dt','th','td']):
         label=re.sub(r'\s','',el.get_text(' ',strip=True))
-        if not re.fullmatch(r'(?i:URL|HP|ホームページ|ウェブサイト|公式サイト|企業サイト|会社HP|企業URL|ホームページURL|Webサイト)',label):continue
+        if not re.fullmatch(r'(?i:URL|HP|ホームページ|企業ホームページ|ウェブサイト|公式サイト|企業サイト|会社HP|企業URL|ホームページURL|Webサイト)',label):continue
         value=el.find_next_sibling(['dd','td'])
         if not value:continue
         links=[a['href'] for a in value.select('a[href]')]
@@ -247,13 +247,14 @@ def known_candidates(row):
     urls=[website(p) for p in [row.get('web_profile'),row.get('web_reference_profile')] if website(p)]+urls
     urls += [r['url'] for r in row.get('news_reports',[]) if r.get('url')]
     if re.fullmatch(r'\d{13}',row.get('corporate_number','')):
+        urls.append('https://info.gbiz.go.jp/hojin/ichiran?hojinBango='+row['corporate_number'])
         urls.append('https://houjin.jp/c/'+row['corporate_number'])
     result=[]
     for url in urls:
         try:url=candidate_url(url)
         except ValueError:continue
         if url not in result:result.append(url)
-    return result[:4]
+    return result[:5]
 
 def search_candidates(row,permitted=False):
     key=os.getenv('BRAVE_SEARCH_API_KEY','')
