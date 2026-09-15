@@ -1,0 +1,37 @@
+name: BUZZ NOW direct X iframe live check
+on:
+  push:
+    branches: [verify/direct-x-iframe-20260915]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Verify production renders and serves direct X iframe
+        run: |
+          python - <<'PY'
+          import json,re
+          from urllib.request import Request,urlopen
+          from urllib.parse import quote
+          base='https://buzz-now-1.onrender.com'
+          def get(url):
+              req=Request(url,headers={'User-Agent':'Mozilla/5.0 BUZZ-NOW-read-only-check'})
+              with urlopen(req,timeout=20) as r:
+                  return r.status,dict(r.headers),r.read().decode('utf-8','replace')
+          status,_,raw=get(base+'/api/v9/dashboard?limit=1')
+          assert status==200
+          slug=json.loads(raw)['items'][0]['slug']
+          status,_,html=get(base+'/trend/'+quote(slug,safe=''))
+          assert status==200
+          assert 'platform.twitter.com/embed/Tweet.html?id=' in html
+          assert 'platform.twitter.com/widgets.js' not in html
+          match=re.search(r'src="(https://platform\.twitter\.com/embed/Tweet\.html\?id=\d+&amp;theme=dark&amp;dnt=true)"',html)
+          assert match, 'direct X iframe src missing'
+          iframe_url=match.group(1).replace('&amp;','&')
+          fstatus,headers,fbody=get(iframe_url)
+          assert fstatus==200
+          assert '<html' in fbody.lower() or '<!doctype html' in fbody.lower()
+          print(json.dumps({'verified':True,'slug':slug,'iframe_status':fstatus,'iframe_url':iframe_url,'x_frame_options':headers.get('X-Frame-Options'),'content_type':headers.get('Content-Type')},ensure_ascii=False))
+          PY
