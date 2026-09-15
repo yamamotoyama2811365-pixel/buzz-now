@@ -147,6 +147,20 @@ LEGACY_SERVICE = os.getenv("RENDER_SERVICE_ID", "") == "srv-daa321mk1f9s73fbjfcg
 @app.middleware("http")
 async def canonical_origin(request: Request, call_next):
     path = request.url.path
+    query_text = request.scope.get("query_string", b"").decode("ascii", "ignore")
+    host = (request.url.hostname or "").lower()
+    # Existing X posts may still point at the new host. Send X-origin article
+    # entries through the approved legacy i-mobile gate exactly once.
+    x_entry = (
+        host == "buzz-now-1.onrender.com"
+        and "utm_source=x" in query_text
+        and "x_gate_passed=1" not in query_text
+        and (path.startswith("/trend/") or bool(re.fullmatch(r"/t/\d+", path)))
+    )
+    if x_entry:
+        raw_path = request.scope.get("raw_path", b"/").decode("ascii")
+        target = "https://buzz-now.onrender.com" + raw_path + (("?" + query_text) if query_text else "")
+        return RedirectResponse(target, status_code=302)
     # Keep Render health checks and Google ownership verification local.
     verification = bool(re.fullmatch(r"/google[a-zA-Z0-9]+\.html", path))
     if (LEGACY_SERVICE or request.url.hostname == "buzz-now.onrender.com") and path not in ("/health", "/ads.txt") and not verification:

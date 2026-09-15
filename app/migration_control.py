@@ -265,7 +265,7 @@ async def _legacy_x_imobile_gate(scope, send):
 
     destination = (
         'https://buzz-now-1.onrender.com' + raw_path_text
-        + '?utm_source=x&utm_medium=social&utm_campaign=prebuzz&utm_content=legacy_imobile_gate'
+        + '?utm_source=x&utm_medium=social&utm_campaign=prebuzz&utm_content=legacy_imobile_gate&x_gate_passed=1'
     )
 
     if method == 'HEAD':
