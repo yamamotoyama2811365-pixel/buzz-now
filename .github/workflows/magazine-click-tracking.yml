@@ -1,0 +1,94 @@
+name: BUZZ NOW magazine click tracking
+on:
+  push:
+    branches: [feat/magazine-click-tracking-20260915, main]
+    paths:
+      - app/visitor_analytics.py
+      - static/visitor-analytics.js
+      - templates/_magazine_stream.html
+      - templates/trend.html
+      - scripts/install_magazine_click_tracking.py
+      - tests/test_magazine_click_tracking.py
+      - tests/test_visitor_analytics.py
+      - .github/workflows/magazine-click-tracking.yml
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DEMO_MODE: 'false'
+      REAL_DATA_MODE: 'false'
+      SOCIAL_AUTO_ENABLED: 'false'
+      THREADS_AUTO_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - run: pip install -r requirements.txt
+      - run: python scripts/install_magazine_click_tracking.py
+      - run: python -m unittest discover -s tests -p test_magazine_click_tracking.py -v
+      - run: python -m unittest discover -s tests -p test_visitor_analytics.py -v
+      - run: python -m unittest discover -s tests -p test_magazine_mode.py -v
+      - run: python -m compileall -q app scripts tests
+      - run: git diff --check
+      - name: Verify click hooks exist only on internal reading links
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          js=Path('static/visitor-analytics.js').read_text()
+          tpl=(Path('templates/_magazine_stream.html').read_text()+Path('templates/trend.html').read_text())
+          assert "a[data-reading-placement]" in js
+          assert '/api/visitor-analytics/internal-click' in js
+          for placement in ('magazine_stream','magazine_more','article_top'):
+              assert placement in tpl
+          assert 'target.origin !== location.origin' in js
+          print('click hooks verified')
+          PY
+  assemble-feature-only:
+    if: github.ref == 'refs/heads/feat/magazine-click-tracking-20260915'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: '${{ github.sha }}'}
+      - run: python scripts/install_magazine_click_tracking.py
+      - name: Commit verified source changes only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/visitor_analytics.py static/visitor-analytics.js
+          if ! git diff --cached --quiet; then
+            git commit -m 'Track anonymous internal magazine clicks'
+            git push origin HEAD:feat/magazine-click-tracking-20260915
+          fi
+  production-read-only:
+    if: github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Verify live click-tracking assets without sending events
+        run: |
+          python - <<'PY'
+          import time
+          from urllib.request import urlopen
+          base='https://buzz-now-1.onrender.com'
+          for _ in range(30):
+              try:
+                  with urlopen(base+'/static/visitor-analytics.js',timeout=15) as r: js=r.read().decode('utf-8')
+                  with urlopen(base+'/api/visitor-analytics/status',timeout=15) as r: status=r.read().decode('utf-8')
+                  assert '/api/visitor-analytics/internal-click' in js
+                  assert 'a[data-reading-placement]' in js
+                  assert '"ready":true' in status.replace(' ','')
+                  print('production click tracking verified read-only')
+                  break
+              except Exception:
+                  time.sleep(10)
+          else:
+              raise SystemExit('production click tracking verification failed')
+          PY
