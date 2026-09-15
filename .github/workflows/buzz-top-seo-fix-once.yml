@@ -1,4 +1,4 @@
-name: BUZZ NOW outage SEO fix once
+name: BUZZ NOW outage content expansion once
 
 on:
   push:
@@ -17,65 +17,34 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-      - name: Strengthen DB-outage top page
+      - name: Expand useful fallback content
         run: |
           python - <<'PY'
           from pathlib import Path
-          p = Path('app/migration_control.py')
-          s = p.read_text(encoding='utf-8')
-
-          replacements = {
-            'title = "Buzz Now｜いま話題の理由がわかるトレンド情報"':
-              'title = "BUZZ NOW｜いま話題の理由・急上昇ワード・トレンド速報"',
-            'description = "いま話題になっているキーワードを集め、なぜ今話題なのかを出典と時点付きで整理するBuzz Now。"':
-              'description = "BUZZ NOWは、いま話題の人物・出来事・作品・企業や急上昇ワードを集め、なぜ今話題なのか、確認できた背景・出典・関連情報を整理するトレンド情報サイトです。"',
-            'heading = "Buzz Now"':
-              'heading = "BUZZ NOW｜いま話題の理由を追う"',
-            'lead = "Buzz Nowは、検索やSNSで注目が集まり始めたキーワードについて、名前だけを並べるのではなく『なぜ今話題なのか』を確認できるよう整理するトレンド情報サイトです。"':
-              'lead = "BUZZ NOWは、検索やSNSで注目が集まり始めた人物、出来事、作品、企業などのキーワードを追い、名前だけを並べるのではなく『なぜ今話題なのか』『何が起きたのか』『どの情報源で確認できるのか』まで短時間で把握できるよう整理するトレンド情報サイトです。"',
-          }
-          for old, new in replacements.items():
-              if old not in s:
-                  raise SystemExit(f'anchor not found: {old[:50]}')
-              s = s.replace(old, new, 1)
-
-          old_nav = '''        <nav class=\\"nav\\" aria-label=\\"サイトメニュー\\">\n          <a href=\\"/\\" aria-current=\\"page\\">Buzz Nowトップ</a>\n          <a href=\\"/corporate/\\">企業倒産・新規法人情報</a>\n        </nav>'''
-          new_nav = '''        <nav class=\\"nav\\" aria-label=\\"サイトメニュー\\">\n          <a href=\\"/\\" aria-current=\\"page\\">BUZZ NOWトップ</a>\n          <a href=\\"#about\\">BUZZ NOWとは</a>\n          <a href=\\"#categories\\">話題のカテゴリ</a>\n          <a href=\\"#sources\\">情報源と確認方針</a>\n          <a href=\\"/corporate/\\">企業情報トップ</a>\n          <a href=\\"/corporate/bankruptcies\\">倒産速報</a>\n          <a href=\\"/corporate/registrations\\">新規法人</a>\n          <a href=\\"/corporate/signals\\">地域・業種の動き</a>\n        </nav>'''
-          if old_nav not in s:
-              raise SystemExit('non-corporate nav anchor not found')
-          s = s.replace(old_nav, new_nav, 1)
-
-          old_sections = '''        <section><h2>Buzz Nowが整理する情報</h2><p>話題のキーワード、注目が高まった背景、関連する出来事、確認できた情報源を分けて整理します。単にトレンド名を転載するのではなく、読者が「何が起きたのか」「なぜ今検索されているのか」を短時間で把握できるページを目指しています。</p></section>\n        <section><h2>情報の確認方針</h2><p>公開情報やニュースなど確認できる情報を基にし、確認できない内容を事実として補完しません。話題の理由は時点によって変わるため、更新時刻や出典を確認できる構成で通常ページを公開しています。</p></section>\n        <section><h2>現在の更新状況</h2><p>データベースの月間利用上限により、最新ランキングと個別トピックの読み込みを一時停止しています。この案内ページは検索エンジンがサイトの目的を理解できるよう維持し、データ接続が復旧し次第、通常のトレンド一覧に自動で戻ります。</p></section>'''
-          new_sections = '''        <section id=\\"about\\"><h2>BUZZ NOWで分かること</h2><p>話題のキーワード、注目が高まった背景、関連する出来事、確認できた情報源を分けて整理します。単にトレンド名を転載するのではなく、読者が「何が起きたのか」「なぜ今検索されているのか」「その話題に新しい情報があるのか」を短時間で把握できるページを目指しています。</p></section>\n        <section><h2>急上昇とPre-Buzzの見方</h2><p>通常表示では、現在の注目度だけでなく、検索・閲覧データの変化から伸びる兆しが見えるキーワードも区別して掲載します。大きな数値だけを理由に断定せず、取得時点、更新時刻、関連情報を組み合わせて確認できる構成にしています。</p></section>\n        <section id=\\"categories\\"><h2>人物・ニュース・エンタメ・スポーツ・ビジネス</h2><p>芸能人やスポーツ選手の名前、ドラマや作品名、企業・サービス、社会ニュースなど、検索される理由が時間とともに変わる話題を横断して扱います。カテゴリは入口として使い、詳細ページではそのキーワード固有の背景を整理します。</p></section>\n        <section><h2>「なぜ今話題か」を重視</h2><p>BUZZ NOWの中心はランキング順位そのものではありません。検索した人が知りたいのは、その言葉が今なぜ急に注目されているのかです。そのため、通常のトピックページでは確認できたニュース、公式発表、公開データなどを基に背景を説明し、出典へ戻れるようにします。</p></section>\n        <section id=\\"sources\\"><h2>情報源と確認方針</h2><p>Google Trends、Wikimediaの公開データ、公式発表、公開ニュースなど、確認できる情報を基に整理します。取得できない内容や根拠を確認できない内容を事実として補完せず、未確認と確認済みを区別します。話題の理由は時点によって変わるため、更新時刻と出典も重要な情報として扱います。</p></section>\n        <section><h2>企業情報も別入口で確認</h2><p>同じサイト基盤では、企業倒産・新規法人情報も整理しています。<a href=\\"/corporate/bankruptcies\\">企業の倒産速報</a>、<a href=\\"/corporate/registrations\\">新規法人情報</a>、<a href=\\"/corporate/signals\\">地域・業種の動き</a>から目的別に確認できます。</p></section>\n        <section><h2>自動更新と品質管理</h2><p>通常運用ではデータ収集を自動化し、更新日時、取得元、重複、古い情報を区別します。取得処理が止まった場合に古い情報を新着として見せたり、データ欠損をゼロ件とみなしたりしないことを基本方針にしています。</p></section>\n        <section><h2>現在の更新状況</h2><p>現在はデータベースの転送量上限に達しているため、最新ランキングと一部の個別トピック読み込みを一時停止しています。サイトの目的、検索導線、既存URL、企業情報への入口は維持しています。データ接続が復旧し次第、通常のトレンドランキングと新着トピック表示へ戻ります。</p></section>'''
-          if old_sections not in s:
-              raise SystemExit('fallback section anchor not found')
-          s = s.replace(old_sections, new_sections, 1)
-
-          required = [
-              'BUZZ NOW｜いま話題の理由・急上昇ワード・トレンド速報',
-              'id=\\"categories\\"',
-              '/corporate/bankruptcies',
-              'データベースの転送量上限',
-          ]
-          for needle in required:
-              if needle not in s:
-                  raise SystemExit(f'missing after patch: {needle}')
-
-          p.write_text(s, encoding='utf-8')
+          p=Path('app/migration_control.py')
+          s=p.read_text(encoding='utf-8')
+          anchor='''        <section><h2>現在の更新状況</h2><p>現在はデータベースの転送量上限に達しているため、最新ランキングと一部の個別トピック読み込みを一時停止しています。サイトの目的、検索導線、既存URL、企業情報への入口は維持しています。データ接続が復旧し次第、通常のトレンドランキングと新着トピック表示へ戻ります。</p></section>'''
+          expanded='''        <section><h2>BUZZ NOWの見方</h2><ul>\n          <li><strong>急上昇ワード</strong> 検索や閲覧の動きが短期間で大きくなった話題を確認する入口です。</li>\n          <li><strong>Pre-Buzz</strong> すでに大きくバズった話題だけでなく、伸び始めの兆しを見るための区分です。</li>\n          <li><strong>爆発中</strong> 直近の変化が特に強い話題を、通常ランキングと分けて確認するための表示です。</li>\n          <li><strong>なぜ今話題</strong> キーワード名だけでなく、注目のきっかけとなった出来事や発表を整理します。</li>\n          <li><strong>出典</strong> 確認に使った公開情報やニュースへ戻れるよう、元情報への導線を残します。</li>\n          <li><strong>更新時刻</strong> トレンドは変化が速いため、いつ確認した情報かを重要な要素として扱います。</li>\n          <li><strong>公式発表</strong> 本人、企業、主催者などの公式情報が確認できる場合は、優先して根拠にします。</li>\n          <li><strong>報道情報</strong> ニュースは媒体名や公開時点を確認し、未確認の内容を確定情報として扱いません。</li>\n          <li><strong>関連トピック</strong> 同じ出来事に関係する人物、作品、企業などへ回遊できる構成を目指します。</li>\n          <li><strong>未確認</strong> 取得失敗や情報不足をゼロ件や「何も起きていない」と解釈しません。</li>\n          <li><strong>古い情報</strong> 過去の話題を新着に見せず、取得日時と出来事の時点を分けて管理します。</li>\n          <li><strong>企業情報</strong> 倒産速報、新規法人、地域・業種の動きは専用ページで整理しています。</li>\n        </ul></section>\n        <section><h2>よくある確認ポイント</h2>\n          <h3>ランキングの数字だけ見ればよいですか？</h3><p>いいえ。順位は入口です。話題になった理由、更新時刻、関連する発表や報道を合わせて確認することで、そのキーワードを検索する意味が分かるようにします。</p>\n          <h3>芸能人の名前が出たら何が分かりますか？</h3><p>名前だけを再掲するのではなく、新しい出演情報、作品、発表、報道など、確認できた範囲で注目の理由を整理します。同じ名前が再び上昇した場合も新しい理由があるかを確認します。</p>\n          <h3>スポーツの話題は扱いますか？</h3><p>扱います。選手、チーム、大会などが検索されている場合、試合結果や発表など確認できる出来事と結び付けて整理する方針です。</p>\n          <h3>企業やサービスの話題も対象ですか？</h3><p>対象です。新商品、障害、発表、企業動向など、検索需要が高まった背景を確認します。企業倒産・新規法人情報は専用の企業情報ページにも入口を設けています。</p>\n          <h3>取得できなかった情報はどうなりますか？</h3><p>取得できなかったことを「情報なし」とは扱いません。未確認として残し、次回の取得や別の確認可能な情報源で再確認します。</p>\n          <h3>記事をそのまま転載していますか？</h3><p>他媒体の記事本文をそのまま複製することを目的にしていません。確認した事実関係を整理し、必要な場合は出典へ移動できるようにします。</p>\n          <h3>いつの情報か分かりますか？</h3><p>通常ページでは取得時刻や更新時刻を保持し、古い出来事と現在のトレンドを混同しない運用を行います。</p>\n          <h3>検索から来た人はどこを見ればよいですか？</h3><p>まず該当キーワードの詳細ページで「なぜ今話題なのか」を確認し、その後に関連トピックや出典へ進む流れを基本にしています。</p>\n        </section>\n        <section><h2>現在の更新状況</h2><p>現在はデータベースの転送量上限に達しているため、最新ランキングと一部の個別トピック読み込みを一時停止しています。サイトの目的、検索導線、既存URL、企業情報への入口は維持しています。データ接続が復旧し次第、通常のトレンドランキングと新着トピック表示へ戻ります。</p></section>'''
+          if anchor not in s:
+              raise SystemExit('current-status anchor not found')
+          s=s.replace(anchor,expanded,1)
+          # Improve readability of the fallback page without changing normal site CSS.
+          s=s.replace("h2{{font-size:24px;margin:34px 0 10px}}p{{font-size:17px;line-height:1.9;color:#525866}}", "h2{{font-size:24px;margin:34px 0 10px}}h3{{font-size:18px;margin:22px 0 6px}}p,li{{font-size:17px;line-height:1.9;color:#525866}}ul{{padding-left:22px}}li{{margin:8px 0}}",1)
+          p.write_text(s,encoding='utf-8')
           PY
-      - name: Validate Python and fallback markers
+      - name: Validate expanded fallback
         run: |
           python -m py_compile app/migration_control.py
           python - <<'PY'
           from app.migration_control import _fallback_html
           html=_fallback_html('/').decode('utf-8')
-          assert 'BUZZ NOW｜いま話題の理由・急上昇ワード・トレンド速報' in html
-          assert '/corporate/bankruptcies' in html
-          assert 'なぜ今話題' in html
-          assert 'データベースの転送量上限' in html
-          print('fallback validation ok', len(html))
+          assert 'BUZZ NOWの見方' in html
+          assert 'よくある確認ポイント' in html
+          assert html.count('<li>') >= 12
+          assert html.count('<h3>') >= 8
+          print('expanded fallback ok',len(html))
           PY
-      - name: Commit outage-page SEO fix
+      - name: Commit expansion
         run: |
           if git diff --quiet -- app/migration_control.py; then
             echo 'No changes needed'
@@ -84,5 +53,5 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add app/migration_control.py
-          git commit -m 'Strengthen BUZZ NOW DB outage landing page'
+          git commit -m 'Expand BUZZ NOW outage SEO content'
           git push origin HEAD:main
