@@ -127,6 +127,30 @@ def _fallback_html(path):
         <section id=\"sources\"><h2>情報源と確認方針</h2><p>Google Trends、Wikimediaの公開データ、公式発表、公開ニュースなど、確認できる情報を基に整理します。取得できない内容や根拠を確認できない内容を事実として補完せず、未確認と確認済みを区別します。話題の理由は時点によって変わるため、更新時刻と出典も重要な情報として扱います。</p></section>
         <section><h2>企業情報も別入口で確認</h2><p>同じサイト基盤では、企業倒産・新規法人情報も整理しています。<a href=\"/corporate/bankruptcies\">企業の倒産速報</a>、<a href=\"/corporate/registrations\">新規法人情報</a>、<a href=\"/corporate/signals\">地域・業種の動き</a>から目的別に確認できます。</p></section>
         <section><h2>自動更新と品質管理</h2><p>通常運用ではデータ収集を自動化し、更新日時、取得元、重複、古い情報を区別します。取得処理が止まった場合に古い情報を新着として見せたり、データ欠損をゼロ件とみなしたりしないことを基本方針にしています。</p></section>
+        <section><h2>BUZZ NOWの見方</h2><ul>
+          <li><strong>急上昇ワード</strong> 検索や閲覧の動きが短期間で大きくなった話題を確認する入口です。</li>
+          <li><strong>Pre-Buzz</strong> すでに大きくバズった話題だけでなく、伸び始めの兆しを見るための区分です。</li>
+          <li><strong>爆発中</strong> 直近の変化が特に強い話題を、通常ランキングと分けて確認するための表示です。</li>
+          <li><strong>なぜ今話題</strong> キーワード名だけでなく、注目のきっかけとなった出来事や発表を整理します。</li>
+          <li><strong>出典</strong> 確認に使った公開情報やニュースへ戻れるよう、元情報への導線を残します。</li>
+          <li><strong>更新時刻</strong> トレンドは変化が速いため、いつ確認した情報かを重要な要素として扱います。</li>
+          <li><strong>公式発表</strong> 本人、企業、主催者などの公式情報が確認できる場合は、優先して根拠にします。</li>
+          <li><strong>報道情報</strong> ニュースは媒体名や公開時点を確認し、未確認の内容を確定情報として扱いません。</li>
+          <li><strong>関連トピック</strong> 同じ出来事に関係する人物、作品、企業などへ回遊できる構成を目指します。</li>
+          <li><strong>未確認</strong> 取得失敗や情報不足をゼロ件や「何も起きていない」と解釈しません。</li>
+          <li><strong>古い情報</strong> 過去の話題を新着に見せず、取得日時と出来事の時点を分けて管理します。</li>
+          <li><strong>企業情報</strong> 倒産速報、新規法人、地域・業種の動きは専用ページで整理しています。</li>
+        </ul></section>
+        <section><h2>よくある確認ポイント</h2>
+          <h3>ランキングの数字だけ見ればよいですか？</h3><p>いいえ。順位は入口です。話題になった理由、更新時刻、関連する発表や報道を合わせて確認することで、そのキーワードを検索する意味が分かるようにします。</p>
+          <h3>芸能人の名前が出たら何が分かりますか？</h3><p>名前だけを再掲するのではなく、新しい出演情報、作品、発表、報道など、確認できた範囲で注目の理由を整理します。同じ名前が再び上昇した場合も新しい理由があるかを確認します。</p>
+          <h3>スポーツの話題は扱いますか？</h3><p>扱います。選手、チーム、大会などが検索されている場合、試合結果や発表など確認できる出来事と結び付けて整理する方針です。</p>
+          <h3>企業やサービスの話題も対象ですか？</h3><p>対象です。新商品、障害、発表、企業動向など、検索需要が高まった背景を確認します。企業倒産・新規法人情報は専用の企業情報ページにも入口を設けています。</p>
+          <h3>取得できなかった情報はどうなりますか？</h3><p>取得できなかったことを「情報なし」とは扱いません。未確認として残し、次回の取得や別の確認可能な情報源で再確認します。</p>
+          <h3>記事をそのまま転載していますか？</h3><p>他媒体の記事本文をそのまま複製することを目的にしていません。確認した事実関係を整理し、必要な場合は出典へ移動できるようにします。</p>
+          <h3>いつの情報か分かりますか？</h3><p>通常ページでは取得時刻や更新時刻を保持し、古い出来事と現在のトレンドを混同しない運用を行います。</p>
+          <h3>検索から来た人はどこを見ればよいですか？</h3><p>まず該当キーワードの詳細ページで「なぜ今話題なのか」を確認し、その後に関連トピックや出典へ進む流れを基本にしています。</p>
+        </section>
         <section><h2>現在の更新状況</h2><p>現在はデータベースの転送量上限に達しているため、最新ランキングと一部の個別トピック読み込みを一時停止しています。サイトの目的、検索導線、既存URL、企業情報への入口は維持しています。データ接続が復旧し次第、通常のトレンドランキングと新着トピック表示へ戻ります。</p></section>
         """
     website_json = json.dumps({
@@ -137,7 +161,7 @@ def _fallback_html(path):
         "description": description,
         "inLanguage": "ja",
     }, ensure_ascii=False).replace("<", "\\u003c")
-    return f"""<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title><meta name=\"description\" content=\"{description}\"><meta name=\"robots\" content=\"index,follow,max-image-preview:large\"><link rel=\"canonical\" href=\"{canonical}\"><link rel=\"icon\" href=\"/favicon.ico\" type=\"image/vnd.microsoft.icon\"><link rel=\"icon\" href=\"/static/buzz-now-icon.png\" type=\"image/png\" sizes=\"192x192\"><script type=\"application/ld+json\">{website_json}</script><style>body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#f6f7fb;color:#171923}}main{{max-width:920px;margin:0 auto;padding:56px 24px 80px}}.card{{background:#fff;border-radius:24px;padding:clamp(26px,5vw,48px);box-shadow:0 12px 40px rgba(20,30,60,.08)}}h1{{font-size:clamp(38px,7vw,68px);line-height:1.05;margin:20px 0}}h2{{font-size:24px;margin:34px 0 10px}}p{{font-size:17px;line-height:1.9;color:#525866}}.status{{display:inline-block;border-radius:999px;background:#eef2ff;color:#3049a5;padding:8px 12px;font-size:13px;font-weight:700}}.nav{{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:28px}}.nav a{{padding:10px 14px;border-radius:999px;background:#f1f3f8;color:#24324a;text-decoration:none;font-weight:700}}a{{color:#2457ff}}.reload{{display:inline-flex;margin-top:22px;font-weight:700}}</style></head><body><main>{nav}<div class=\"card\"><span class=\"status\">公開継続中・最新データ更新待ち</span><h1>{heading}</h1><p>{lead}</p>{sections}<a class=\"reload\" href=\"{canonical}\">最新状態を再読み込み →</a></div></main></body></html>""".encode("utf-8")
+    return f"""<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title><meta name=\"description\" content=\"{description}\"><meta name=\"robots\" content=\"index,follow,max-image-preview:large\"><link rel=\"canonical\" href=\"{canonical}\"><link rel=\"icon\" href=\"/favicon.ico\" type=\"image/vnd.microsoft.icon\"><link rel=\"icon\" href=\"/static/buzz-now-icon.png\" type=\"image/png\" sizes=\"192x192\"><script type=\"application/ld+json\">{website_json}</script><style>body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#f6f7fb;color:#171923}}main{{max-width:920px;margin:0 auto;padding:56px 24px 80px}}.card{{background:#fff;border-radius:24px;padding:clamp(26px,5vw,48px);box-shadow:0 12px 40px rgba(20,30,60,.08)}}h1{{font-size:clamp(38px,7vw,68px);line-height:1.05;margin:20px 0}}h2{{font-size:24px;margin:34px 0 10px}}h3{{font-size:18px;margin:22px 0 6px}}p,li{{font-size:17px;line-height:1.9;color:#525866}}ul{{padding-left:22px}}li{{margin:8px 0}}.status{{display:inline-block;border-radius:999px;background:#eef2ff;color:#3049a5;padding:8px 12px;font-size:13px;font-weight:700}}.nav{{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:28px}}.nav a{{padding:10px 14px;border-radius:999px;background:#f1f3f8;color:#24324a;text-decoration:none;font-weight:700}}a{{color:#2457ff}}.reload{{display:inline-flex;margin-top:22px;font-weight:700}}</style></head><body><main>{nav}<div class=\"card\"><span class=\"status\">公開継続中・最新データ更新待ち</span><h1>{heading}</h1><p>{lead}</p>{sections}<a class=\"reload\" href=\"{canonical}\">最新状態を再読み込み →</a></div></main></body></html>""".encode("utf-8")
 
 
 def _runtime_database_url():
