@@ -1,14 +1,31 @@
 from __future__ import annotations
 from .public_quality import public_store
-from .text_rules import city_conflicts_with_prefecture
+from .text_rules import city_conflicts_with_prefecture, PREFECTURES
 
 import html
 import json
+import re
 from datetime import date, datetime
 from urllib.parse import quote, quote_plus
 from .activity import compute_activity_score
 
 SITE_NAME = "開店閉店マップ"
+
+_MUNICIPALITY_RE = re.compile(r"^(?:[一-龥々ぁ-んァ-ヶー]{1,12}市[一-龥々ぁ-んァ-ヶー]{1,8}区|[一-龥々ぁ-んァ-ヶー]{1,16}(?:市|区|町|村))$")
+
+def city_is_indexable(prefecture, city):
+    value=(city or "").strip()
+    if not value or value in {"都市", "市区町村", "地域"}:
+        return False
+    if city_conflicts_with_prefecture(prefecture, value):
+        return False
+    if any(p in value for p in PREFECTURES):
+        return False
+    if len(value) > 16 or not _MUNICIPALITY_RE.fullmatch(value):
+        return False
+    if re.fullmatch(r"[ァ-ヶー]{2,}市", value):
+        return False
+    return True
 
 CSS = """
 :root{
@@ -341,7 +358,7 @@ def breadcrumb_json(origin, items):
 def render_area(database_url, origin, prefecture, city=None, page=1, per_page=40, status='all'):
     prefecture = (prefecture or "").strip()
     city = (city or "").strip() or None
-    if city_conflicts_with_prefecture(prefecture, city):
+    if city and not city_is_indexable(prefecture, city):
         # Preserve the URL for review, but do not present contradictory data as
         # an authoritative local guide or redirect it to an unverified region.
         path = f"/area/{qpath(prefecture)}/{qpath(city)}"
@@ -546,7 +563,7 @@ def render_area(database_url, origin, prefecture, city=None, page=1, per_page=40
     for name,count in facets:
         if not name:
             continue
-        if facet_type == "city" and city_conflicts_with_prefecture(prefecture, name):
+        if facet_type == "city" and (count < 2 or not city_is_indexable(prefecture, name)):
             continue
         href = f"/area/{qpath(prefecture)}/{qpath(name)}" if facet_type=="city" else f"/category/{qpath(name)}"
         facet_html.append(f'<a class="facet" href="{href}">{esc(name)} <strong>{count}</strong></a>')
@@ -834,7 +851,7 @@ def render_area(database_url, origin, prefecture, city=None, page=1, per_page=40
     </section>
   </aside>
 </div>"""
-    return page_shell(origin,title,desc,canonical_path,body,breadcrumb_json(origin,crumbs),noindex=(total==0))
+    return page_shell(origin,title,desc,canonical_path,body,breadcrumb_json(origin,crumbs),noindex=(total==0 or (city and all_total < 2)))
 
 def render_category(database_url, origin, category, page=1, per_page=40, status='all'):
     category = (category or "").strip()
@@ -1255,7 +1272,7 @@ def render_store(database_url, origin, store_id):
     return page_shell(origin,title,desc,canonical_path,body,ld,noindex=d.get("quality_pending",False))
 
 def sitemap_xml(database_url, origin, max_urls=45000):
-    urls=[origin.rstrip("/")+"/"]
+    urls=[origin.rstrip("/")+"/", origin.rstrip("/")+"/open/", origin.rstrip("/")+"/close/"]
     with _connect(database_url) as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -1268,14 +1285,16 @@ def sitemap_xml(database_url, origin, max_urls=45000):
                 urls.append(site_url(origin,f"/area/{qpath(pref)}"))
 
             cur.execute("""
-                SELECT DISTINCT prefecture,city FROM stores
+                SELECT prefecture,city,COUNT(*) FROM stores
                 WHERE COALESCE(status,'') <> 'excluded'
                   AND prefecture IS NOT NULL AND prefecture<>''
                   AND city IS NOT NULL AND city<>''
+                GROUP BY prefecture,city
+                HAVING COUNT(*) >= 2
                 ORDER BY prefecture,city
             """)
-            for pref,city in cur.fetchall():
-                if city_conflicts_with_prefecture(pref, city):
+            for pref,city,count in cur.fetchall():
+                if not city_is_indexable(pref, city):
                     continue
                 urls.append(site_url(origin,f"/area/{qpath(pref)}/{qpath(city)}"))
 
