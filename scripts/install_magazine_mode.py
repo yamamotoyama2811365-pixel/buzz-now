@@ -54,7 +54,11 @@ def install_template():
     stream = '{% include "_magazine_stream.html" %}'
     ad = '    <aside class="section a8-advertisement" aria-label="広告">'
     if stream not in text:
-        text = once(text, ad, '    ' + stream + '\n\n' + ad)
+        search_from = text.find('class="section news-briefing"')
+        pos = text.find(ad, search_from)
+        if search_from < 0 or pos < 0:
+            raise ValueError('first article ad block not found after news briefing')
+        text = text[:pos] + '    ' + stream + '\n\n' + text[pos:]
     if text.count(points) != 1 or text.count(stream) != 1 or text.count(css) != 1:
         raise ValueError('duplicate magazine integration')
     TREND.write_text(text)
