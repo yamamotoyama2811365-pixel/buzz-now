@@ -1,0 +1,50 @@
+name: Open Close Bing SEO first wave
+on:
+  push:
+    branches: [work/open-close-bing-seo-20260916]
+    paths:
+      - scripts/upgrade_open_close_bing_seo_20260916.py
+      - .github/workflows/open-close-bing-seo-20260916.yml
+permissions:
+  contents: write
+concurrency:
+  group: open-close-bing-seo-20260916
+  cancel-in-progress: false
+jobs:
+  patch-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply guarded SEO patch
+        run: python scripts/upgrade_open_close_bing_seo_20260916.py
+      - name: Syntax and focused behavior checks
+        run: |
+          python -m py_compile services/open_close/collectors/seo_pages.py
+          python - <<'PY'
+          from services.open_close.collectors.seo_pages import city_scope_clause,city_is_indexable
+          q,p=city_scope_clause('北海道','札幌市')
+          assert 'LIKE' in q and p==['札幌市','北海道札幌市','札幌市%','北海道札幌市%']
+          q,p=city_scope_clause('北海道','札幌市中央区')
+          assert 'LIKE' not in q and p==['札幌市中央区','北海道札幌市中央区']
+          assert city_is_indexable('北海道','札幌市')
+          assert not city_is_indexable('北海道','東京都港区')
+          src=open('services/open_close/collectors/seo_pages.py').read()
+          assert '開店閉店情報｜新店・閉店一覧' in src
+          assert '?status=closing' in src and '?status=opening' in src
+          assert 'COALESCE(confidence,0)>=94' in src
+          assert 'search-summary' in src
+          print('focused SEO checks passed')
+          PY
+      - name: Commit tested source changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add services/open_close/collectors/seo_pages.py
+          if ! git diff --cached --quiet; then
+            git commit -m 'Target Bing search intent and tighten public Open Close SEO quality'
+            git push origin HEAD:work/open-close-bing-seo-20260916
+          fi
