@@ -1,4 +1,4 @@
-name: BUZZ NOW top SEO fix once
+name: BUZZ NOW outage SEO fix once
 
 on:
   push:
@@ -17,65 +17,72 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-      - name: Patch top page SEO content
+      - name: Strengthen DB-outage top page
         run: |
           python - <<'PY'
           from pathlib import Path
-          p = Path('templates/index.html')
+          p = Path('app/migration_control.py')
           s = p.read_text(encoding='utf-8')
 
-          s = s.replace('"url": "https://buzz-now.onrender.com/",', '"url": "https://buzz-now-1.onrender.com/",')
+          replacements = {
+            'title = "Buzz Now｜いま話題の理由がわかるトレンド情報"':
+              'title = "BUZZ NOW｜いま話題の理由・急上昇ワード・トレンド速報"',
+            'description = "いま話題になっているキーワードを集め、なぜ今話題なのかを出典と時点付きで整理するBuzz Now。"':
+              'description = "BUZZ NOWは、いま話題の人物・出来事・作品・企業や急上昇ワードを集め、なぜ今話題なのか、確認できた背景・出典・関連情報を整理するトレンド情報サイトです。"',
+            'heading = "Buzz Now"':
+              'heading = "BUZZ NOW｜いま話題の理由を追う"',
+            'lead = "Buzz Nowは、検索やSNSで注目が集まり始めたキーワードについて、名前だけを並べるのではなく『なぜ今話題なのか』を確認できるよう整理するトレンド情報サイトです。"':
+              'lead = "BUZZ NOWは、検索やSNSで注目が集まり始めた人物、出来事、作品、企業などのキーワードを追い、名前だけを並べるのではなく『なぜ今話題なのか』『何が起きたのか』『どの情報源で確認できるのか』まで短時間で把握できるよう整理するトレンド情報サイトです。"',
+          }
+          for old, new in replacements.items():
+              if old not in s:
+                  raise SystemExit(f'anchor not found: {old[:50]}')
+              s = s.replace(old, new, 1)
 
-          old_style = '''  .top-tab{text-decoration:none;display:flex;align-items:center;justify-content:center;cursor:pointer;}\n  html{scroll-behavior:smooth;}'''
-          new_style = '''  .top-tab{text-decoration:none;display:flex;align-items:center;justify-content:center;cursor:pointer;}\n  html{scroll-behavior:smooth;}\n  .about-buzznow-copy{margin-top:14px;padding:22px;border:1px solid rgba(148,163,184,.22);border-radius:20px;background:rgba(15,23,42,.38);}\n  .about-buzznow-copy h2{margin:0 0 10px;font-size:clamp(22px,4vw,32px);}\n  .about-buzznow-copy p{margin:8px 0;color:#cbd5e1;line-height:1.9;}\n  .about-buzznow-links{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:16px;}\n  .about-buzznow-links a{display:block;padding:14px;border:1px solid rgba(148,163,184,.24);border-radius:14px;color:inherit;text-decoration:none;background:rgba(30,41,59,.45);}\n  .about-buzznow-links strong{display:block;margin-bottom:4px;}\n  .about-buzznow-links span{font-size:12px;color:#94a3b8;line-height:1.5;}\n  .top-fresh-list{display:grid;gap:8px;margin-top:16px;}\n  .top-fresh-list a{display:block;padding:12px 14px;border-radius:12px;border:1px solid rgba(148,163,184,.18);color:inherit;text-decoration:none;}\n  .top-fresh-list strong{display:block;}\n  .top-fresh-list span{display:block;margin-top:3px;color:#94a3b8;font-size:12px;line-height:1.6;}\n  @media(max-width:720px){.about-buzznow-links{grid-template-columns:1fr;}}'''
-          if old_style not in s:
-              raise SystemExit('style anchor not found')
-          s = s.replace(old_style, new_style, 1)
+          old_nav = '''        <nav class=\\"nav\\" aria-label=\\"サイトメニュー\\">\n          <a href=\\"/\\" aria-current=\\"page\\">Buzz Nowトップ</a>\n          <a href=\\"/corporate/\\">企業倒産・新規法人情報</a>\n        </nav>'''
+          new_nav = '''        <nav class=\\"nav\\" aria-label=\\"サイトメニュー\\">\n          <a href=\\"/\\" aria-current=\\"page\\">BUZZ NOWトップ</a>\n          <a href=\\"#about\\">BUZZ NOWとは</a>\n          <a href=\\"#categories\\">話題のカテゴリ</a>\n          <a href=\\"#sources\\">情報源と確認方針</a>\n          <a href=\\"/corporate/\\">企業情報トップ</a>\n          <a href=\\"/corporate/bankruptcies\\">倒産速報</a>\n          <a href=\\"/corporate/registrations\\">新規法人</a>\n          <a href=\\"/corporate/signals\\">地域・業種の動き</a>\n        </nav>'''
+          if old_nav not in s:
+              raise SystemExit('non-corporate nav anchor not found')
+          s = s.replace(old_nav, new_nav, 1)
 
-          start = s.find('    <section class="about-buzznow"')
-          if start < 0:
-              raise SystemExit('about section start not found')
-          end = s.find('    </section>', start)
-          if end < 0:
-              raise SystemExit('about section end not found')
-          end += len('    </section>')
-
-          new_about = '''    <section class="about-buzznow" aria-label="BUZZ NOWについて" style="margin:18px 0 24px;">\n      <img\n        src="/static/buzz-now-about-banner.png"\n        alt="バズった後じゃなく『バズる直前』を見つけよう。BUZZ NOWは、これから注目が集まりそうなキーワードをデータから先読みするトレンド発見サイトです。"\n        loading="eager"\n        decoding="async"\n        style="display:block;width:100%;height:auto;border-radius:22px;border:1px solid rgba(148,163,184,.22);"\n      >\n      <div class="about-buzznow-copy">\n        <h2>いま話題の「名前」だけでなく、なぜ今話題なのかまで。</h2>\n        <p>BUZZ NOWは、Google TrendsやWikimediaなどの公開データをもとに、いま検索・閲覧が伸びている人物、出来事、作品、企業やニュースの話題を整理するトレンド情報サイトです。単に急上昇ワードを並べるのではなく、話題になった背景、確認できた出典、関連ニュースを各トピックページで確認できるようにしています。</p>\n        <p>「総合ランキング」では現在の注目度を、「バズりそう」ではこれから伸びる兆しを、「爆発中」では直近で勢いが強いキーワードを確認できます。気になる言葉を見つけたら詳細ページへ進み、何が起きたのかを短時間で把握できます。データは自動取得を基本とし、取得できていない情報を事実として補完しません。</p>\n        <div class="about-buzznow-links" aria-label="主要コンテンツ">\n          <a href="#ranking"><strong>いま話題のランキング</strong><span>急上昇・Pre-Buzz・爆発中のキーワードを見る</span></a>\n          <a href="#categoryTabs"><strong>カテゴリから探す</strong><span>ニュース、エンタメ、スポーツ、ビジネスなどから探す</span></a>\n          <a href="/corporate/"><strong>企業倒産・新規法人情報</strong><span>企業の倒産・設立動向を地域別に確認する</span></a>\n        </div>\n        <div class="top-fresh-list" aria-label="新着トピック">\n          {% for item in trends[:8] if item['is_indexable'] %}\n          <a href="/trend/{{ item['slug']|urlencode }}">\n            <strong>{{ item['keyword'] }}</strong>\n            <span>{{ item['why_now'] or item['summary'] or 'いま話題になっている理由と確認できた出典を整理しています。' }}</span>\n          </a>\n          {% endfor %}\n        </div>\n      </div>\n    </section>'''
-          s = s[:start] + new_about + s[end:]
+          old_sections = '''        <section><h2>Buzz Nowが整理する情報</h2><p>話題のキーワード、注目が高まった背景、関連する出来事、確認できた情報源を分けて整理します。単にトレンド名を転載するのではなく、読者が「何が起きたのか」「なぜ今検索されているのか」を短時間で把握できるページを目指しています。</p></section>\n        <section><h2>情報の確認方針</h2><p>公開情報やニュースなど確認できる情報を基にし、確認できない内容を事実として補完しません。話題の理由は時点によって変わるため、更新時刻や出典を確認できる構成で通常ページを公開しています。</p></section>\n        <section><h2>現在の更新状況</h2><p>データベースの月間利用上限により、最新ランキングと個別トピックの読み込みを一時停止しています。この案内ページは検索エンジンがサイトの目的を理解できるよう維持し、データ接続が復旧し次第、通常のトレンド一覧に自動で戻ります。</p></section>'''
+          new_sections = '''        <section id=\\"about\\"><h2>BUZZ NOWで分かること</h2><p>話題のキーワード、注目が高まった背景、関連する出来事、確認できた情報源を分けて整理します。単にトレンド名を転載するのではなく、読者が「何が起きたのか」「なぜ今検索されているのか」「その話題に新しい情報があるのか」を短時間で把握できるページを目指しています。</p></section>\n        <section><h2>急上昇とPre-Buzzの見方</h2><p>通常表示では、現在の注目度だけでなく、検索・閲覧データの変化から伸びる兆しが見えるキーワードも区別して掲載します。大きな数値だけを理由に断定せず、取得時点、更新時刻、関連情報を組み合わせて確認できる構成にしています。</p></section>\n        <section id=\\"categories\\"><h2>人物・ニュース・エンタメ・スポーツ・ビジネス</h2><p>芸能人やスポーツ選手の名前、ドラマや作品名、企業・サービス、社会ニュースなど、検索される理由が時間とともに変わる話題を横断して扱います。カテゴリは入口として使い、詳細ページではそのキーワード固有の背景を整理します。</p></section>\n        <section><h2>「なぜ今話題か」を重視</h2><p>BUZZ NOWの中心はランキング順位そのものではありません。検索した人が知りたいのは、その言葉が今なぜ急に注目されているのかです。そのため、通常のトピックページでは確認できたニュース、公式発表、公開データなどを基に背景を説明し、出典へ戻れるようにします。</p></section>\n        <section id=\\"sources\\"><h2>情報源と確認方針</h2><p>Google Trends、Wikimediaの公開データ、公式発表、公開ニュースなど、確認できる情報を基に整理します。取得できない内容や根拠を確認できない内容を事実として補完せず、未確認と確認済みを区別します。話題の理由は時点によって変わるため、更新時刻と出典も重要な情報として扱います。</p></section>\n        <section><h2>企業情報も別入口で確認</h2><p>同じサイト基盤では、企業倒産・新規法人情報も整理しています。<a href=\\"/corporate/bankruptcies\\">企業の倒産速報</a>、<a href=\\"/corporate/registrations\\">新規法人情報</a>、<a href=\\"/corporate/signals\\">地域・業種の動き</a>から目的別に確認できます。</p></section>\n        <section><h2>自動更新と品質管理</h2><p>通常運用ではデータ収集を自動化し、更新日時、取得元、重複、古い情報を区別します。取得処理が止まった場合に古い情報を新着として見せたり、データ欠損をゼロ件とみなしたりしないことを基本方針にしています。</p></section>\n        <section><h2>現在の更新状況</h2><p>現在はデータベースの転送量上限に達しているため、最新ランキングと一部の個別トピック読み込みを一時停止しています。サイトの目的、検索導線、既存URL、企業情報への入口は維持しています。データ接続が復旧し次第、通常のトレンドランキングと新着トピック表示へ戻ります。</p></section>'''
+          if old_sections not in s:
+              raise SystemExit('fallback section anchor not found')
+          s = s.replace(old_sections, new_sections, 1)
 
           required = [
-              'https://buzz-now-1.onrender.com/',
-              'いま話題の「名前」だけでなく、なぜ今話題なのかまで。',
-              '企業倒産・新規法人情報',
-              'top-fresh-list',
+              'BUZZ NOW｜いま話題の理由・急上昇ワード・トレンド速報',
+              'id=\\"categories\\"',
+              '/corporate/bankruptcies',
+              'データベースの転送量上限',
           ]
           for needle in required:
               if needle not in s:
                   raise SystemExit(f'missing after patch: {needle}')
-          if '"url": "https://buzz-now.onrender.com/",' in s:
-              raise SystemExit('legacy structured-data URL still present')
 
           p.write_text(s, encoding='utf-8')
           PY
-      - name: Validate template markers
+      - name: Validate Python and fallback markers
         run: |
+          python -m py_compile app/migration_control.py
           python - <<'PY'
-          from pathlib import Path
-          s=Path('templates/index.html').read_text(encoding='utf-8')
-          assert '<link rel="canonical" href="https://buzz-now-1.onrender.com/">' in s
-          assert '"url": "https://buzz-now-1.onrender.com/",' in s
-          assert 'なぜ今話題なのかまで。' in s
-          assert 'href="/corporate/"' in s
-          print('template validation ok')
+          from app.migration_control import _fallback_html
+          html=_fallback_html('/').decode('utf-8')
+          assert 'BUZZ NOW｜いま話題の理由・急上昇ワード・トレンド速報' in html
+          assert '/corporate/bankruptcies' in html
+          assert 'なぜ今話題' in html
+          assert 'データベースの転送量上限' in html
+          print('fallback validation ok', len(html))
           PY
-      - name: Commit top-page fix
+      - name: Commit outage-page SEO fix
         run: |
-          if git diff --quiet -- templates/index.html; then
+          if git diff --quiet -- app/migration_control.py; then
             echo 'No changes needed'
             exit 0
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add templates/index.html
-          git commit -m 'Strengthen BUZZ NOW top page SEO content'
+          git add app/migration_control.py
+          git commit -m 'Strengthen BUZZ NOW DB outage landing page'
           git push origin HEAD:main
