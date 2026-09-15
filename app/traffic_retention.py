@@ -1,18 +1,33 @@
-"""Bound forecast history; archive summaries and delete raw rows atomically.
+"""Bound high-frequency BUZZ NOW history without deleting search content.
 
-These metrics are forecasts, not measured website traffic. Never sum forecasts
-and label the result as actual PV. The sums below are only averaging weights.
+Core content tables (trends, sources, related_keywords, corporate_items and social
+posts) are intentionally excluded. Forecast traffic history is rolled up to daily
+summaries; disposable signal/history tables are pruned by age in bounded batches.
 """
 from datetime import datetime, timedelta, timezone
 import logging
 from math import isclose
+import time
 
 logger = logging.getLogger(__name__)
 KEEP = 100
 BATCH_SIZE = 20000
+PRUNE_BATCH_SIZE = 10000
 SUMMARY_DAYS = 365
 LOCK_KEY = 748290163
+RUN_INTERVAL_SECONDS = 6 * 60 * 60
 METRICS = ('impressions', 'clicks', 'pageviews', 'ctr', 'traffic_potential')
+
+# These are high-frequency observations, not user-facing/search content.
+# Keep enough detail for recent diagnostics while preventing unbounded growth.
+RETENTION_POLICIES = (
+    ('trend_history', 'recorded_at', 30),
+    ('growth_log', 'recorded_at', 30),
+    ('source_snapshots', 'captured_at', 14),
+    ('v9_signal_history', 'captured_at', 14),
+)
+
+_last_attempt_monotonic = 0.0
 
 
 def should_sample(previous, values, timestamp):
@@ -88,8 +103,55 @@ SELECT (SELECT count(*) FROM removed) AS archived_rows,
 '''
 
 
+def _table_has_column(c, table, column):
+    row = c.execute('''SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name=? AND column_name=?
+    ) AS present''', (table, column)).fetchone()
+    return bool(row and row['present'])
+
+
+def _prune_by_age(c, table, timestamp_column, days):
+    """Delete at most one bounded batch and return only the count to the app."""
+    if not _table_has_column(c, table, timestamp_column):
+        return 0
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    # Identifiers come only from RETENTION_POLICIES constants above.
+    sql = f'''WITH doomed AS MATERIALIZED (
+        SELECT id FROM {table}
+        WHERE {timestamp_column} < ?
+        ORDER BY id
+        LIMIT {PRUNE_BATCH_SIZE}
+    ), removed AS (
+        DELETE FROM {table} t USING doomed d WHERE t.id=d.id RETURNING 1
+    ) SELECT count(*) AS deleted FROM removed'''
+    row = c.execute(sql, (cutoff,)).fetchone()
+    return int(row['deleted'] if row else 0)
+
+
+def _largest_tables(c, limit=12):
+    """Small diagnostic payload; no table contents leave Postgres."""
+    rows = c.execute('''SELECT relname AS table_name,
+        pg_total_relation_size(relid) AS bytes
+        FROM pg_catalog.pg_statio_user_tables
+        ORDER BY pg_total_relation_size(relid) DESC
+        LIMIT ?''', (limit,)).fetchall()
+    return [{'table': r['table_name'], 'bytes': int(r['bytes'])} for r in rows]
+
+
 def run(db_factory):
-    """One bounded transaction; another instance skips rather than double-counts."""
+    """Run retention at most once every six hours per process.
+
+    The scheduler may invoke this wrapper every two minutes, but the local throttle
+    prevents those invocations from opening a database connection. This is important
+    on metered Neon plans where connection/query churn itself contributes to usage.
+    """
+    global _last_attempt_monotonic
+    now_mono = time.monotonic()
+    if _last_attempt_monotonic and now_mono - _last_attempt_monotonic < RUN_INTERVAL_SECONDS:
+        return {'skipped': 'local_throttle'}
+    _last_attempt_monotonic = now_mono
+
     try:
         with db_factory() as c:
             c.execute("SET LOCAL lock_timeout='2s'")
@@ -97,14 +159,25 @@ def run(db_factory):
             locked = c.execute('SELECT pg_try_advisory_xact_lock(?) AS locked', (LOCK_KEY,)).fetchone()['locked']
             if not locked:
                 return {'skipped': 'already_running'}
+
+            c.execute(SCHEMA_SQL)
+            sizes_before = _largest_tables(c)
             result = dict(c.execute(ARCHIVE_SQL).fetchone())
-            cutoff = (datetime.now(timezone.utc).date() - timedelta(days=SUMMARY_DAYS-1)).isoformat()
-            c.execute('DELETE FROM traffic_daily_archive WHERE day < ?', (cutoff,))
-        logger.info('Traffic retention committed: %s', result)
+            archive_cutoff = (datetime.now(timezone.utc).date() - timedelta(days=SUMMARY_DAYS-1)).isoformat()
+            c.execute('DELETE FROM traffic_daily_archive WHERE day < ?', (archive_cutoff,))
+
+            pruned = {}
+            for table, column, days in RETENTION_POLICIES:
+                pruned[table] = _prune_by_age(c, table, column, days)
+            sizes_after = _largest_tables(c)
+            result.update({'pruned': pruned, 'largest_before': sizes_before, 'largest_after': sizes_after})
+
+        logger.info('DB retention committed: %s', result)
         return result
-    except Exception:
-        logger.exception('Traffic retention rolled back; original rows remain available')
-        raise
+    except Exception as exc:
+        # Quota exhaustion must not create a tight reconnect/error loop.
+        logger.warning('DB retention unavailable; no rows were changed: %s', exc)
+        return {'skipped': 'database_unavailable', 'error': type(exc).__name__}
 
 
 def daily(c, trend_id, cutoff):
