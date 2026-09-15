@@ -640,13 +640,17 @@ def render_area(database_url, origin, prefecture, city=None, page=1, per_page=40
                 """,area_params)
                 commercial_category_rows = cur.fetchall()
 
+                tenant_city_filter = city_filter.replace("city", "s.city")
                 cur.execute(f"""
                     SELECT COUNT(DISTINCT tl.store_id)
                     FROM tenant_listings tl
                     JOIN stores s ON s.id=tl.store_id
                     WHERE tl.status IN('detected','active')
-                      AND {area_where.replace('COALESCE(status', "COALESCE(s.status").replace("prefecture=%s", "s.prefecture=%s").replace("(city=", "(s.city=").replace(" OR city=", " OR s.city=").replace(" OR city LIKE", " OR s.city LIKE")}
-                """,area_params)
+                      AND COALESCE(s.status,'') <> 'excluded'
+                      AND (COALESCE(NULLIF(s.address,''),'')<>'' OR COALESCE(s.confidence,0)>=94)
+                      AND s.prefecture=%s
+                      AND {tenant_city_filter}
+                """,[prefecture]+city_filter_params)
                 active_tenant_count = int(cur.fetchone()[0] or 0)
 
     area_name = f"{prefecture}{city or ''}"
