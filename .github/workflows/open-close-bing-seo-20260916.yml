@@ -20,10 +20,19 @@ jobs:
         with:
           python-version: '3.11'
       - name: Apply guarded SEO patch
-        run: python scripts/upgrade_open_close_bing_seo_20260916.py
+        run: |
+          python scripts/upgrade_open_close_bing_seo_20260916.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('services/open_close/collectors/seo_pages.py')
+          s=p.read_text()
+          bad='    </section>\n\n    max_month = max('
+          good='    </section>\n    """\n\n    max_month = max('
+          assert bad in s
+          p.write_text(s.replace(bad,good,1))
+          PY
       - name: Syntax and focused behavior checks
         run: |
-          nl -ba services/open_close/collectors/seo_pages.py | sed -n '640,670p'
           python -m py_compile services/open_close/collectors/seo_pages.py
           python - <<'PY'
           from services.open_close.collectors.seo_pages import city_scope_clause,city_is_indexable
