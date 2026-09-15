@@ -289,7 +289,7 @@ async def _legacy_x_imobile_gate(scope, send):
         return True
 
     cookie = headers.get(b'cookie', b'').decode('latin1', 'ignore')
-    if 'buzznow_x_gate_seen=1' in cookie:
+    if 'buzznow_x_gate_seen_v2=1' in cookie:
         await send({'type': 'http.response.start', 'status': 302, 'headers': [
             (b'location', destination.encode('ascii')),
             (b'cache-control', b'no-store'),
@@ -323,7 +323,7 @@ h1{{font-size:22px;line-height:1.45;margin:0 0 8px}}.lead{{font-size:13px;line-h
         (b'content-type', b'text/html; charset=utf-8'),
         (b'cache-control', b'no-store'),
         (b'x-robots-tag', b'noindex, nofollow'),
-        (b'set-cookie', b'buzznow_x_gate_seen=1; Max-Age=3600; Path=/; Secure; HttpOnly; SameSite=Lax'),
+        (b'set-cookie', b'buzznow_x_gate_seen_v2=1; Max-Age=3600; Path=/; Secure; HttpOnly; SameSite=Lax'),
     ]})
     await send({'type': 'http.response.body', 'body': page})
     return True

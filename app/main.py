@@ -35,6 +35,7 @@ TRAFFIC_RETENTION_ENABLED = os.getenv("TRAFFIC_RETENTION_ENABLED", "false").lowe
 SITE_URL = os.getenv("SITE_URL", "http://localhost:8000").rstrip("/")
 # V35.36: X/Threads public links must never fall back to the retired Render hostname.
 SOCIAL_PUBLIC_BASE_URL = os.getenv("SOCIAL_PUBLIC_BASE_URL", "https://buzz-now-1.onrender.com").rstrip("/")
+X_PUBLIC_BASE_URL = os.getenv("X_PUBLIC_BASE_URL", "https://buzz-now.onrender.com").rstrip("/")
 
 # V35.32: IndexNow real-time search-engine notification.
 # The key is public by design and is hosted at /<key>.txt for ownership verification.
@@ -2400,7 +2401,7 @@ def _social_detail_url(slug: str) -> str:
 
 
 def _social_short_url(trend_id: int) -> str:
-    return f"{SOCIAL_PUBLIC_BASE_URL}/t/{int(trend_id)}"
+    return f"{X_PUBLIC_BASE_URL}/t/{int(trend_id)}"
 
 
 def _social_image_url(trend_id: int) -> str:
@@ -2681,7 +2682,7 @@ def _social_reason_from_row(row, keyword: str) -> str:
 
 def _build_social_post_text(row, tracking_content: str = "news_context_v1") -> str:
     reason = _social_reason_from_row(row, str(row["keyword"]))
-    url = (SOCIAL_PUBLIC_BASE_URL + _social_detail_path(row["slug"])
+    url = (X_PUBLIC_BASE_URL + _social_detail_path(row["slug"])
            + "?utm_source=x&utm_medium=social&utm_campaign=prebuzz&utm_content="
            + quote(tracking_content, safe=""))
     headline = reason[len("関連報道："):] if reason.startswith("関連報道：") else f"「{row['keyword']}」が話題。なぜ今？"
