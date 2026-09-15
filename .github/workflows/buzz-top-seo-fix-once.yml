@@ -1,4 +1,4 @@
-name: BUZZ NOW outage content final expansion
+name: BUZZ NOW social text-only switch
 
 on:
   push:
@@ -17,37 +17,68 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-      - name: Add practical fallback FAQ
+      - name: Disable automatic social image generation and attachment
         run: |
           python - <<'PY'
           from pathlib import Path
-          p=Path('app/migration_control.py')
+          p=Path('app/main.py')
           s=p.read_text(encoding='utf-8')
-          anchor='''          <h3>検索から来た人はどこを見ればよいですか？</h3><p>まず該当キーワードの詳細ページで「なぜ今話題なのか」を確認し、その後に関連トピックや出典へ進む流れを基本にしています。</p>\n        </section>'''
-          replacement='''          <h3>検索から来た人はどこを見ればよいですか？</h3><p>まず該当キーワードの詳細ページで「なぜ今話題なのか」を確認し、その後に関連トピックや出典へ進む流れを基本にしています。</p>\n          <h3>同じキーワードが何度も出ることはありますか？</h3><p>あります。ただし以前と同じ理由で再掲するのではなく、新しい発表や出来事があるかを確認し、同じ話題の繰り返しと新しい動きを区別します。</p>\n          <h3>検索順位そのものを予測するサイトですか？</h3><p>検索エンジンの掲載順位を予測するサイトではありません。公開データから話題の勢いや変化を整理し、読者がトレンドの背景を理解するための情報を提供します。</p>\n          <h3>SNSで話題なら必ず掲載されますか？</h3><p>必ずではありません。確認できるデータ、関連情報、出典が不足している場合は、無理に理由を作って掲載するのではなく確認待ちとして扱います。</p>\n          <h3>速報と確定情報は区別しますか？</h3><p>区別します。速報段階の報道、公式に確定した発表、後から訂正された内容を同じ扱いにせず、確認できる状態に応じて表現を変えます。</p>\n          <h3>過去のトピックにも価値はありますか？</h3><p>あります。なぜその時期に話題になったかを残すことで、後から人物、作品、企業や出来事を調べる入口になります。現在の急上昇とは分けて扱います。</p>\n          <h3>関連ニュースが複数ある場合はどうしますか？</h3><p>同じ出来事を別記事として大量に重複させず、共通する事実と追加情報を整理し、確認に役立つ出典を選んで関連付けます。</p>\n          <h3>データが復旧したらこのページはどうなりますか？</h3><p>通常のランキング、新着トピック、カテゴリ表示へ自動的に戻ります。この説明内容は通常トップにも活かし、サイトの目的が分かる状態を維持します。</p>\n          <h3>BUZZ NOWの更新で最も重視することは何ですか？</h3><p>速さだけではなく、話題になった理由が本当に確認できることです。新しさ、根拠、重複防止、更新時刻を組み合わせて、検索した人に意味のある入口を作ります。</p>\n        </section>'''
-          if anchor not in s:
-              raise SystemExit('FAQ anchor not found')
-          s=s.replace(anchor,replacement,1)
+
+          env_anchor='SOCIAL_AI_IMAGE_ENABLED = os.getenv("SOCIAL_AI_IMAGE_ENABLED", "false").lower() == "true"'
+          if env_anchor not in s:
+              raise SystemExit('SOCIAL_AI_IMAGE_ENABLED anchor not found')
+          if 'SOCIAL_TEXT_ONLY = ' not in s:
+              s=s.replace(env_anchor, env_anchor+'\nSOCIAL_TEXT_ONLY = os.getenv("SOCIAL_TEXT_ONLY", "true").lower() == "true"', 1)
+
+          safe_anchor='''def _ensure_social_safe_card(c, row, ts: str):\n    \"\"\"Use a BUZZ NOW-owned data card instead of an AI context image when confidence is low.\"\"\"'''
+          safe_new=safe_anchor+'\n    if SOCIAL_TEXT_ONLY:\n        return {"ok": False, "reason": "SOCIAL_TEXT_ONLY=true"}'
+          if safe_anchor in s and 'def _ensure_social_safe_card' in s and safe_new not in s:
+              s=s.replace(safe_anchor,safe_new,1)
+
+          ai_anchor='''def _ensure_social_ai_image(c, row, ts: str):\n    \"\"\"Generate once and persist in PostgreSQL so Buffer can fetch a stable HTTPS URL.\"\"\"'''
+          ai_new=ai_anchor+'\n    if SOCIAL_TEXT_ONLY:\n        return {"ok": False, "reason": "SOCIAL_TEXT_ONLY=true"}'
+          if ai_anchor in s and ai_new not in s:
+              s=s.replace(ai_anchor,ai_new,1)
+
+          # Threads: keep post text but never attach an existing cached image in text-only mode.
+          threads_call="response = _send_to_buffer_channel(channel_id, text, image_url, 'shareNow')"
+          if threads_call in s and "if SOCIAL_TEXT_ONLY:\n            image_url = ''\n        response = _send_to_buffer_channel" not in s:
+              s=s.replace(threads_call,"if SOCIAL_TEXT_ONLY:\n            image_url = ''\n        "+threads_call,1)
+
+          # X: payload image_url should be ignored even if an older cached image exists.
+          x_anchor='''            image_url = payload.get(\"image_url\", \"\") if payload.get(\"image_ready\") else \"\"\n            if image_url:\n                _prewarm_social_jpeg(row[\"id\"])'''
+          x_new='''            image_url = \"\" if SOCIAL_TEXT_ONLY else (payload.get(\"image_url\", \"\") if payload.get(\"image_ready\") else \"\")\n            if image_url:\n                _prewarm_social_jpeg(row[\"id\"])'''
+          if x_anchor in s:
+              s=s.replace(x_anchor,x_new,1)
+
+          # Diagnostics should report the real production mode.
+          s=s.replace('"social_image_mode": "ai_context_visual",','"social_image_mode": "text_only" if SOCIAL_TEXT_ONLY else "ai_context_visual",')
+
+          required=['SOCIAL_TEXT_ONLY = os.getenv("SOCIAL_TEXT_ONLY", "true")','SOCIAL_TEXT_ONLY=true','"social_image_mode": "text_only" if SOCIAL_TEXT_ONLY else "ai_context_visual"']
+          for needle in required:
+              if needle not in s:
+                  raise SystemExit(f'missing marker after patch: {needle}')
           p.write_text(s,encoding='utf-8')
           PY
-      - name: Validate final fallback depth
+      - name: Validate application syntax and text-only guards
         run: |
-          python -m py_compile app/migration_control.py
+          python -m py_compile app/main.py
           python - <<'PY'
-          from app.migration_control import _fallback_html
-          html=_fallback_html('/').decode('utf-8')
-          assert html.count('<h3>') >= 16
-          assert 'データが復旧したらこのページはどうなりますか？' in html
-          print('final fallback ok',len(html))
+          from pathlib import Path
+          s=Path('app/main.py').read_text(encoding='utf-8')
+          assert 'SOCIAL_TEXT_ONLY = os.getenv("SOCIAL_TEXT_ONLY", "true").lower() == "true"' in s
+          assert s.count('return {"ok": False, "reason": "SOCIAL_TEXT_ONLY=true"}') >= 2
+          assert 'image_url = "" if SOCIAL_TEXT_ONLY else' in s
+          print('text-only social patch validated')
           PY
-      - name: Commit final expansion
+      - name: Commit social text-only mode
         run: |
-          if git diff --quiet -- app/migration_control.py; then
+          if git diff --quiet -- app/main.py; then
             echo 'No changes needed'
             exit 0
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app/migration_control.py
-          git commit -m 'Finish BUZZ NOW outage page content depth'
+          git add app/main.py
+          git commit -m 'Make BUZZ NOW social posts text only'
           git push origin HEAD:main
