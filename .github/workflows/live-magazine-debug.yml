@@ -1,0 +1,57 @@
+name: BUZZ NOW live magazine diagnostics
+on:
+  push:
+    branches: [feat/magazine-mode-20260915]
+    paths: [.github/workflows/live-magazine-debug.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Read live dashboard and article markers only
+        run: |
+          python - <<'PY'
+          import json
+          from urllib.request import urlopen, Request
+          from urllib.parse import quote
+          from urllib.error import HTTPError, URLError
+          base='https://buzz-now-1.onrender.com'
+          def get(url):
+              req=Request(url, headers={'User-Agent':'BUZZ-NOW-live-check/1.0'})
+              try:
+                  with urlopen(req,timeout=20) as r:
+                      body=r.read()
+                      print('GET',url,'status',r.status,'type',r.headers.get('content-type'),'bytes',len(body))
+                      return r.status, body
+              except HTTPError as e:
+                  body=e.read()
+                  print('GET',url,'HTTPError',e.code,'type',e.headers.get('content-type'),'bytes',len(body),'body',body[:800].decode('utf-8','replace'))
+                  return e.code, body
+              except Exception as e:
+                  print('GET',url,'ERROR',type(e).__name__,repr(e))
+                  return 0,b''
+          status,body=get(base+'/api/v9/dashboard?limit=1')
+          if status!=200:
+              raise SystemExit(2)
+          data=json.loads(body)
+          print('dashboard keys',list(data.keys()))
+          items=data.get('items') or []
+          print('items',len(items),'first',items[0] if items else None)
+          if not items: raise SystemExit(3)
+          slug=items[0].get('slug')
+          url=base+'/trend/'+quote(str(slug),safe='')
+          status,body=get(url)
+          html=body.decode('utf-8','replace')
+          markers={
+            'three_points':'ざっくり3POINT' in html,
+            'internal_stream':'data-magazine-stream="internal"' in html,
+            'x_stream':'data-magazine-stream="x"' in html,
+            'magazine_css':'/static/magazine.css?v=20260915' in html,
+            'old_x_boilerplate':'BUZZ NOW｜話題をチェック' in html,
+          }
+          print('slug',slug,'markers',json.dumps(markers,ensure_ascii=False))
+          print('title-snippet',html[html.find('<title>'):html.find('</title>')+8] if '<title>' in html else 'NO TITLE')
+          if status!=200: raise SystemExit(4)
+          PY
