@@ -1,0 +1,81 @@
+name: BUZZ NOW top SEO fix once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/buzz-top-seo-fix-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Patch top page SEO content
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('templates/index.html')
+          s = p.read_text(encoding='utf-8')
+
+          s = s.replace('"url": "https://buzz-now.onrender.com/",', '"url": "https://buzz-now-1.onrender.com/",')
+
+          old_style = '''  .top-tab{text-decoration:none;display:flex;align-items:center;justify-content:center;cursor:pointer;}\n  html{scroll-behavior:smooth;}'''
+          new_style = '''  .top-tab{text-decoration:none;display:flex;align-items:center;justify-content:center;cursor:pointer;}\n  html{scroll-behavior:smooth;}\n  .about-buzznow-copy{margin-top:14px;padding:22px;border:1px solid rgba(148,163,184,.22);border-radius:20px;background:rgba(15,23,42,.38);}\n  .about-buzznow-copy h2{margin:0 0 10px;font-size:clamp(22px,4vw,32px);}\n  .about-buzznow-copy p{margin:8px 0;color:#cbd5e1;line-height:1.9;}\n  .about-buzznow-links{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:16px;}\n  .about-buzznow-links a{display:block;padding:14px;border:1px solid rgba(148,163,184,.24);border-radius:14px;color:inherit;text-decoration:none;background:rgba(30,41,59,.45);}\n  .about-buzznow-links strong{display:block;margin-bottom:4px;}\n  .about-buzznow-links span{font-size:12px;color:#94a3b8;line-height:1.5;}\n  .top-fresh-list{display:grid;gap:8px;margin-top:16px;}\n  .top-fresh-list a{display:block;padding:12px 14px;border-radius:12px;border:1px solid rgba(148,163,184,.18);color:inherit;text-decoration:none;}\n  .top-fresh-list strong{display:block;}\n  .top-fresh-list span{display:block;margin-top:3px;color:#94a3b8;font-size:12px;line-height:1.6;}\n  @media(max-width:720px){.about-buzznow-links{grid-template-columns:1fr;}}'''
+          if old_style not in s:
+              raise SystemExit('style anchor not found')
+          s = s.replace(old_style, new_style, 1)
+
+          start = s.find('    <section class="about-buzznow"')
+          if start < 0:
+              raise SystemExit('about section start not found')
+          end = s.find('    </section>', start)
+          if end < 0:
+              raise SystemExit('about section end not found')
+          end += len('    </section>')
+
+          new_about = '''    <section class="about-buzznow" aria-label="BUZZ NOWについて" style="margin:18px 0 24px;">\n      <img\n        src="/static/buzz-now-about-banner.png"\n        alt="バズった後じゃなく『バズる直前』を見つけよう。BUZZ NOWは、これから注目が集まりそうなキーワードをデータから先読みするトレンド発見サイトです。"\n        loading="eager"\n        decoding="async"\n        style="display:block;width:100%;height:auto;border-radius:22px;border:1px solid rgba(148,163,184,.22);"\n      >\n      <div class="about-buzznow-copy">\n        <h2>いま話題の「名前」だけでなく、なぜ今話題なのかまで。</h2>\n        <p>BUZZ NOWは、Google TrendsやWikimediaなどの公開データをもとに、いま検索・閲覧が伸びている人物、出来事、作品、企業やニュースの話題を整理するトレンド情報サイトです。単に急上昇ワードを並べるのではなく、話題になった背景、確認できた出典、関連ニュースを各トピックページで確認できるようにしています。</p>\n        <p>「総合ランキング」では現在の注目度を、「バズりそう」ではこれから伸びる兆しを、「爆発中」では直近で勢いが強いキーワードを確認できます。気になる言葉を見つけたら詳細ページへ進み、何が起きたのかを短時間で把握できます。データは自動取得を基本とし、取得できていない情報を事実として補完しません。</p>\n        <div class="about-buzznow-links" aria-label="主要コンテンツ">\n          <a href="#ranking"><strong>いま話題のランキング</strong><span>急上昇・Pre-Buzz・爆発中のキーワードを見る</span></a>\n          <a href="#categoryTabs"><strong>カテゴリから探す</strong><span>ニュース、エンタメ、スポーツ、ビジネスなどから探す</span></a>\n          <a href="/corporate/"><strong>企業倒産・新規法人情報</strong><span>企業の倒産・設立動向を地域別に確認する</span></a>\n        </div>\n        <div class="top-fresh-list" aria-label="新着トピック">\n          {% for item in trends[:8] if item['is_indexable'] %}\n          <a href="/trend/{{ item['slug']|urlencode }}">\n            <strong>{{ item['keyword'] }}</strong>\n            <span>{{ item['why_now'] or item['summary'] or 'いま話題になっている理由と確認できた出典を整理しています。' }}</span>\n          </a>\n          {% endfor %}\n        </div>\n      </div>\n    </section>'''
+          s = s[:start] + new_about + s[end:]
+
+          required = [
+              'https://buzz-now-1.onrender.com/',
+              'いま話題の「名前」だけでなく、なぜ今話題なのかまで。',
+              '企業倒産・新規法人情報',
+              'top-fresh-list',
+          ]
+          for needle in required:
+              if needle not in s:
+                  raise SystemExit(f'missing after patch: {needle}')
+          if '"url": "https://buzz-now.onrender.com/",' in s:
+              raise SystemExit('legacy structured-data URL still present')
+
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Validate template markers
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('templates/index.html').read_text(encoding='utf-8')
+          assert '<link rel="canonical" href="https://buzz-now-1.onrender.com/">' in s
+          assert '"url": "https://buzz-now-1.onrender.com/",' in s
+          assert 'なぜ今話題なのかまで。' in s
+          assert 'href="/corporate/"' in s
+          print('template validation ok')
+          PY
+      - name: Commit top-page fix
+        run: |
+          if git diff --quiet -- templates/index.html; then
+            echo 'No changes needed'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add templates/index.html
+          git commit -m 'Strengthen BUZZ NOW top page SEO content'
+          git push origin HEAD:main
