@@ -5263,7 +5263,6 @@ def trend_detail(slug: str, request: Request):
         prebuzz_rows = _trend_prebuzz_rows(c, 5)
         viral_posts = magazine.viral_posts(c, trend["keyword"], 4)
         magazine_rows = magazine.internal_buzz_rows(c, trend["id"], 8)
-        buzz_points = magazine.three_points(trend, briefing, editorial_brief)
 
     title = f"{trend['keyword']}とは？なぜ今話題？｜{SITE_NAME}"
     why_text = " ".join(str(trend["why_now"] or "").split())
@@ -5276,6 +5275,7 @@ def trend_detail(slug: str, request: Request):
     canonical = f"{SITE_URL}/trend/{trend['slug']}"
     editorial_brief = editorial.load_brief(db, trend["id"])
     briefing = _article_briefing(sources, trend["keyword"])
+    buzz_points = magazine.three_points(trend, briefing, editorial_brief)
     seo_title = f"{trend['keyword']}の関連ニュース・注目の動き｜{SITE_NAME}"
     description = (f"{trend['keyword']}の関連報道を公開日時・出典付きで確認。" + (briefing[0]["title"] if briefing else "注目の背景を確認できる情報を収集中です。"))
     if editorial_brief:
