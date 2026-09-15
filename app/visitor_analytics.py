@@ -39,6 +39,17 @@ NETWORK_SCHEMA = """CREATE TABLE IF NOT EXISTS network_pageviews_daily (
 STATE_SCHEMA = """CREATE TABLE IF NOT EXISTS visitor_analytics_state (
     key TEXT PRIMARY KEY, value TEXT NOT NULL
 )"""
+CLICK_SCHEMA = """CREATE TABLE IF NOT EXISTS visitor_internal_clicks_daily (
+    day TEXT NOT NULL,
+    source_path TEXT NOT NULL,
+    target_path TEXT NOT NULL,
+    placement TEXT NOT NULL CHECK (placement IN ('magazine_stream','magazine_more','article_top')),
+    is_test INTEGER NOT NULL DEFAULT 0 CHECK (is_test IN (0,1)),
+    clicks BIGINT NOT NULL DEFAULT 0 CHECK (clicks >= 0),
+    PRIMARY KEY (day, source_path, target_path, placement, is_test)
+)"""
+PLACEMENTS = frozenset(('magazine_stream', 'magazine_more', 'article_top'))
+
 NETWORK_SITES = {
     'tadage': 'https://tadage-note.pages.dev',
     'otona-koi': 'https://otona-koi-susume.pages.dev',
@@ -102,6 +113,7 @@ def initialize(db):
         connection.execute(SCHEMA)
         connection.execute(NETWORK_SCHEMA)
         connection.execute(STATE_SCHEMA)
+        connection.execute(CLICK_SCHEMA)
         connection.execute(
             "INSERT INTO visitor_analytics_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING",
             ('started_at_utc', datetime.now(timezone.utc).isoformat()),
@@ -150,6 +162,32 @@ def record_network_pageview(db, site_id: str, path: str, source: str, is_test: b
         connection.commit()
     return True
 
+
+
+def record_internal_click(db, source_path: str, target_path: str, placement: str, is_test: bool, now=None):
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError('timezone required')
+    if placement not in PLACEMENTS or type(is_test) is not bool:
+        raise ValueError('invalid event')
+    source_path = normalized_path(source_path)
+    target_path = normalized_path(target_path)
+    if not source_path.startswith('/trend/'):
+        raise ValueError('invalid source page')
+    with managed_connection(db) as connection:
+        if not connection.execute('SELECT slug FROM trends WHERE slug=? LIMIT 1', (source_path[7:],)).fetchone():
+            return False
+        if target_path.startswith('/trend/') and not connection.execute('SELECT slug FROM trends WHERE slug=? LIMIT 1', (target_path[7:],)).fetchone():
+            return False
+        connection.execute(
+            """INSERT INTO visitor_internal_clicks_daily (day, source_path, target_path, placement, is_test, clicks)
+               VALUES (?, ?, ?, ?, ?, 1)
+               ON CONFLICT (day, source_path, target_path, placement, is_test)
+               DO UPDATE SET clicks = visitor_internal_clicks_daily.clicks + 1""",
+            (now.astimezone(JST).date().isoformat(), source_path, target_path, placement, int(is_test)),
+        )
+        connection.commit()
+    return True
 
 def install_visitor_analytics(app, db, is_legacy=False):
     """Attach bounded ingestion only. Reports stay private in Neon, not public HTTP."""
@@ -235,6 +273,64 @@ def install_visitor_analytics(app, db, is_legacy=False):
             if len(seen) > 4096:
                 seen.popitem(last=False)
         return Response(status_code=204, headers={'Cache-Control': 'no-store'})
+
+
+
+    @app.post('/api/visitor-analytics/internal-click', include_in_schema=False)
+    async def analytics_internal_click(request: Request):
+        if not enabled:
+            return Response(status_code=204)
+        if request.headers.get('origin', '').rstrip('/') not in allowed:
+            return Response(status_code=403)
+        if request.headers.get('sec-fetch-site') not in (None, 'same-origin'):
+            return Response(status_code=403)
+        if request.headers.get('dnt') == '1' or request.headers.get('sec-gpc') == '1':
+            return Response(status_code=204)
+        agent = request.headers.get('user-agent', '')
+        if not agent or BOT.search(agent):
+            return Response(status_code=204)
+        if request.headers.get('content-type', '').split(';')[0].strip() != 'application/json':
+            return Response(status_code=415)
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 4096:
+                return Response(status_code=413)
+        try:
+            payload = json.loads(body)
+            if not isinstance(payload, dict) or set(payload) != {'source_path','target_path','placement','test','nonce'}:
+                raise ValueError('invalid fields')
+            source_path = normalized_path(payload['source_path'])
+            target_path = normalized_path(payload['target_path'])
+            placement = payload['placement']
+            is_test = payload['test']
+            nonce = payload['nonce']
+            if placement not in PLACEMENTS or type(is_test) is not bool:
+                raise ValueError('invalid values')
+            if not isinstance(nonce, str) or not re.fullmatch(r'[a-zA-Z0-9-]{16,64}', nonce):
+                raise ValueError('invalid nonce')
+        except (ValueError, TypeError, UnicodeError):
+            return Response(status_code=400)
+        if not ready:
+            return Response(status_code=503, headers={'Retry-After':'60'})
+        dedupe_key = f'click:{nonce}'
+        async with lock:
+            timestamp = time.monotonic()
+            while seen and next(iter(seen.values())) < timestamp - 600:
+                seen.popitem(last=False)
+            if dedupe_key in seen:
+                return Response(status_code=204)
+            try:
+                accepted = await run_in_threadpool(record_internal_click, db, source_path, target_path, placement, is_test)
+            except Exception as exc:
+                logger.warning('Internal click analytics write unavailable: %s', type(exc).__name__)
+                return Response(status_code=503)
+            if not accepted:
+                return Response(status_code=400)
+            seen[dedupe_key] = timestamp
+            if len(seen) > 4096:
+                seen.popitem(last=False)
+        return Response(status_code=204, headers={'Cache-Control':'no-store'})
 
     @app.post('/api/network-analytics/pageview', include_in_schema=False)
     async def network_analytics_pageview(request: Request):
