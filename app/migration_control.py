@@ -45,19 +45,88 @@ def _is_database_unavailable(exc):
 
 
 def _fallback_html(path):
-    if path.startswith("/corporate"):
-        title = "企業倒産・新規法人情報サイト"
-        description = "全国の企業倒産・新規法人情報を地域別に整理する情報サイトです。現在、最新データの更新処理を行っています。"
-        canonical = "https://buzz-now-1.onrender.com/corporate/"
-        heading = "企業倒産・新規法人情報"
-        lead = "最新データを更新しています。ページ自体は正常に公開中です。しばらくしてから再読み込みしてください。"
+    """Return a useful, indexable page while the database is temporarily unavailable.
+
+    Search engines should not see a six-word placeholder or a generic error page just
+    because the data layer is unavailable. These pages intentionally contain only
+    durable editorial information that does not depend on the database. They never
+    invent current rankings, counts, company facts, or trend data.
+    """
+    corporate_pages = {
+        "/corporate": (
+            "企業倒産・新規法人情報サイト",
+            "全国の企業倒産・新規法人情報を、出典・地域・業種から確認できる企業情報サイトです。",
+            "企業倒産・新規法人情報",
+            "倒産に関する公開報道と新たに法人番号が指定された法人情報を整理しています。個別企業のページでは、確認できた所在地、業種、手続きの状況、報道日、出典などを区別して掲載します。",
+        ),
+        "/corporate/": (
+            "企業倒産・新規法人情報サイト",
+            "全国の企業倒産・新規法人情報を、出典・地域・業種から確認できる企業情報サイトです。",
+            "企業倒産・新規法人情報",
+            "倒産に関する公開報道と新たに法人番号が指定された法人情報を整理しています。個別企業のページでは、確認できた所在地、業種、手続きの状況、報道日、出典などを区別して掲載します。",
+        ),
+        "/corporate/bankruptcies": (
+            "倒産速報｜企業倒産・新規法人情報サイト",
+            "企業の倒産関連報道を、会社名・地域・手続き・出典とともに整理しています。",
+            "企業の倒産速報",
+            "破産、民事再生、特別清算などの報道を同じものとして扱わず、出典で確認できる手続きの状況と報道日を分けて整理します。報道後に状況が変わる場合があるため、詳細ページでは元の出典も確認できる構成にしています。",
+        ),
+        "/corporate/registrations": (
+            "新設・新規法人情報｜企業倒産・新規法人情報サイト",
+            "新たに法人番号が指定された法人情報を、地域別に確認できます。",
+            "新設・新規法人情報",
+            "国税庁の公表情報をもとに、新たに法人番号が指定された法人を整理します。法人番号の指定日は会社の設立日と一致しない場合があるため、当サイトでは両者を同一の意味として表示しません。",
+        ),
+        "/corporate/signals": (
+            "地域・業種の動き｜企業倒産・新規法人情報サイト",
+            "公開情報から確認できる企業動向を、地域と業種の切り口で整理するページです。",
+            "地域・業種の動き",
+            "当サイトが収集した公開情報の範囲で、地域・業種ごとの掲載事案を整理します。全国統計や個別企業の信用評価ではなく、検索や比較の入口として利用できるよう、集計条件と出典を明確にして掲載します。",
+        ),
+    }
+    corporate = path in corporate_pages
+    if corporate:
+        title, description, heading, lead = corporate_pages[path]
+        canonical = "https://buzz-now-1.onrender.com" + ("/corporate/" if path == "/corporate" else path)
+        nav = """
+        <nav class=\"nav\" aria-label=\"企業情報メニュー\">
+          <a href=\"/corporate/\">企業情報トップ</a>
+          <a href=\"/corporate/bankruptcies\">倒産速報</a>
+          <a href=\"/corporate/registrations\">新規法人</a>
+          <a href=\"/corporate/signals\">地域・業種の動き</a>
+        </nav>
+        """
+        sections = """
+        <section><h2>このサイトで確認できること</h2><p>会社名だけでなく、地域、業種、報道日、手続きの状況、法人番号、確認できた出典を分けて整理します。確認できない項目は推測で埋めず、未確認として扱います。</p></section>
+        <section><h2>情報の読み方</h2><p>倒産関連情報は報道時点の内容です。新規法人情報は法人番号の新規指定を示すもので、設立日そのものを保証するものではありません。詳細ページでは一次情報や報道元へ戻れるよう出典を表示します。</p></section>
+        <section><h2>現在の更新状況</h2><p>データベースの利用上限により最新一覧の更新を一時停止しています。公開設定、検索エンジン向けのページ構造、既存URLは維持し、データ接続が復旧し次第、通常の一覧表示へ戻ります。</p></section>
+        """
     else:
-        title = "Buzz Now｜いま話題のトピック"
-        description = "いま話題になっているキーワードと、その理由をわかりやすく整理するBuzz Now。"
+        title = "Buzz Now｜いま話題の理由がわかるトレンド情報"
+        description = "いま話題になっているキーワードを集め、なぜ今話題なのかを出典と時点付きで整理するBuzz Now。"
         canonical = "https://buzz-now-1.onrender.com/"
         heading = "Buzz Now"
-        lead = "最新トピックを更新しています。ページ自体は正常に公開中です。しばらくしてから再読み込みしてください。"
-    return f"""<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title><meta name=\"description\" content=\"{description}\"><meta name=\"robots\" content=\"index,follow,max-image-preview:large\"><link rel=\"canonical\" href=\"{canonical}\"><style>body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#f6f7fb;color:#171923}}main{{max-width:860px;margin:0 auto;padding:72px 24px}}.card{{background:#fff;border-radius:24px;padding:40px;box-shadow:0 12px 40px rgba(20,30,60,.08)}}h1{{font-size:clamp(38px,7vw,72px);margin:0 0 18px}}p{{font-size:18px;line-height:1.8;color:#525866}}a{{color:#2457ff}}</style></head><body><main><div class=\"card\"><h1>{heading}</h1><p>{lead}</p><p><a href=\"{canonical}\">再読み込み</a></p></div></main></body></html>""".encode("utf-8")
+        lead = "Buzz Nowは、検索やSNSで注目が集まり始めたキーワードについて、名前だけを並べるのではなく『なぜ今話題なのか』を確認できるよう整理するトレンド情報サイトです。"
+        nav = """
+        <nav class=\"nav\" aria-label=\"サイトメニュー\">
+          <a href=\"/\" aria-current=\"page\">Buzz Nowトップ</a>
+          <a href=\"/corporate/\">企業倒産・新規法人情報</a>
+        </nav>
+        """
+        sections = """
+        <section><h2>Buzz Nowが整理する情報</h2><p>話題のキーワード、注目が高まった背景、関連する出来事、確認できた情報源を分けて整理します。単にトレンド名を転載するのではなく、読者が「何が起きたのか」「なぜ今検索されているのか」を短時間で把握できるページを目指しています。</p></section>
+        <section><h2>情報の確認方針</h2><p>公開情報やニュースなど確認できる情報を基にし、確認できない内容を事実として補完しません。話題の理由は時点によって変わるため、更新時刻や出典を確認できる構成で通常ページを公開しています。</p></section>
+        <section><h2>現在の更新状況</h2><p>データベースの月間利用上限により、最新ランキングと個別トピックの読み込みを一時停止しています。この案内ページは検索エンジンがサイトの目的を理解できるよう維持し、データ接続が復旧し次第、通常のトレンド一覧に自動で戻ります。</p></section>
+        """
+    website_json = json.dumps({
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "企業倒産・新規法人情報サイト" if corporate else "Buzz Now",
+        "url": canonical,
+        "description": description,
+        "inLanguage": "ja",
+    }, ensure_ascii=False).replace("<", "\\u003c")
+    return f"""<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title><meta name=\"description\" content=\"{description}\"><meta name=\"robots\" content=\"index,follow,max-image-preview:large\"><link rel=\"canonical\" href=\"{canonical}\"><link rel=\"icon\" href=\"/favicon.ico\" type=\"image/vnd.microsoft.icon\"><link rel=\"icon\" href=\"/static/buzz-now-icon.png\" type=\"image/png\" sizes=\"192x192\"><script type=\"application/ld+json\">{website_json}</script><style>body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#f6f7fb;color:#171923}}main{{max-width:920px;margin:0 auto;padding:56px 24px 80px}}.card{{background:#fff;border-radius:24px;padding:clamp(26px,5vw,48px);box-shadow:0 12px 40px rgba(20,30,60,.08)}}h1{{font-size:clamp(38px,7vw,68px);line-height:1.05;margin:20px 0}}h2{{font-size:24px;margin:34px 0 10px}}p{{font-size:17px;line-height:1.9;color:#525866}}.status{{display:inline-block;border-radius:999px;background:#eef2ff;color:#3049a5;padding:8px 12px;font-size:13px;font-weight:700}}.nav{{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:28px}}.nav a{{padding:10px 14px;border-radius:999px;background:#f1f3f8;color:#24324a;text-decoration:none;font-weight:700}}a{{color:#2457ff}}.reload{{display:inline-flex;margin-top:22px;font-weight:700}}</style></head><body><main>{nav}<div class=\"card\"><span class=\"status\">公開継続中・最新データ更新待ち</span><h1>{heading}</h1><p>{lead}</p>{sections}<a class=\"reload\" href=\"{canonical}\">最新状態を再読み込み →</a></div></main></body></html>""".encode("utf-8")
 
 
 def _runtime_database_url():
@@ -156,7 +225,11 @@ class MigrationMaintenance:
                 raise
 
             path = scope.get('path') or '/'
-            if path in {'/', '/corporate', '/corporate/'}:
+            fallback_paths = {
+                '/', '/corporate', '/corporate/', '/corporate/bankruptcies',
+                '/corporate/registrations', '/corporate/signals'
+            }
+            if path in fallback_paths:
                 body = _fallback_html(path)
                 await send({'type': 'http.response.start', 'status': 200, 'headers': [
                     (b'content-type', b'text/html; charset=utf-8'),
