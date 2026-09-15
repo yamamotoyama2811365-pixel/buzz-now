@@ -1,0 +1,31 @@
+name: Fix X i-mobile gate v2
+on:
+  push:
+    paths:
+      - scripts/fix_x_imobile_gate_v2.py
+      - .github/workflows/fix-x-imobile-gate-v2.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Apply X gate v2 fix
+        run: python3 scripts/fix_x_imobile_gate_v2.py
+      - name: Validate Python
+        run: python3 -m py_compile app/main.py app/migration_control.py
+      - name: Commit generated change
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/main.py app/migration_control.py
+          if git diff --cached --quiet; then
+            echo "No generated changes"
+          else
+            git commit -m "Fix X-only i-mobile gate routing and cookie"
+            git push
+          fi
