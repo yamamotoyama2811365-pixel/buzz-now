@@ -12,7 +12,7 @@ jobs:
       - name: Verify production renders and serves direct X iframe
         run: |
           python - <<'PY'
-          import json,re
+          import html as html_lib,json,re
           from urllib.request import Request,urlopen
           from urllib.parse import quote
           base='https://buzz-now-1.onrender.com'
@@ -23,13 +23,13 @@ jobs:
           status,_,raw=get(base+'/api/v9/dashboard?limit=1')
           assert status==200
           slug=json.loads(raw)['items'][0]['slug']
-          status,_,html=get(base+'/trend/'+quote(slug,safe=''))
+          status,_,page=get(base+'/trend/'+quote(slug,safe=''))
           assert status==200
-          assert 'platform.twitter.com/embed/Tweet.html?id=' in html
-          assert 'platform.twitter.com/widgets.js' not in html
-          match=re.search(r'src="(https://platform\.twitter\.com/embed/Tweet\.html\?id=\d+&amp;theme=dark&amp;dnt=true)"',html)
+          assert 'platform.twitter.com/embed/Tweet.html?id=' in page
+          assert 'platform.twitter.com/widgets.js' not in page
+          match=re.search(r'src="(https://platform\.twitter\.com/embed/Tweet\.html\?id=\d+(?:&|&amp;)theme=dark(?:&|&amp;)dnt=true)"',page)
           assert match, 'direct X iframe src missing'
-          iframe_url=match.group(1).replace('&amp;','&')
+          iframe_url=html_lib.unescape(match.group(1))
           fstatus,headers,fbody=get(iframe_url)
           assert fstatus==200
           assert '<html' in fbody.lower() or '<!doctype html' in fbody.lower()
