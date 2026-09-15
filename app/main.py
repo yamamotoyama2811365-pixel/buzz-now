@@ -35,7 +35,6 @@ TRAFFIC_RETENTION_ENABLED = os.getenv("TRAFFIC_RETENTION_ENABLED", "false").lowe
 SITE_URL = os.getenv("SITE_URL", "http://localhost:8000").rstrip("/")
 # V35.36: X/Threads public links must never fall back to the retired Render hostname.
 SOCIAL_PUBLIC_BASE_URL = os.getenv("SOCIAL_PUBLIC_BASE_URL", "https://buzz-now-1.onrender.com").rstrip("/")
-X_PUBLIC_BASE_URL = os.getenv("X_PUBLIC_BASE_URL", "https://buzz-now.onrender.com").rstrip("/")
 
 # V35.32: IndexNow real-time search-engine notification.
 # The key is public by design and is hosted at /<key>.txt for ownership verification.
@@ -147,20 +146,6 @@ LEGACY_SERVICE = os.getenv("RENDER_SERVICE_ID", "") == "srv-daa321mk1f9s73fbjfcg
 @app.middleware("http")
 async def canonical_origin(request: Request, call_next):
     path = request.url.path
-    query_text = request.scope.get("query_string", b"").decode("ascii", "ignore")
-    host = (request.url.hostname or "").lower()
-    # Existing X posts may still point at the new host. Send X-origin article
-    # entries through the approved legacy i-mobile gate exactly once.
-    x_entry = (
-        host == "buzz-now-1.onrender.com"
-        and "utm_source=x" in query_text
-        and "x_gate_passed=1" not in query_text
-        and (path.startswith("/trend/") or bool(re.fullmatch(r"/t/\d+", path)))
-    )
-    if x_entry:
-        raw_path = request.scope.get("raw_path", b"/").decode("ascii")
-        target = "https://buzz-now.onrender.com" + raw_path + (("?" + query_text) if query_text else "")
-        return RedirectResponse(target, status_code=302)
     # Keep Render health checks and Google ownership verification local.
     verification = bool(re.fullmatch(r"/google[a-zA-Z0-9]+\.html", path))
     if (LEGACY_SERVICE or request.url.hostname == "buzz-now.onrender.com") and path not in ("/health", "/ads.txt") and not verification:
@@ -2415,7 +2400,7 @@ def _social_detail_url(slug: str) -> str:
 
 
 def _social_short_url(trend_id: int) -> str:
-    return f"{X_PUBLIC_BASE_URL}/t/{int(trend_id)}"
+    return f"{SOCIAL_PUBLIC_BASE_URL}/t/{int(trend_id)}"
 
 
 def _social_image_url(trend_id: int) -> str:
@@ -2696,7 +2681,7 @@ def _social_reason_from_row(row, keyword: str) -> str:
 
 def _build_social_post_text(row, tracking_content: str = "news_context_v1") -> str:
     reason = _social_reason_from_row(row, str(row["keyword"]))
-    url = (X_PUBLIC_BASE_URL + _social_detail_path(row["slug"])
+    url = (SOCIAL_PUBLIC_BASE_URL + _social_detail_path(row["slug"])
            + "?utm_source=x&utm_medium=social&utm_campaign=prebuzz&utm_content="
            + quote(tracking_content, safe=""))
     headline = reason[len("関連報道："):] if reason.startswith("関連報道：") else f"「{row['keyword']}」が話題。なぜ今？"
