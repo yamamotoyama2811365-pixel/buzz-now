@@ -14,7 +14,13 @@ class PublicQualityTest(unittest.TestCase):
                        'https://example.com/source', '掲載元', None, 80, None)
                 connection = MagicMock()
                 cursor = connection.__enter__.return_value.cursor.return_value.__enter__.return_value
-                cursor.fetchone.side_effect = [row, (0, 0, 0, 0, 0)]
+                # render_store reads the store row, the area activity aggregate,
+                # then the trade-area/category aggregate.
+                cursor.fetchone.side_effect = [
+                    row,
+                    (0, 0, 0, 0, 0),
+                    (0, 0, None, 0),
+                ]
                 cursor.fetchall.return_value = []
                 with patch.object(seo_pages, '_connect', return_value=connection):
                     rendered = seo_pages.render_store('unused', 'https://example.com', 2347)
