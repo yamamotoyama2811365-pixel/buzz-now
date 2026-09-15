@@ -56,8 +56,9 @@ class MagazineDataTest(unittest.TestCase):
 class IntegrationSourceTest(unittest.TestCase):
     def test_no_x_content_is_copied_into_template(self):
         html=(ROOT/'templates/_magazine_stream.html').read_text()
-        self.assertIn('platform.twitter.com/widgets.js',html)
+        self.assertIn('platform.twitter.com/embed/Tweet.html?id={{ post.tweet_id }}',html)
         self.assertIn('{{ post.tweet_url }}',html)
+        self.assertNotIn('platform.twitter.com/widgets.js',html)
         self.assertNotIn('post_text',html)
         self.assertNotIn('image_url',html)
 
