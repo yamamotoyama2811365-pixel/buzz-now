@@ -1,0 +1,48 @@
+name: Corporate SEO one-time hardening
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/corporate-seo-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Strengthen corporate SEO metadata and structured data
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('services/corporate/main.py')
+          s=p.read_text(encoding='utf-8')
+          old="""def shell(title,body,path='/',noindex=False,description='企業の倒産速報・新規法人情報を、出典とともに地域・業種別に整理。報道事案の変化と背景を確認できます。'):\n    canonical=BASE+path\n    page_title=title if title=='企業倒産・新規法人情報サイト' else title+' | 企業倒産・新規法人情報サイト'\n    return HTMLResponse("""
+          new="""def shell(title,body,path='/',noindex=False,description='全国の企業倒産・新規法人情報を、会社名・地域・業種・報道日・手続き・出典とともに整理。倒産速報、新設法人、地域別の企業動向を確認できます。'):\n    canonical=BASE+path\n    page_title=('企業倒産・新規法人情報｜倒産速報・新設法人を地域別に確認' if path=='/' else title+' | 企業倒産・新規法人情報サイト')\n    schema={\n        '@context':'https://schema.org',\n        '@type':'WebSite' if path=='/' else 'WebPage',\n        'name':page_title,\n        'url':canonical,\n        'description':description,\n        'inLanguage':'ja-JP'\n    }\n    schema_tag='<script type=\"application/ld+json\">'+json.dumps(schema,ensure_ascii=False).replace('<','\\\\u003c')+'</script>'\n    return HTMLResponse("""
+          if old not in s:
+              raise SystemExit('shell anchor not found')
+          s=s.replace(old,new,1)
+          old2="""<meta property=\"og:title\" content=\"'+e(title,quote=True)+'\"><meta property=\"og:url\" content=\"'+e(canonical,quote=True)+'\">'+analytics_tag()"""
+          new2="""<meta property=\"og:title\" content=\"'+e(page_title,quote=True)+'\"><meta property=\"og:description\" content=\"'+e(description,quote=True)+'\"><meta property=\"og:url\" content=\"'+e(canonical,quote=True)+'\">'+schema_tag+analytics_tag()"""
+          if old2 not in s:
+              raise SystemExit('og anchor not found')
+          s=s.replace(old2,new2,1)
+          p.write_text(s,encoding='utf-8')
+          PY
+          python -m py_compile services/corporate/main.py
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add services/corporate/main.py
+          if git diff --cached --quiet; then
+            echo 'No changes needed'
+            exit 0
+          fi
+          git commit -m 'Strengthen corporate search metadata and schema'
+          git push origin HEAD:main
