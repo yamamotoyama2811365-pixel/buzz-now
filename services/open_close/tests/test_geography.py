@@ -64,10 +64,18 @@ class GeographyTest(unittest.TestCase):
     def test_sitemap_omits_conflict_but_preserves_valid_urls(self):
         connection = MagicMock()
         cursor = connection.__enter__.return_value.cursor.return_value.__enter__.return_value
+        # Keep this mock aligned with the sitemap's current aggregate columns:
+        # prefecture/category rows return total/open/close counts, and city rows
+        # return prefecture, city, total, open, close.
         cursor.fetchall.side_effect = [
-            [('北海道',), ('東京都',)],
-            [('北海道', '札幌市中央区'), ('北海道', '東京都港区'), ('東京都', '東京都港区')],
-            [('飲食',)], [(68, None)]
+            [('北海道', 2, 1, 1), ('東京都', 1, 1, 0)],
+            [
+                ('北海道', '札幌市中央区', 2, 1, 1),
+                ('北海道', '東京都港区', 1, 0, 1),
+                ('東京都', '東京都港区', 2, 1, 1),
+            ],
+            [('飲食', 3, 2, 1)],
+            [(68, None)],
         ]
         with patch.object(seo_pages, '_connect', return_value=connection):
             xml = seo_pages.sitemap_xml('unused', 'https://example.com')
@@ -76,7 +84,9 @@ class GeographyTest(unittest.TestCase):
             return 'https://example.com/area/' + quote(pref, safe='') + '/' + quote(city, safe='')
         self.assertNotIn(area('北海道', '東京都港区'), urls)
         self.assertIn(area('北海道', '札幌市中央区'), urls)
-        self.assertIn(area('東京都', '東京都港区'), urls)
+        # City paths are normalized by removing a duplicate prefecture prefix.
+        self.assertIn(area('東京都', '港区'), urls)
+        self.assertNotIn(area('東京都', '東京都港区'), urls)
         self.assertIn('https://example.com/store/68', urls)
 
 if __name__ == '__main__':

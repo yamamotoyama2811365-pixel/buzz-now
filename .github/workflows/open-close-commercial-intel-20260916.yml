@@ -1,0 +1,47 @@
+name: Open Close Commercial Intelligence
+on:
+  push:
+    branches: [work/open-close-commercial-intel-20260916]
+    paths:
+      - scripts/upgrade_open_close_commercial_intel_20260916.py
+      - services/open_close/collectors/location_intelligence.py
+      - .github/workflows/open-close-commercial-intel-20260916.yml
+permissions:
+  contents: write
+jobs:
+  patch-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply commercial intelligence patch
+        run: python scripts/upgrade_open_close_commercial_intel_20260916.py
+      - name: Syntax and focused tests
+        run: |
+          python -m py_compile services/open_close/collectors/location_intelligence.py services/open_close/collectors/seo_pages.py
+          python - <<'PY'
+          from services.open_close.collectors.location_intelligence import compute_category_signal
+          a=compute_category_signal(10,8,2,None,0)
+          assert a['rank'] in {'S','A','B','C','D'}
+          assert 0 <= a['score'] <= 100
+          b=compute_category_signal(2,1,1,None,0)
+          assert b['rank']=='-'
+          c=compute_category_signal(12,5,4,48,4)
+          assert c['persistence_available'] is True
+          src=open('services/open_close/collectors/seo_pages.py').read()
+          for needle in ['商圏・出店分析','業種別 出店参考ランク','駅乗降客数・人流','commercial-analysis','compute_category_signal']:
+              assert needle in src, needle
+          print('commercial intelligence checks passed')
+          PY
+      - name: Commit tested renderer changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add services/open_close/collectors/seo_pages.py
+          if ! git diff --cached --quiet; then
+            git commit -m 'Add city commercial intelligence to Open Close pages'
+            git push origin HEAD:work/open-close-commercial-intel-20260916
+          fi
