@@ -1,0 +1,11 @@
+{% if buzz_points %}
+<section class="section bn-mag-points" aria-label="30秒でわかるざっくり3ポイント">
+  <div class="kicker">30 SEC SUMMARY</div>
+  <h2>ざっくり3POINT</h2>
+  <ol>
+    {% for point in buzz_points %}
+    <li><span class="bn-point-no">{{ loop.index }}</span><span>{{ point }}</span></li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}
