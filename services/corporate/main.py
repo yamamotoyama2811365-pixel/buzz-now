@@ -233,6 +233,16 @@ def detail(event_id:str):
     web_html+=render_reports(p.get('news_reports',[]))
     web_html+='<p class="small"><a href="'+ROOT+'/company/'+event_id+'/correction">掲載情報の修正依頼はこちら</a></p>'
     facts_html='<dl class="facts">'+''.join('<dt>'+e(k)+'</dt><dd>'+e(v)+'</dd>' for k,v in facts)+'</dl>'
+    # CORPORATE_DETAIL_CONTEXT_20260915
+    context_html=(
+        '<section class="panel side"><h2>この企業情報の見方</h2>'
+        '<p>このページは、公開された報道や法人情報をもとに、会社名、所在地、業種、手続きの状況、報道日、確認できた出典を整理しています。倒産関連情報では、破産、民事再生、特別清算などを同じ意味として扱わず、出典で確認できる表現を優先します。</p>'
+        '<p>報道日と実際の手続日が異なることがあります。手続日を確認できない場合は、報道日を手続日として推測せず、確認できていないことを明記します。新規法人情報では法人番号の指定日を表示しており、会社の設立日そのものと一致するとは限りません。</p>'
+        '<h2>所在地・代表者・ウェブサイトについて</h2>'
+        '<p>所在地や代表者、公式ウェブサイトは、同名企業や移転、情報更新の時差があるため、確認できた情報だけを掲載します。ウェブ検索による照合結果は確定情報と分け、候補や未確認項目として表示します。誤りが確認された場合は修正依頼からお知らせください。</p>'
+        '<h2>信用評価ではありません</h2>'
+        '<p>当サイトは個別企業の信用力、支払能力、取引可否を評価するものではありません。公開情報を検索・比較しやすく整理することを目的としており、取引や投資などの判断では元の公表資料や専門家の確認もあわせてご利用ください。</p></section>'
+    )
     paragraph=e(p['company'])+'について、公開情報を整理しました。'
     if p['kind']=='bankruptcy':
         paragraph+=' 手続きの状況は「'+e(p['stage'])+'」です。'
@@ -259,7 +269,7 @@ def detail(event_id:str):
     description=p['company']+('（'+p['prefecture']+'）' if p.get('prefecture') else '')+'の'+topic+'。'+date_description+'、'+p['stage']+'。'
     description+=('業種：'+p['industry']+'。' if p.get('industry') else '')+'所在地と公開情報を出典付きで整理しています。'
     if p['kind']=='registration': description+='表示日は法人番号指定日で、設立日とは限りません。'
-    return shell(title,'<div class="detail">'+breadcrumbs(trail)+'<div class="panel"><div class="eyebrow">COMPANY REPORT</div><h1>'+e(p['company'])+'</h1><span class="tag '+p['kind']+'">'+e(p['stage'])+'</span><p>'+paragraph+'</p>'+facts_html+web_html+note+'<p><a class="source" href="'+e(p['source_url'],quote=True)+'" target="_blank" rel="noopener noreferrer">出典：'+e(p['source_name'])+'で確認する ↗</a></p><h2>関連情報を調べる</h2><p><a class="source" href="'+search_url+'" target="_blank" rel="noopener noreferrer">会社名・所在地でGoogleマップを検索 ↗</a></p><p class="small">検索結果のリンクです。同名企業との一致、営業状況、口コミは未確認です。</p>'+browse+'</div></div>','/company/'+event_id,description=description)
+    return shell(title,'<div class="detail">'+breadcrumbs(trail)+'<div class="panel"><div class="eyebrow">COMPANY REPORT</div><h1>'+e(p['company'])+'</h1><span class="tag '+p['kind']+'">'+e(p['stage'])+'</span><p>'+paragraph+'</p>'+facts_html+context_html+web_html+note+'<p><a class="source" href="'+e(p['source_url'],quote=True)+'" target="_blank" rel="noopener noreferrer">出典：'+e(p['source_name'])+'で確認する ↗</a></p><h2>関連情報を調べる</h2><p><a class="source" href="'+search_url+'" target="_blank" rel="noopener noreferrer">会社名・所在地でGoogleマップを検索 ↗</a></p><p class="small">検索結果のリンクです。同名企業との一致、営業状況、口コミは未確認です。</p>'+browse+'</div></div>','/company/'+event_id,description=description)
 @app.get('/signals')
 def signals():
     a=analysis();body='<div class="eyebrow">REGIONAL SIGNALS</div><h1>地域・業種の動き</h1><p>同じ地域・業種で、どのような事案が報道されているか。</p><div class="notice">全国の倒産統計や個別企業の信用評価ではありません。当サイトが収集し、会社名と地域で仮に名寄せした事案の参考集計です。業種不明の事案は分類別集計から除外します。</div>'
