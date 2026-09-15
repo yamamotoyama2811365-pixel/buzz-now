@@ -84,7 +84,9 @@ class GeographyTest(unittest.TestCase):
             return 'https://example.com/area/' + quote(pref, safe='') + '/' + quote(city, safe='')
         self.assertNotIn(area('北海道', '東京都港区'), urls)
         self.assertIn(area('北海道', '札幌市中央区'), urls)
-        self.assertIn(area('東京都', '東京都港区'), urls)
+        # City paths are normalized by removing a duplicate prefecture prefix.
+        self.assertIn(area('東京都', '港区'), urls)
+        self.assertNotIn(area('東京都', '東京都港区'), urls)
         self.assertIn('https://example.com/store/68', urls)
 
 if __name__ == '__main__':
