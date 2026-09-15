@@ -1,0 +1,50 @@
+name: BUZZ NOW magazine live-500 fix
+on:
+  push:
+    branches: [fix/magazine-live-500-20260915]
+    paths:
+      - scripts/fix_magazine_live_500.py
+      - tests/test_magazine_live_500.py
+      - .github/workflows/magazine-live-500.yml
+      - app/main.py
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      DEMO_MODE: 'false'
+      REAL_DATA_MODE: 'false'
+      SOCIAL_AUTO_ENABLED: 'false'
+      THREADS_AUTO_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - run: pip install -r requirements.txt
+      - run: python scripts/fix_magazine_live_500.py
+      - run: python -m unittest discover -s tests -p test_magazine_live_500.py -v
+      - run: python -m unittest discover -s tests -p test_magazine_mode.py -v
+      - run: python -m unittest discover -s tests -p test_visitor_analytics.py -v
+      - run: python -m compileall -q app scripts tests
+      - run: git diff --check
+  assemble:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: '${{ github.sha }}'}
+      - run: python scripts/fix_magazine_live_500.py
+      - name: Commit only the verified source fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/main.py
+          if ! git diff --cached --quiet; then
+            git commit -m 'Fix magazine detail initialization order'
+            git push origin HEAD:fix/magazine-live-500-20260915
+          fi
