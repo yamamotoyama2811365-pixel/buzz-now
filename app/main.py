@@ -26,6 +26,8 @@ from app import traffic_retention
 from app import city_corporate_social
 from app import city_corporate_activation
 from app import social_tracking
+from app import magazine
+# Magazine mode v1: S-style circulation without copying third-party content.
 
 BASE = Path(__file__).resolve().parent.parent
 DB_PATH = BASE / "buzznow.db"
@@ -2682,7 +2684,8 @@ def _build_social_post_text(row, tracking_content: str = "news_context_v1") -> s
     url = (SOCIAL_PUBLIC_BASE_URL + _social_detail_path(row["slug"])
            + "?utm_source=x&utm_medium=social&utm_campaign=prebuzz&utm_content="
            + quote(tracking_content, safe=""))
-    return f"BUZZ NOW｜話題をチェック\n{reason}\n背景・出典を確認 ↓\n{url}"
+    headline = reason[len("関連報道："):] if reason.startswith("関連報道：") else f"「{row['keyword']}」が話題。なぜ今？"
+    return f"{headline}\n{url}"
 
 
 
@@ -5258,6 +5261,9 @@ def trend_detail(slug: str, request: Request):
         related_rows = _trend_related_rows(c, trend["id"], trend["keyword"], trend["category"], 5)
         top_now_rows = _trend_top_now_rows(c, 5)
         prebuzz_rows = _trend_prebuzz_rows(c, 5)
+        viral_posts = magazine.viral_posts(c, trend["keyword"], 4)
+        magazine_rows = magazine.internal_buzz_rows(c, trend["id"], 8)
+        buzz_points = magazine.three_points(trend, briefing, editorial_brief)
 
     title = f"{trend['keyword']}とは？なぜ今話題？｜{SITE_NAME}"
     why_text = " ".join(str(trend["why_now"] or "").split())
@@ -5287,6 +5293,9 @@ def trend_detail(slug: str, request: Request):
             "related_rows": related_rows,
             "top_now_rows": top_now_rows,
             "prebuzz_rows": prebuzz_rows,
+            "viral_posts": viral_posts,
+            "magazine_rows": magazine_rows,
+            "buzz_points": buzz_points,
         "related": related,
         "sources": sources,
         "site_name": SITE_NAME,
