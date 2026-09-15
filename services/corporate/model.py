@@ -133,7 +133,7 @@ def preserve_profile(row,old):
     # A subsequent news/registry import must not erase independently verified facts.
     row=dict(row)
     if old and same_entity(row,old):
-        for key in ('news_reports','news_checked_at','news_check_status','news_version','discovery_sources'):
+        for key in ('news_reports','news_checked_at','news_check_status','news_version','discovery_sources','event_date','event_date_label'):
             if old.get(key):row[key]=old[key]
         if not row.get('industry') and old.get('classification_basis')=='速報の出典記事に記載された事業から自動分類':
             row['industry']=old['industry'];row['classification_basis']=old['classification_basis']
