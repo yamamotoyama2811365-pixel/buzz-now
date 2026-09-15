@@ -93,7 +93,7 @@ render_anchor = '''    activity_html=f"""\n    <div class="activity-card">'''
 assert render_anchor in s
 if 'trade_area_html=f"""' not in s:
     trade_render = '''    component_html="".join(
-        f"<div class=\"trade-area-component\"><div><div class=\"trade-area-component-name\">{esc(c['name'])}（重み {c['weight']}%）</div><div class=\"trade-area-component-bar\"><span style=\"width:{c['score']}%\"></span></div></div><div class=\"trade-area-component-score\">{c['score']}</div></div>"
+        f'<div class="trade-area-component"><div><div class="trade-area-component-name">{esc(c["name"])}（重み {c["weight"]}%）</div><div class="trade-area-component-bar"><span style="width:{c["score"]}%"></span></div></div><div class="trade-area-component-score">{c["score"]}</div></div>'
         for c in trade_area["components"]
     )
     lifetime_display=(f'{trade_area["median_lifetime_months"]:.1f}か月' if trade_area["median_lifetime_months"] is not None else '算出中')
