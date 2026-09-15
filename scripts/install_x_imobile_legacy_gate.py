@@ -73,7 +73,7 @@ async def _legacy_x_imobile_gate(scope, send):
         return True
 
     dest_json = json.dumps(destination, ensure_ascii=True)
-    page = f'''<!doctype html>
+    page = f"""<!doctype html>
 <html lang="ja"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="robots" content="noindex,nofollow"><title>BUZZ NOW｜記事を開く</title>
@@ -91,7 +91,7 @@ h1{{font-size:22px;line-height:1.45;margin:0 0 8px}}.lead{{font-size:13px;line-h
 <div class="adlabel">ADVERTISEMENT</div><div class="adbox">{ad_html}</div>
 <button class="continue" id="continueBtn">記事を読む →</button>
 <p class="note">広告は任意です。ボタンを押すとBUZZ NOW本編へ移動します。</p>
-</main><script>document.getElementById('continueBtn').addEventListener('click',()=>{{window.location.href={dest_json};}});</script></body></html>'''.encode('utf-8')
+</main><script>document.getElementById('continueBtn').addEventListener('click',()=>{{window.location.href={dest_json};}});</script></body></html>""".encode('utf-8')
 
     await send({'type': 'http.response.start', 'status': 200, 'headers': [
         (b'content-type', b'text/html; charset=utf-8'),
