@@ -94,8 +94,6 @@
     <h1>{{ trend['keyword'] }}はなぜ話題？<br>確認できた関連ニュース</h1>
     {% include "_magazine_points.html" %}
 
-    <!-- SP 325x250 inline after the article heading/summary. -->
-    {% include "_imobile_sp_buzznow_rectangle.html" %}
     {% if editorial %}
     <section class="section editorial" aria-label="記事本文から読み解く注目の動き">
       <h2>いま何が起きている？</h2>
@@ -131,6 +129,8 @@
     {% include "_magazine_stream.html" %}
 
     {% if imobile_pc_enabled %}
+    <!-- SP_INLINE_SLOT_4_PENDING: separate approved 325x250 tag required -->
+
     <aside class="section a8-advertisement" aria-label="広告">
       <p style="font-size:12px;color:#b8c3d1;margin:0 0 10px">広告</p>
       <div class="a8-ad-grid"><div class="a8-ad-unit">
@@ -241,6 +241,8 @@
       </div>
     </section>
 
+    <!-- SP_INLINE_SLOT_3_PENDING: separate approved 325x250 tag required -->
+
     <section class="section">
       <div class="kicker">TRAFFIC POTENTIAL</div>
       <h2>このキーワードはアクセスを稼ぎそう？</h2>
@@ -309,7 +311,6 @@
       BUZZ NOWはトレンドの注目度を整理するサービスです。掲載内容は情報源の紹介・要約を中心とし、事実関係の最終確認は元情報をご確認ください。
     </p>
   </article>
-  {% include "_amazon_associate.html" %}
 </div>
 <script>
 (async()=>{
