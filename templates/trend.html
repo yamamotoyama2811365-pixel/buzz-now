@@ -86,10 +86,16 @@
   </aside>
   {% endif %}
 
+  <!-- SP 325x50 inline; component self-gates to mobile only. -->
+  {% include "_imobile_sp_buzznow_top.html" %}
+
   <article class="detail">
     <div class="kicker">{{ trend['category'] }} / TREND</div>
     <h1>{{ trend['keyword'] }}はなぜ話題？<br>確認できた関連ニュース</h1>
     {% include "_magazine_points.html" %}
+
+    <!-- SP 325x250 inline after the article heading/summary. -->
+    {% include "_imobile_sp_buzznow_rectangle.html" %}
     {% if editorial %}
     <section class="section editorial" aria-label="記事本文から読み解く注目の動き">
       <h2>いま何が起きている？</h2>

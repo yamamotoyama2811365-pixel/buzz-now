@@ -75,6 +75,9 @@
   </aside>
   {% endif %}
 
+  <!-- SP 325x50 inline; component self-gates to mobile only. -->
+  {% include "_imobile_sp_buzznow_top.html" %}
+
   <nav class="top-tabs" aria-label="ランキング切替">
     <a class="top-tab active" href="#top" data-mode="top">TOP</a>
     <a class="top-tab" href="#ranking" data-mode="all">総合TOP50</a>
@@ -118,6 +121,9 @@
         </div>
       </div>
     </section>
+
+    <!-- SP 325x250 inline; separate spot for mid-content performance. -->
+    {% include "_imobile_sp_buzznow_rectangle.html" %}
 
     {% if imobile_pc_enabled %}
     <aside class="section" aria-label="広告" style="text-align:center;margin:24px 0">
