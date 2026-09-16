@@ -40,6 +40,15 @@ def imobile_pc_tag():
             'if(!window.matchMedia("(min-width: 769px)").matches)return;'
             'document.write("<aside aria-label=\\"広告\\" style=\\"text-align:center;margin:28px auto;min-height:250px\\"><div style=\\"font-size:12px;opacity:.62;margin-bottom:8px\\">広告</div>"+'+payload+'+"</aside>");})();</script>')
 
+IMOBILE_PC_TOP_HTML='<div id="im-d3359a305e3843298606fa646370358f">\n  <script async src="https://imp-adedge.i-mobile.co.jp/script/v1/spot.js?20220104"></script>\n  <script>(window.adsbyimobile=window.adsbyimobile||[]).push({pid:85420,mid:596383,asid:1944835,type:"banner",display:"inline",elementid:"im-d3359a305e3843298606fa646370358f"})</script>\n</div>'
+
+def imobile_pc_top_tag():
+    payload=json.dumps(IMOBILE_PC_TOP_HTML,ensure_ascii=False).replace('</script>','<\\/script>')
+    return ('<script>(function(){var ua=navigator.userAgent||"";'
+            'if(/iphone|ipad|ipod|android|mobile|windows phone|blackberry|opera mini|opera mobi/i.test(ua))return;'
+            'if(!window.matchMedia("(min-width: 769px)").matches)return;'
+            'document.write("<aside aria-label=\\"広告\\" style=\\"text-align:center;margin:16px auto 22px;min-height:90px;overflow:hidden\\"><div style=\\"font-size:12px;opacity:.62;margin-bottom:6px\\">広告</div>"+'+payload+'+"</aside>");})();</script>')
+
 def db():
     if not DSN: raise HTTPException(503,'Database is not configured')
     con=psycopg2.connect(DSN,connect_timeout=8)
@@ -121,7 +130,7 @@ def shell(title,body,path='/',noindex=False,description='全国の企業倒産�
         'inLanguage':'ja-JP'
     }
     schema_tag='<script type="application/ld+json">'+json.dumps(schema,ensure_ascii=False).replace('<','\\u003c')+'</script>'
-    return HTMLResponse('<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/svg+xml" sizes="any" href="/corporate/favicon.svg?v=20260914"><title>'+e(page_title)+'</title><meta name="description" content="'+e(description,quote=True)+'"><meta name="robots" content="'+('noindex,follow' if noindex else 'index,follow')+'"><link rel="canonical" href="'+e(canonical,quote=True)+'"><meta property="og:title" content="'+e(page_title,quote=True)+'"><meta property="og:description" content="'+e(description,quote=True)+'"><meta property="og:url" content="'+e(canonical,quote=True)+'">'+schema_tag+analytics_tag()+'<style>'+STYLE+'</style></head><body><header><div class="bar"><a class="logo" href="'+ROOT+'/">企業倒産・新規法人情報サイト</a><nav><a href="'+ROOT+'/bankruptcies">倒産速報</a><a href="'+ROOT+'/registrations">新設・新規法人</a><a href="'+ROOT+'/risks">公表リスク情報</a><a href="'+ROOT+'/signals">地域・業種の動き</a></nav></div></header><main>'+body+'</main>'+imobile_pc_tag()+'<footer><strong>企業倒産・新規法人情報サイト</strong><p>公開情報を出典付きで整理する企業情報サイト。報道日・法人番号指定日を表示しています。休廃業・登記閉鎖だけを倒産とは判定しません。</p><a href="'+ROOT+'/about">掲載方針・訂正について</a>　｜　<a href="'+ROOT+'/sources">収集状況</a>　｜　<a href="'+ROOT+'/sitemap.xml">サイトマップ</a></footer>'+tracking_tag(path,ROOT,DSN)+'</body></html>',headers={'Cache-Control':'public, max-age=60','X-Content-Type-Options':'nosniff'})
+    return HTMLResponse('<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/svg+xml" sizes="any" href="/corporate/favicon.svg?v=20260914"><title>'+e(page_title)+'</title><meta name="description" content="'+e(description,quote=True)+'"><meta name="robots" content="'+('noindex,follow' if noindex else 'index,follow')+'"><link rel="canonical" href="'+e(canonical,quote=True)+'"><meta property="og:title" content="'+e(page_title,quote=True)+'"><meta property="og:description" content="'+e(description,quote=True)+'"><meta property="og:url" content="'+e(canonical,quote=True)+'">'+schema_tag+analytics_tag()+'<style>'+STYLE+'</style></head><body><header><div class="bar"><a class="logo" href="'+ROOT+'/">企業倒産・新規法人情報サイト</a><nav><a href="'+ROOT+'/bankruptcies">倒産速報</a><a href="'+ROOT+'/registrations">新設・新規法人</a><a href="'+ROOT+'/risks">公表リスク情報</a><a href="'+ROOT+'/signals">地域・業種の動き</a></nav></div></header>'+imobile_pc_top_tag()+'<main>'+body+'</main>'+imobile_pc_tag()+'<footer><strong>企業倒産・新規法人情報サイト</strong><p>公開情報を出典付きで整理する企業情報サイト。報道日・法人番号指定日を表示しています。休廃業・登記閉鎖だけを倒産とは判定しません。</p><a href="'+ROOT+'/about">掲載方針・訂正について</a>　｜　<a href="'+ROOT+'/sources">収集状況</a>　｜　<a href="'+ROOT+'/sitemap.xml">サイトマップ</a></footer>'+tracking_tag(path,ROOT,DSN)+'</body></html>',headers={'Cache-Control':'public, max-age=60','X-Content-Type-Options':'nosniff'})
 
 def breadcrumbs(items):
     links=' / '.join('<a href="'+e(BASE+path,quote=True)+'">'+e(label)+'</a>' for label,path in items)
