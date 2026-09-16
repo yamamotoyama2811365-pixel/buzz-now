@@ -13,6 +13,7 @@ def replace(path, old, new):
     p.write_text(text.replace(old,new,1))
     return True
 
+# 2026-09-16: production install trigger.
 # Render the PC-only tag only for desktop user agents. Keep the owner-provided ad tag untouched.
 replace(
     'app/main.py',
