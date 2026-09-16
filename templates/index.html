@@ -112,6 +112,13 @@
       </div>
     </section>
 
+    {% if imobile_pc_enabled %}
+    <aside class="section" aria-label="広告" style="text-align:center;margin:24px 0">
+      <p style="font-size:12px;color:#94a3b8;margin:0 0 10px">広告</p>
+      {% include "_imobile_pc_buzznow.html" %}
+    </aside>
+    {% endif %}
+
 <section class="summary-grid">
       <article class="summary-card">
         <div class="summary-label">いま話題のキーワード <span class="info">i</span></div>

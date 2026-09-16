@@ -117,6 +117,14 @@
 
     {% include "_magazine_stream.html" %}
 
+    {% if imobile_pc_enabled %}
+    <aside class="section a8-advertisement" aria-label="広告">
+      <p style="font-size:12px;color:#b8c3d1;margin:0 0 10px">広告</p>
+      <div class="a8-ad-grid"><div class="a8-ad-unit">
+        {% include "_imobile_pc_buzznow.html" %}
+      </div></div>
+    </aside>
+    {% else %}
     <aside class="section a8-advertisement" aria-label="広告">
       <p style="font-size:12px;color:#b8c3d1;margin:0 0 10px">広告・PR</p>
       <div class="a8-ad-grid"><div class="a8-ad-unit">
@@ -133,6 +141,7 @@
 <img border="0" width="1" height="1" src="https://www16.a8.net/0.gif?a8mat=4BC7V4+29KENM+22QA+NUES1" alt="">
       </div></div>
     </aside>
+    {% endif %}
 
     {{ next_links(related_rows or top_now_rows, 'あわせて読みたい話題', 'article_top', 3) }}
     <details class="section"><summary style="cursor:pointer;padding:16px;font-weight:bold">注目度のデータを見る</summary>

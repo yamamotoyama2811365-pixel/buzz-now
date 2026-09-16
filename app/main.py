@@ -161,6 +161,11 @@ async def canonical_origin(request: Request, call_next):
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 
+_PC_MOBILE_UA = re.compile(r"iphone|ipad|ipod|android|mobile|windows phone|blackberry|opera mini|opera mobi", re.I)
+
+def _imobile_pc_enabled(request: Request) -> bool:
+    return not bool(_PC_MOBILE_UA.search(request.headers.get("user-agent", "")))
+
 
 MIGRATION_MAINTENANCE, DATABASE_BACKEND, DATABASE_URL = migration_settings(os.environ)
 app.add_middleware(MigrationMaintenance, paused=MIGRATION_MAINTENANCE)
@@ -5125,6 +5130,7 @@ def home(request: Request):
         "request": request,
         "trends": rows,
         "site_name": SITE_NAME,
+        "imobile_pc_enabled": _imobile_pc_enabled(request),
     })
 
 
@@ -5302,6 +5308,7 @@ def trend_detail(slug: str, request: Request):
         "title": title,
         "description": description,
         "canonical": canonical,
+        "imobile_pc_enabled": _imobile_pc_enabled(request),
     })
 
 
