@@ -23,7 +23,7 @@ services:
       - key: REAL_DATA_INTERVAL_MINUTES
         value: "30"
       - key: SITE_URL
-        sync: false
+        value: https://buzz-now-1.onrender.com
       - key: SITE_NAME
         value: BUZZ NOW
       - key: ADSENSE_ENABLED
