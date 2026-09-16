@@ -25,3 +25,4 @@ def imobile_pc_tag():
     if old not in text: raise SystemExit('shell insertion point missing')
     text=text.replace(old,new,1)
     p.write_text(text)
+# trigger 2026-09-16
