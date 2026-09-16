@@ -167,8 +167,9 @@ def install(app, dsn, public_origin, require_admin):
             return Response(status_code=204, headers=NO_CACHE)
         if 'prefetch' in (request.headers.get('purpose', '') + request.headers.get('sec-purpose', '')).lower():
             return Response(status_code=204, headers=NO_CACHE)
-        if request.headers.get('content-type', '').split(';')[0].strip().lower() != 'application/json':
-            raise HTTPException(415, 'JSON required')
+        content_type = request.headers.get('content-type', '').split(';')[0].strip().lower()
+        if content_type not in {'application/json', 'text/plain'}:
+            raise HTTPException(415, 'JSON payload required')
         if not budget.take():
             raise HTTPException(429, 'Counter busy', headers={'Retry-After': '30'})
         chunks = bytearray()
