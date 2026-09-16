@@ -1,0 +1,26 @@
+name: Add Buzz Now article anchor
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/add_buzznow_article_anchor_20260916.py'
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Add article anchor
+        run: python scripts/add_buzznow_article_anchor_20260916.py
+      - name: Commit anchor
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add templates/trend.html
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Add Buzz Now article anchor for X entry ad'
+          git push origin HEAD:main
