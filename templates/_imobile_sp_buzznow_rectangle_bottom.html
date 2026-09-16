@@ -1,0 +1,28 @@
+<div id="imobile-sp-rectangle-bottom-mount"></div>
+<script>
+(function(){
+  'use strict';
+  var ua=navigator.userAgent||'';
+  var isMobile=/iphone|ipad|ipod|android|mobile|windows phone|blackberry|opera mini|opera mobi/i.test(ua);
+  if(!isMobile || !window.matchMedia('(max-width: 768px)').matches) return;
+  if(document.getElementById('im-0fdc3df768db46a8a1871eab0a33b96f')) return;
+  var mount=document.getElementById('imobile-sp-rectangle-bottom-mount');
+  if(!mount) return;
+  var aside=document.createElement('aside');
+  aside.setAttribute('aria-label','広告');
+  aside.style.cssText='text-align:center;margin:34px auto 24px;min-height:250px;overflow:hidden';
+  var label=document.createElement('div');
+  label.textContent='広告';
+  label.style.cssText='font-size:11px;opacity:.62;margin-bottom:6px';
+  var slot=document.createElement('div');
+  slot.id='im-0fdc3df768db46a8a1871eab0a33b96f';
+  aside.appendChild(label);aside.appendChild(slot);mount.appendChild(aside);
+  var loader=document.createElement('script');
+  loader.async=true;
+  loader.src='https://imp-adedge.i-mobile.co.jp/script/v1/spot.js?20220104';
+  slot.appendChild(loader);
+  var config=document.createElement('script');
+  config.text='(window.adsbyimobile=window.adsbyimobile||[]).push({pid:85420,mid:596414,asid:1944844,type:"banner",display:"inline",elementid:"im-0fdc3df768db46a8a1871eab0a33b96f"})';
+  slot.appendChild(config);
+})();
+</script>
