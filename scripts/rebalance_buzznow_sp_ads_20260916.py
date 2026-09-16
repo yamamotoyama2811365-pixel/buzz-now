@@ -48,3 +48,5 @@ if 'SP_INLINE_SLOT_4_PENDING' not in text:
     if marker3 in text:
         text=text.replace(marker3,'    <!-- SP_INLINE_SLOT_4_PENDING: separate approved 325x250 tag required -->\n\n'+marker3,1)
 p.write_text(text)
+
+# trigger after workflow creation
