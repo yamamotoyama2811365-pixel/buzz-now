@@ -20,3 +20,5 @@ if include not in text:
     if marker not in text: raise SystemExit('trend footer marker missing')
     text=text.replace(marker, '\n'+include+'\n'+marker, 1)
     p.write_text(text)
+
+# trigger 2026-09-16
