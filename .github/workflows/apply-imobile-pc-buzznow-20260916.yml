@@ -1,0 +1,30 @@
+name: Apply Buzz Now PC i-mobile
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/apply_imobile_pc_buzznow_20260916.py'
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply desktop-only i-mobile patch
+        run: python scripts/apply_imobile_pc_buzznow_20260916.py
+      - name: Validate Python
+        run: python -m py_compile app/main.py
+      - name: Commit installation
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/main.py templates/index.html templates/trend.html
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Install approved Buzz Now i-mobile PC ad on desktop'
+          git push origin HEAD:main
