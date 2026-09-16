@@ -429,6 +429,8 @@ document.addEventListener('click', function(event) {
 });
 </script>
 
+{% include "_imobile_sp_buzznow_overlay.html" %}
+
 {% if affiliate_enabled and affiliate_script_url %}
 <script src="{{ affiliate_script_url }}" async></script>
 {% endif %}
