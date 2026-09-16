@@ -5,44 +5,18 @@
   var ua=navigator.userAgent||'';
   var isMobile=/iphone|ipad|ipod|android|mobile|windows phone|blackberry|opera mini|opera mobi/i.test(ua);
   if(!isMobile || !window.matchMedia('(max-width: 768px)').matches) return;
-
-  var params=new URLSearchParams(location.search);
-  var source=(params.get('utm_source')||'').toLowerCase();
-  var hint=(params.get('from')||params.get('src')||'').toLowerCase();
-  var refHost='';
-  try{ refHost=new URL(document.referrer).hostname.toLowerCase(); }catch(_){ }
-  var fromX=['x','twitter','t.co'].indexOf(source)>=0 || ['x','twitter'].indexOf(hint)>=0 ||
-    refHost==='t.co' || refHost==='x.com' || refHost.endsWith('.x.com') ||
-    refHost==='twitter.com' || refHost.endsWith('.twitter.com');
-  if(!fromX) return;
-
-  var seenKey='buzznow_x_entry_ad_seen_v1';
-  try{ if(sessionStorage.getItem(seenKey)==='1') return; }catch(_){ }
   if(document.getElementById('im-e1b00a9fef9944afb893a982baed148d')) return;
-
   var mount=document.getElementById('imobile-sp-rectangle-mount');
   if(!mount) return;
-  var card=document.createElement('aside');
-  card.setAttribute('aria-label','広告');
-  card.style.cssText='text-align:center;margin:18px auto 24px;padding:14px 10px 16px;border:1px solid rgba(148,163,184,.22);border-radius:16px;background:rgba(15,23,42,.32);min-height:250px;overflow:hidden';
-
-  var note=document.createElement('div');
-  note.textContent='Xからアクセスありがとうございます。記事はこの広告の下からそのまま読めます。';
-  note.style.cssText='font-size:12px;line-height:1.6;color:#cbd5e1;margin:0 auto 8px;max-width:320px';
+  var aside=document.createElement('aside');
+  aside.setAttribute('aria-label','広告');
+  aside.style.cssText='text-align:center;margin:26px auto;min-height:250px;overflow:hidden';
   var label=document.createElement('div');
   label.textContent='広告';
   label.style.cssText='font-size:11px;opacity:.62;margin-bottom:6px';
   var slot=document.createElement('div');
   slot.id='im-e1b00a9fef9944afb893a982baed148d';
-  var cont=document.createElement('a');
-  cont.href='#buzznow-article-body';
-  cont.textContent='記事を読む ↓';
-  cont.style.cssText='display:block;margin:12px auto 0;width:max-content;max-width:100%;padding:10px 18px;border-radius:999px;background:#f8fafc;color:#0f172a;text-decoration:none;font-weight:800;font-size:13px';
-
-  card.appendChild(note);card.appendChild(label);card.appendChild(slot);card.appendChild(cont);
-  mount.appendChild(card);
-  try{ sessionStorage.setItem(seenKey,'1'); }catch(_){ }
-
+  aside.appendChild(label);aside.appendChild(slot);mount.appendChild(aside);
   var loader=document.createElement('script');
   loader.async=true;
   loader.src='https://imp-adedge.i-mobile.co.jp/script/v1/spot.js?20220104';
