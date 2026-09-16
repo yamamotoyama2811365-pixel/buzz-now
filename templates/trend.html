@@ -79,6 +79,13 @@
     <div class="live">{{ trend['status'] }}</div>
   </header>
 
+  {% if imobile_pc_enabled %}
+  <aside aria-label="広告" style="text-align:center;margin:18px auto 22px;min-height:90px;overflow:hidden">
+    <p style="font-size:12px;color:#b8c3d1;margin:0 0 8px">広告</p>
+    {% include "_imobile_pc_buzznow_top.html" %}
+  </aside>
+  {% endif %}
+
   <article class="detail">
     <div class="kicker">{{ trend['category'] }} / TREND</div>
     <h1>{{ trend['keyword'] }}はなぜ話題？<br>確認できた関連ニュース</h1>
