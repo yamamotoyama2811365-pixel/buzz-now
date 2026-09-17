@@ -89,7 +89,9 @@ SOCIAL_TEST_ENABLED = os.getenv("SOCIAL_TEST_ENABLED", "false").lower() == "true
 # V35.39: confirmed Threads channel and single production posting service.
 BUFFER_THREADS_CHANNEL_ID = os.getenv("BUFFER_THREADS_CHANNEL_ID", "6aa172decd8b9c702c382ea4").strip()
 THREADS_SERVICE_ID = os.getenv("THREADS_SERVICE_ID", "srv-dagj4sn40ujc73fe66bg").strip()
-THREADS_AUTO_ENABLED = os.getenv("THREADS_AUTO_ENABLED", "true").lower() == "true"
+# Threads retired by owner on 2026-09-17; its Buffer slot is reserved for @7d2sz_biyo.
+# Keep every scheduled/manual Threads sender disabled even if an old env var remains.
+THREADS_AUTO_ENABLED = False
 THREADS_CHANNEL_HANDLE = os.getenv("THREADS_CHANNEL_HANDLE", "buzz_now_of").strip().lower()
 THREADS_DAILY_CAP = max(0, int(os.getenv("THREADS_DAILY_CAP", "5")))
 THREADS_GLOBAL_COOLDOWN_MINUTES = max(1, int(os.getenv("THREADS_GLOBAL_COOLDOWN_MINUTES", "180")))
