@@ -1,4 +1,5 @@
 """Public site icons and lightweight site-ops router mount."""
+import os
 from pathlib import Path
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
@@ -20,5 +21,11 @@ def apple_touch_icon():
 
 # Keep the main application wiring stable: app.main already includes this router.
 # Site Ops owns its own protected routes and background collectors.
-from app.site_ops import router as site_ops_router
+# The production app's DATABASE_URL can be read-only during migration-safe runtime,
+# so Site Ops uses its own dedicated RW Neon connection without changing app.main.
+from app import site_ops as _site_ops
+_site_ops.DATABASE_URL = os.getenv('SITE_OPS_DATABASE_URL', _site_ops.DATABASE_URL).strip()
+if _site_ops.ENABLED and not _site_ops.IS_LEGACY and _site_ops._scheduler is None:
+    _site_ops._start_scheduler()
+site_ops_router = _site_ops.router
 router.include_router(site_ops_router)
