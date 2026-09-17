@@ -2,7 +2,7 @@ name: X news-only policy verification
 on:
   push:
     branches: [fix/x-news-only-20260912, main]
-    paths: [app/main.py, app/social_mix.py, app/social_schedule.py, app/detective_posts.py, tests/test_x_news_only.py, tests/test_social_mix.py, tests/test_social_schedule.py, scripts/install_x_news_only.py, .github/workflows/x-news-only.yml]
+    paths: [app/main.py, app/social_mix.py, app/social_schedule.py, app/detective_posts.py, tests/test_x_news_only.py, tests/test_breaking_incident_news.py, tests/test_social_mix.py, tests/test_social_schedule.py, scripts/install_x_news_only.py, .github/workflows/x-news-only.yml]
 permissions:
   contents: read
 jobs:
@@ -23,6 +23,7 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python scripts/install_x_news_only.py
       - run: python -m unittest discover -s tests -p test_x_news_only.py -v
+      - run: python -m unittest discover -s tests -p test_breaking_incident_news.py -v
       - run: python -m unittest discover -s tests -p test_social_schedule.py -v
       - run: python -m unittest discover -s tests -p test_social_mix.py -v
       - run: python -m unittest discover -s tests -p test_detective_media.py -v
