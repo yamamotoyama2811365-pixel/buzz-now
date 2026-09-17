@@ -132,6 +132,28 @@ GDELT_NEWS_ENABLED = os.getenv("GDELT_NEWS_ENABLED", "true").lower() == "true"
 GDELT_NEWS_LIMIT = max(0, min(15, int(os.getenv("GDELT_NEWS_LIMIT", "8"))))
 GDELT_DOC_API = "https://api.gdeltproject.org/api/v2/doc/doc"
 
+# V35.44: fast, source-backed entertainment incident discovery.
+# Rumour-only allegations are excluded: automatic pickup requires a fresh report
+# from a known publisher plus arrest/referral/indictment language.
+BREAKING_INCIDENT_NEWS_ENABLED = os.getenv("BREAKING_INCIDENT_NEWS_ENABLED", "true").lower() == "true"
+BREAKING_INCIDENT_SCAN_MINUTES = max(5, int(os.getenv("BREAKING_INCIDENT_SCAN_MINUTES", "10")))
+BREAKING_INCIDENT_LOOKBACK_HOURS = max(3, min(48, int(os.getenv("BREAKING_INCIDENT_LOOKBACK_HOURS", "24"))))
+BREAKING_INCIDENT_QUERY_LIMIT = max(3, min(12, int(os.getenv("BREAKING_INCIDENT_QUERY_LIMIT", "8"))))
+BREAKING_INCIDENT_QUERIES = (
+    "芸能人 逮捕 when:1d",
+    "インフルエンサー 逮捕 when:1d",
+    "タレント OR アイドル 逮捕 when:1d",
+    "(コカイン OR 覚醒剤 OR 大麻 OR 麻薬) (逮捕 OR 送検) (芸能人 OR インフルエンサー OR タレント) when:1d",
+)
+BREAKING_INCIDENT_ACTION_TERMS = ("現行犯逮捕", "再逮捕", "逮捕", "書類送検", "送検", "起訴")
+BREAKING_INCIDENT_DRUG_TERMS = ("コカイン", "覚醒剤", "大麻", "麻薬", "違法薬物", "薬物")
+BREAKING_INCIDENT_TRUSTED_PUBLISHERS = (
+    "NHK", "共同通信", "時事通信", "朝日新聞", "読売新聞", "毎日新聞", "日本経済新聞",
+    "TBS", "NEWS DIG", "FNN", "フジテレビ", "テレビ朝日", "テレ朝", "日テレ", "日本テレビ",
+    "ORICON", "オリコン", "日刊スポーツ", "スポニチ", "サンスポ", "デイリースポーツ",
+    "集英社オンライン", "ABEMA",
+)
+
 DEMO_MODE = os.getenv("DEMO_MODE", "true").lower() == "true"
 DEMO_INTERVAL_SECONDS = int(os.getenv("DEMO_INTERVAL_SECONDS", "30"))
 
