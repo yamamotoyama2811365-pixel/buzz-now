@@ -1,0 +1,28 @@
+name: Breaking incident news verification
+on:
+  push:
+    branches: [main]
+    paths:
+      - app/main.py
+      - tests/test_breaking_incident_news.py
+      - .github/workflows/breaking-incident-news.yml
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      DEMO_MODE: 'false'
+      REAL_DATA_MODE: 'false'
+      SOCIAL_AUTO_ENABLED: 'false'
+      THREADS_AUTO_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -p test_breaking_incident_news.py -v
+      - run: python -m compileall -q app tests
+      - run: git diff --check
