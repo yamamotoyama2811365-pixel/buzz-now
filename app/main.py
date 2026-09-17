@@ -6951,3 +6951,10 @@ def city_corporate_x_status():
     """Read only: cached configuration/identity; no posting or credentials."""
     return city_corporate_activation.status()
 
+
+
+@app.get("/api/media-x/status")
+def media_x_setup_status():
+    """Read-only setup status for the four new X accounts; no credentials."""
+    from app.media_x_routes import status
+    return status()
