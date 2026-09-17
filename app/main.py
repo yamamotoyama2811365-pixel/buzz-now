@@ -1559,6 +1559,87 @@ def _fetch_google_news_rss_for_keyword(keyword, maxrecords=8):
     except Exception as e:
         return [], f"{type(e).__name__}: {e}"
 
+def _breaking_incident_subject(title: str) -> str:
+    """Extract a conservative public-facing subject from an incident headline."""
+    headline = re.sub(r"\s+", " ", str(title or "")).strip()
+    headline = re.sub(r"^[【\[]?(?:速報|独自|続報)[】\]]?\s*", "", headline)
+    for m in re.finditer(r"「([^」]{2,24})」", headline):
+        alias = _clean_keyword(m.group(1))
+        tail = headline[m.end():m.end()+40]
+        if alias and re.search(r"(?:として活動|こと|逮捕|容疑者|送検|起訴)", tail):
+            return alias[:40]
+    m = re.search(r"([一-龠々]{3,10})容疑者", headline)
+    if m:
+        name = m.group(1)
+        for prefix in ("会社役員", "元俳優", "俳優", "女優", "歌手", "タレント", "モデル", "芸人"):
+            if name.startswith(prefix) and len(name) > len(prefix) + 1:
+                name = name[len(prefix):]
+        return _clean_keyword(name)[:40]
+    m = re.search(r"「([^」]{2,24})」[^。]{0,28}(?:逮捕|送検|起訴)", headline)
+    return _clean_keyword(m.group(1))[:40] if m else ""
+
+
+def _breaking_incident_article_ok(article, now=None) -> bool:
+    title = " ".join(str(article.get("title") or "").split()).strip()
+    publisher = " ".join(str(article.get("publisher") or "").split()).strip()
+    if not title or not any(term in title for term in BREAKING_INCIDENT_ACTION_TERMS):
+        return False
+    if not any(token.casefold() in publisher.casefold() for token in BREAKING_INCIDENT_TRUSTED_PUBLISHERS):
+        return False
+    published = _parse_news_datetime(article.get("published_at"))
+    now = now or datetime.now(timezone.utc)
+    if not published:
+        return False
+    if published.tzinfo is None:
+        published = published.replace(tzinfo=timezone.utc)
+    return now - timedelta(hours=BREAKING_INCIDENT_LOOKBACK_HOURS) <= published <= now + timedelta(minutes=10)
+
+
+def collect_breaking_incident_news(c, ts, limit=None):
+    """Discover fresh verified entertainment incident news independently of buzzwords."""
+    source = "breaking_incident_news"
+    if not BREAKING_INCIDENT_NEWS_ENABLED:
+        _collector_state(c, source, "disabled", "disabled by environment", 0, ts)
+        return 0
+    per_query = BREAKING_INCIDENT_QUERY_LIMIT if limit is None else max(1, min(12, int(limit)))
+    now = _parse_iso_datetime(ts) or datetime.now(timezone.utc)
+    accepted = 0
+    seen_urls = set()
+    diagnostics = []
+    for query in BREAKING_INCIDENT_QUERIES:
+        articles, msg = _fetch_google_news_rss_for_keyword(query, per_query)
+        diagnostics.append(f"{query[:18]}:{msg}")
+        for article in articles:
+            url = str(article.get("url") or "").strip()
+            if not url or url in seen_urls or not _breaking_incident_article_ok(article, now):
+                continue
+            subject = _breaking_incident_subject(article.get("title"))
+            if not subject:
+                continue
+            seen_urls.add(url)
+            title = " ".join(str(article.get("title") or "").split())
+            score = 99.0 if any(term in title for term in BREAKING_INCIDENT_DRUG_TERMS) else 96.0
+            upsert_real_trend(c, subject, source, score, score, url, url, ts)
+            item = dict(article)
+            item["source_label"] = "速報・事件報道"
+            _store_article_sources(c, subject, [item], ts)
+            accepted += 1
+    _collector_state(c, source, "ok", " | ".join(diagnostics)[:900], accepted, ts)
+    return accepted
+
+
+def _breaking_incident_source_recent(source, now=None) -> bool:
+    if str(source.get("source_label") or "") != "速報・事件報道":
+        return False
+    published = _parse_news_datetime(source.get("published_at"))
+    if not published:
+        return False
+    if published.tzinfo is None:
+        published = published.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    return now - timedelta(hours=BREAKING_INCIDENT_LOOKBACK_HOURS) <= published <= now + timedelta(minutes=10)
+
+
 def _derive_related_from_sources(c, trend_id, keyword):
     """Create conservative related-search phrases from collected article titles."""
     rows=c.execute("SELECT title FROM sources WHERE trend_id=? ORDER BY id DESC LIMIT 12",(trend_id,)).fetchall()
