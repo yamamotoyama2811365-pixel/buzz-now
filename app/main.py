@@ -2809,38 +2809,52 @@ def _social_candidate_rows(c, limit: int = 20):
           COALESCE(cf.confidence_score,0) AS confidence_score,
           COALESCE(cf.source_count,0) AS source_count,
           COALESCE(cf.confidence_label,'未確認') AS confidence_label,
-          COALESCE(ps.first_source,'') AS first_source
+          COALESCE(ps.first_source,'') AS first_source,
+          CASE WHEN t.pre_buzz_score>=?
+             AND COALESCE(tt.traffic_potential,0)>=?
+             AND COALESCE(cf.confidence_score,0)>=? THEN 1 ELSE 0 END AS generic_social_eligible
         FROM trends t
         LEFT JOIN traffic_totals tt ON tt.trend_id=t.id
         LEFT JOIN confidence_state cf ON cf.trend_id=t.id
         LEFT JOIN propagation_state ps ON ps.trend_id=t.id
-        WHERE t.is_indexable=1 AND t.pre_buzz_score>=?
-          AND COALESCE(tt.traffic_potential,0)>=?
-          AND COALESCE(cf.confidence_score,0)>=?
+        WHERE t.is_indexable=1
           AND t.status NOT LIKE '%%下降%%'
+          AND (
+            (t.pre_buzz_score>=? AND COALESCE(tt.traffic_potential,0)>=? AND COALESCE(cf.confidence_score,0)>=?)
+            OR EXISTS (SELECT 1 FROM sources bs WHERE bs.trend_id=t.id AND bs.source_label='速報・事件報道')
+          )
         ORDER BY t.pre_buzz_score DESC,COALESCE(tt.traffic_potential,0) DESC,
           COALESCE(cf.confidence_score,0) DESC,t.acceleration DESC,t.updated_at DESC
         LIMIT 100
-    """, (SOCIAL_MIN_PREBUZZ, SOCIAL_MIN_TRAFFIC, SOCIAL_MIN_CONFIDENCE)).fetchall()
+    """, (SOCIAL_MIN_PREBUZZ, SOCIAL_MIN_TRAFFIC, SOCIAL_MIN_CONFIDENCE,
+           SOCIAL_MIN_PREBUZZ, SOCIAL_MIN_TRAFFIC, SOCIAL_MIN_CONFIDENCE)).fetchall()
     if not rows:
         return []
     ids = [r["id"] for r in rows]
     placeholders = ",".join("?" for _ in ids)
     source_rows = c.execute(
-        f"SELECT trend_id,title,url,published_at,publisher FROM sources WHERE trend_id IN ({placeholders})",
+        f"SELECT trend_id,title,url,published_at,publisher,source_label FROM sources WHERE trend_id IN ({placeholders})",
         tuple(ids)).fetchall()
     grouped = {}
     for source in source_rows:
         grouped.setdefault(source["trend_id"], []).append(source)
     candidates = []
+    now = datetime.now(timezone.utc)
     for row in rows:
         item = dict(row)
-        news = _article_briefing(grouped.get(row["id"], []), row["keyword"])
+        raw_sources = grouped.get(row["id"], [])
+        breaking_recent = any(_breaking_incident_source_recent(dict(s), now) for s in raw_sources)
+        if not bool(item.get("generic_social_eligible")) and not breaking_recent:
+            continue
+        news = _article_briefing(raw_sources, row["keyword"])
         item.update(reason_title=news[0]["title"] if news else None,
                     reason_url=news[0]["url"] if news else None,
-                    reason_published_at=news[0]["date"] if news else None)
+                    reason_published_at=news[0]["date"] if news else None,
+                    breaking_incident=1 if breaking_recent else 0)
         candidates.append(item)
-    candidates.sort(key=lambda r: bool(r["reason_title"]), reverse=True)
+    # Fresh verified incidents get the next available X news slot.
+    candidates.sort(key=lambda r: (int(r.get("breaking_incident") or 0),
+                    bool(r["reason_title"]), float(r["pre_buzz_score"] or 0)), reverse=True)
     return candidates[:limit]
 
 
