@@ -5073,6 +5073,7 @@ def collect_real_sources():
         g = collect_google_trends(c, ts)
         w = collect_wikimedia(c, ts)
         yahoo_buzz = collect_yahoo_realtime_buzz(c, ts)
+        breaking_incidents = collect_breaking_incident_news(c, ts)
         news_count = collect_fast_news(c, ts, limit=6)
         refresh_confidence(c, ts)
         refresh_propagation(c, ts)
@@ -5107,12 +5108,28 @@ def collect_real_sources():
         "yahoo_buzzing_now": yahoo_buzz,
         "yahoo_promote": yahoo_promote,
         "yahoo_quote": yahoo_quote,
+        "breaking_incident_news": breaking_incidents,
         "news": news_count,
         "total": g + w,
         "social": social_result,
         "threads": threads_result,
         "indexnow": indexnow_result,
     }
+
+
+def collect_breaking_incident_news_now():
+    """Fast lane: create/update source-backed pages; X send rules stay unchanged."""
+    if LEGACY_SERVICE or not REAL_DATA_MODE or not BREAKING_INCIDENT_NEWS_ENABLED:
+        return {"count": 0, "reason": "disabled"}
+    ts = now_iso()
+    with db() as c:
+        count = collect_breaking_incident_news(c, ts)
+        if count:
+            refresh_confidence(c, ts)
+            refresh_propagation(c, ts)
+            refresh_real_traffic_forecast(c, ts)
+        c.commit()
+    return {"count": count, "checked_at": ts}
 
 
 def demo_tick():
@@ -5216,6 +5233,18 @@ def startup():
             id="real_source_collector",
             replace_existing=True,
             max_instances=1
+        )
+
+    if BREAKING_INCIDENT_NEWS_ENABLED:
+        scheduler.add_job(
+            collect_breaking_incident_news_now,
+            "interval",
+            minutes=BREAKING_INCIDENT_SCAN_MINUTES,
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=20),
+            id="breaking_incident_news",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
         )
 
     if TRAFFIC_RETENTION_ENABLED and DATABASE_URL and DATABASE_BACKEND == "neon":
