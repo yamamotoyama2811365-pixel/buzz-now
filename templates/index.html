@@ -68,15 +68,6 @@
     </div>
   </header>
 
-  {% if imobile_pc_enabled %}
-  <aside aria-label="広告" style="text-align:center;margin:18px auto 20px;min-height:90px;overflow:hidden">
-    <p style="font-size:12px;color:#94a3b8;margin:0 0 8px">広告</p>
-    {% include "_imobile_pc_buzznow_top.html" %}
-  </aside>
-  {% endif %}
-
-  <!-- SP 320x50 inline; component self-gates to mobile only. -->
-  {% include "_imobile_sp_buzznow_top.html" %}
 
   <nav class="top-tabs" aria-label="ランキング切替">
     <a class="top-tab active" href="#top" data-mode="top">TOP</a>
@@ -122,12 +113,6 @@
       </div>
     </section>
 
-    {% if imobile_pc_enabled %}
-    <aside class="section" aria-label="広告" style="text-align:center;margin:24px 0">
-      <p style="font-size:12px;color:#94a3b8;margin:0 0 10px">広告</p>
-      {% include "_imobile_pc_buzznow.html" %}
-    </aside>
-    {% endif %}
 
 <section class="summary-grid">
       <article class="summary-card">
@@ -181,7 +166,6 @@
     </section>
 
     <!-- SP 300x250 inline; separate spot for mid-content performance. -->
-    {% include "_imobile_sp_buzznow_rectangle.html" %}
 
 
 
@@ -218,7 +202,6 @@
       <p class="source-note">Velocityは、BUZZ NOWが取得したSource Scoreの変化量を1時間換算した値です。実データが蓄積するほど精度が上がります。</p>
     </section>
 
-    {% include "_imobile_sp_buzznow_rectangle_mid2.html" %}
 
     <section class="quick-grid">
       <button class="quick-card quick-fire" data-filter="boom">
@@ -269,7 +252,6 @@
       <div id="learningRecent" class="learning-list">まだ答え合わせ前です。</div>
     </section>
 
-    {% include "_imobile_sp_buzznow_rectangle_bottom.html" %}
 
     <details class="dev-panel">
       <summary>DEMO / 開発用キーワード追加</summary>
@@ -289,7 +271,6 @@
     </details>
   </main>
 
-  {% include "_imobile_sp_buzznow_overlay.html" %}
 
   <nav class="bottom-nav">
     <button class="bottom-item active" data-bottom="home"><span>⌂</span><b>ホーム</b></button>

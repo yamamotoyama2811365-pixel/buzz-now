@@ -115,13 +115,13 @@ OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2").strip()
 SOCIAL_AI_IMAGE_ENABLED = os.getenv("SOCIAL_AI_IMAGE_ENABLED", "false").lower() == "true"
 SOCIAL_TEXT_ONLY = os.getenv("SOCIAL_TEXT_ONLY", "true").lower() == "true"
 
-# X/SNS landing ad gate. The gate activates only when an i-mobile ad tag exists.
+# X/SNS landing ad gate is paused; existing social links redirect to their articles.
 ADSENSE_ENABLED = os.getenv("ADSENSE_ENABLED", "false").lower() == "true"
 AFFILIATE_ENABLED = os.getenv("AFFILIATE_ENABLED", "false").lower() == "true"
 AFFILIATE_PROVIDER = os.getenv("AFFILIATE_PROVIDER", "")
 PR_LABEL = os.getenv("PR_LABEL", "広告")
-IMOBILE_X_GATE_ENABLED = os.getenv("IMOBILE_X_GATE_ENABLED", "true").lower() == "true"
-IMOBILE_X_GATE_HTML = os.getenv("IMOBILE_X_GATE_HTML", "").strip()
+IMOBILE_X_GATE_ENABLED = False  # Paused by the site owner on 2026-09-17.
+IMOBILE_X_GATE_HTML = ""
 IMOBILE_X_GATE_SECONDS = max(0, min(int(os.getenv("IMOBILE_X_GATE_SECONDS", "3")), 10))
 IMOBILE_X_GATE_COOLDOWN_MINUTES = max(1, int(os.getenv("IMOBILE_X_GATE_COOLDOWN_MINUTES", "60")))
 SOCIAL_AI_IMAGE_QUALITY = os.getenv("SOCIAL_AI_IMAGE_QUALITY", "low").strip()
