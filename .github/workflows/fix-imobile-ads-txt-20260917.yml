@@ -1,0 +1,40 @@
+name: Fix i-mobile ads.txt 20260917
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-imobile-ads-txt-20260917.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Add i-mobile to ads.txt response
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path('app/main.py')
+          text = p.read_text()
+          pattern = r'(@app\.get\("/ads\.txt", response_class=PlainTextResponse\)\ndef ads_txt\(\):\n)(?:    .*\n)+?(?=\n@app\.get)'
+          replacement = r'\1    return PlainTextResponse("google.com, pub-5776658615046901, DIRECT, f08c47fec0942fa0\\ni-mobile.co.jp, 85420, DIRECT\\n")\n'
+          updated, count = re.subn(pattern, replacement, text, count=1)
+          if count != 1:
+              raise SystemExit('ads.txt route block not found exactly once')
+          p.write_text(updated)
+          PY
+      - name: Validate Python
+        run: python -m py_compile app/main.py
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/main.py
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Add i-mobile to Buzz Now ads.txt'
+          git push origin HEAD:main
