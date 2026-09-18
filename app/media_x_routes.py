@@ -11,7 +11,7 @@ SITES = {
     'biyo': ('美容医療コンパス', 'existing', 'BIYO', '7d2sz_biyo'),
     'tadage': ('タダゲー手帖', 'new', 'TADAGE', ''),
     'otona': ('大人の恋のすすめ', 'new', 'OTONA', ''),
-    'jleague': ('一生Jリーグ', 'new', 'JLEAGUE', ''),
+    'jleague': ('一生Jリーグ', 'new', 'JLEAGUE', 'issho_j'),
 }
 
 
