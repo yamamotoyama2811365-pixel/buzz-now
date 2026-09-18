@@ -7,13 +7,19 @@ from urllib.parse import urlsplit
 VERSION = 'incident-first-20260918'
 POLICIES = {
     'jleague': {
-        'revision': 'jleague-news-and-guides-20260918',
-        'focus': '用意済みの観戦・サイト紹介を継続し、移籍・加入・退団など新しいクラブ情報があれば優先',
-        'topics': ['移籍', '加入', '退団', '契約更新', '試合情報', '観戦ガイド', 'クラブ情報', '重大な不祥事・処分'],
+        'revision': 'jleague-player-buzz-20260918',
+        'focus': 'BUZZNOWのスポーツ版：選手の活躍・試合前の発言・ファンの反応・移籍など、具体的な新しい話題を優先',
+        'topics': ['選手の活躍', '好プレー', '試合前後の発言', 'ファンの反応', '移籍', '加入・退団', '重大な不祥事・処分'],
         'source_rule': 'クラブ・リーグの公式発表または信頼できる報道で対象と時点を照合',
         'copy_rule': '新しい情報を冒頭に置き、移籍の公式発表と報道段階を区別。不祥事は疑い・調査中・処分・確定を区別',
         'ordinary_cards_are_scandal': False,
-        'routine_promotion': 'scheduled_when_no_verified_news',
+        'routine_promotion': 'disabled',
+        'x_quote_max_age_hours': 24,
+        'matchday_priority': ['試合前：選手・主将・監督の意気込み', '試合後：活躍・好プレー・発言・ファンの反響'],
+        'disclaimer_suffix': False,
+        'profile_disclaimer_required': False,
+        'buzz_evidence': '実測の反応数・増加または出典付きの反響報道。数値不明をバズ確認済みとしない',
+        'link_rule': '話題の背景・発言全文への導線・出典を含む関連記事。無関係なトップページへ誘導しない',
     },
     'corporate': {
         'focus': '行政処分・不正報道・経営問題を優先',

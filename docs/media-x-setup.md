@@ -1,6 +1,6 @@
 # Media X accounts
 
-Latest owner direction (2026-09-18): operate BUZZ NOW, the city/corporate account, and J.League. J.League continues prepared guide/promotion posts and prioritizes fresh transfer, arrival, departure and club news when available. City/corporate X continues to prioritize sourced misconduct, sanctions and major management problems. See `ops/x-editorial-policy.md` for sourcing and wording rules.
+Latest owner direction (2026-09-18): operate BUZZ NOW, the city/corporate account, and J.League. J.League now follows a sports-BUZZNOW approach: specific player performances, pre/post-match remarks, evidenced fan reactions and transfer news. Routine site-promotion posts are disabled; no non-official disclaimer suffix or new profile disclaimer is required. City/corporate X continues to prioritize sourced misconduct, sanctions and major management problems. See `ops/x-editorial-policy.md` for sourcing and wording rules.
 
 | Site | Buffer account | X handle | Server configuration |
 | --- | --- | --- | --- |
@@ -11,7 +11,7 @@ Latest owner direction (2026-09-18): operate BUZZ NOW, the city/corporate accoun
 
 The existing account uses BUFFER_API_KEY. The second account must use its own BUFFER_MEDIA_API_KEY, only in deployment secrets. No fallback to the existing key is permitted. Never put credentials in the repository or chat.
 
-J.League was connected successfully to the new Buffer account. Channel `6aacf8e7ea19ca0bde760b9f` and the first public post were verified through Buffer Sent on 2026-09-18. Seven normal site-promotion posts for September 19–25 were created, then temporarily moved to Drafts. The owner's subsequent explicit instruction authorizes restoring all seven to the everyday 12:15 Asia/Tokyo queue. Order: schedule, stadiums, players, standings, clubs, results, Sapporo. Queue contents and dates must be verified in Buffer; scheduling slots alone are not proof of queued posts.
+J.League was connected successfully to the new Buffer account. Channel `6aacf8e7ea19ca0bde760b9f` and the first public post were verified through Buffer Sent on 2026-09-18. Seven site-promotion posts for September 19–25 were temporarily restored, then removed from the queue and retained as drafts under the latest sports-news direction. Do not automatically requeue them. The 12:15 Asia/Tokyo slot alone is not proof of queued news.
 
 The new Buffer API key and J.League server channel settings have not been configured. `app/media_x_routes.py` is a verified one-post send adapter, not a collector or scheduler. `/api/media-x/status` exposes actual credential/channel readiness separately from editorial policy. A recorded policy does not mean unattended publication is active.
 
