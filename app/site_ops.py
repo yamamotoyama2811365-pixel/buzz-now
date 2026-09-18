@@ -61,14 +61,6 @@ SITES = [
         "first_party": "corporate",
     },
     {
-        "id": "open-close",
-        "name": "開店閉店マップ",
-        "url": "https://open-close-map.onrender.com/",
-        "gsc": "https://open-close-map.onrender.com/",
-        "ga4": "553356360",
-        "first_party": "open_close",
-    },
-    {
         "id": "tadage",
         "name": "タダゲー手帖",
         "url": "https://tadage-note.pages.dev/",
@@ -666,7 +658,7 @@ def site_ops_dashboard(key: str = Query(default="")):
         for s in data["statuses"]
     )
     return HTMLResponse(f"""<!doctype html><html lang="ja"><head><meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1"><title>6サイト運用ダッシュボード</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1"><title>5サイト運用ダッシュボード</title>
     <style>
     body{{font-family:system-ui,-apple-system,sans-serif;background:#f5f7fb;color:#172033;margin:0}}
     main{{max-width:1100px;margin:auto;padding:28px 18px 60px}}h1{{margin-bottom:4px}}
@@ -678,7 +670,7 @@ def site_ops_dashboard(key: str = Query(default="")):
     .grid span{{font-size:11px;color:#667085}}section{{background:white;margin-top:16px;border-radius:16px;padding:18px;border:1px solid #e7eaf0}}
     li{{margin:8px 0}}small{{color:#667085}}a{{color:#2563eb}}@media(max-width:520px){{.grid{{grid-template-columns:repeat(2,1fr)}}}}
     </style></head><body><main>
-    <h1>6サイト運用ダッシュボード</h1>
+    <h1>5サイト運用ダッシュボード</h1>
     <div class="sub">独自PV + GA4 + Google Search Console + Bing / 無料API中心</div>
     <div class="cards">{''.join(cards)}</div>
     <section><h2>接続状態</h2><ul>{status_html or '<li>まだ収集履歴がありません</li>'}</ul>
