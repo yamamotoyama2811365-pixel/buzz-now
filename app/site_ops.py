@@ -229,13 +229,6 @@ def collect_first_party(target_day: date | None = None) -> dict[str, Any]:
                        WHERE day=%s""",
                     (day,),
                 )
-            elif mode == "open_close":
-                total, sources, top = _query_counter(
-                    OPEN_CLOSE_DATABASE_URL,
-                    """SELECT page AS path,source,views FROM ocm_page_views_daily
-                       WHERE day=%s AND is_test=false""",
-                    (day,),
-                )
             else:
                 continue
             details = {"sources": sources, "top_pages": top}
