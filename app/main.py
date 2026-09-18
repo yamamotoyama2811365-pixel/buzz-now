@@ -7068,12 +7068,7 @@ def social_schedule_status():
     return {**detective_posts.status(db), "buffer_pause": _buffer_pause(), "mix_policy": social_mix.status(db), "posting_enabled": {"x": SOCIAL_AUTO_ENABLED, "threads": THREADS_AUTO_ENABLED}}
 
 
-# Separate app and database configuration under the shared paid service.
-if os.getenv("OPEN_CLOSE_ENABLED", "false").lower() == "true" and not LEGACY_SERVICE:
-    from services.open_close.main import app as open_close_app
-    app.mount("/open-close", open_close_app)
-
-# Corporate Signal shares this instance but has its own Neon database and collector identity.
+# Open Close Map retired 2026-09-18; route intentionally not mounted.\n\n# Corporate Signal shares this instance but has its own Neon database and collector identity.
 if os.getenv("CORPORATE_ENABLED", "false").lower() == "true" and not LEGACY_SERVICE:
     from services.corporate.main import app as corporate_app
     from app.city_corporate_digest import install as install_city_digest
