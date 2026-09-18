@@ -1,4 +1,4 @@
-"""Owner's incident-first editorial policy; rankings never create allegations."""
+"""Owner's per-account editorial policies; rankings never create allegations."""
 import re
 import unicodedata
 from datetime import date, timedelta
@@ -7,12 +7,13 @@ from urllib.parse import urlsplit
 VERSION = 'incident-first-20260918'
 POLICIES = {
     'jleague': {
-        'focus': '不祥事・処分・逮捕報道・クラブ運営の重大問題を優先',
-        'topics': ['不祥事', '懲戒処分', '逮捕・送検報道', '不正', 'ハラスメント', '経営問題'],
+        'revision': 'jleague-news-and-guides-20260918',
+        'focus': '用意済みの観戦・サイト紹介を継続し、移籍・加入・退団など新しいクラブ情報があれば優先',
+        'topics': ['移籍', '加入', '退団', '契約更新', '試合情報', '観戦ガイド', 'クラブ情報', '重大な不祥事・処分'],
         'source_rule': 'クラブ・リーグの公式発表または信頼できる報道で対象と時点を照合',
-        'copy_rule': '具体的な問題を冒頭に置き、疑い・調査中・処分・確定を区別',
+        'copy_rule': '新しい情報を冒頭に置き、移籍の公式発表と報道段階を区別。不祥事は疑い・調査中・処分・確定を区別',
         'ordinary_cards_are_scandal': False,
-        'routine_promotion': 'draft_only',
+        'routine_promotion': 'scheduled_when_no_verified_news',
     },
     'corporate': {
         'focus': '行政処分・不正報道・経営問題を優先',
