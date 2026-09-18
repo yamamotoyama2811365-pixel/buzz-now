@@ -1,20 +1,20 @@
-# Four media X accounts
+# Media X accounts
 
-Approved on 2026-09-17: replace the existing Buffer Threads channel with beauty X; use a second Buffer account for J.League, Tadage and Otona Koi.
+Latest owner direction (2026-09-18): operate BUZZ NOW, the city/corporate account, and J.League. J.League and city/corporate X prioritize scandals, misconduct, sanctions and major management problems. See `ops/x-editorial-policy.md` for sourcing and wording rules.
 
-| Site | Buffer account | X handle | Channel variable | Enable variable |
-| --- | --- | --- | --- | --- |
-| Beauty | Existing | 7d2sz_biyo | BIYO_X_BUFFER_CHANNEL_ID | BIYO_X_ENABLED |
-| Tadage | New | Unconfirmed: TADAGE_X_HANDLE | TADAGE_X_BUFFER_CHANNEL_ID | TADAGE_X_ENABLED |
-| Otona Koi | New | Unconfirmed: OTONA_X_HANDLE | OTONA_X_BUFFER_CHANNEL_ID | OTONA_X_ENABLED |
-| J.League | New | issho_j | JLEAGUE_X_BUFFER_CHANNEL_ID | JLEAGUE_X_ENABLED |
+| Site | Buffer account | X handle | Server configuration |
+| --- | --- | --- | --- |
+| Beauty | Existing | 7d2sz_biyo | BIYO_X_BUFFER_CHANNEL_ID / BIYO_X_ENABLED; not active |
+| Tadage | New | Unconfirmed | TADAGE_X_BUFFER_CHANNEL_ID / TADAGE_X_ENABLED; not active |
+| Otona Koi | New | Unconfirmed | OTONA_X_BUFFER_CHANNEL_ID / OTONA_X_ENABLED; not active |
+| J.League | New | issho_j | JLEAGUE_X_BUFFER_CHANNEL_ID / JLEAGUE_X_ENABLED; server setup incomplete |
 
-The existing account uses BUFFER_API_KEY. Set the second account's credential only in the deployment environment as BUFFER_MEDIA_API_KEY. Never put keys in this repository or chat. The new account has no fallback to the existing key.
+The existing account uses BUFFER_API_KEY. The second account must use its own BUFFER_MEDIA_API_KEY, only in deployment secrets. No fallback to the existing key is permitted. Never put credentials in the repository or chat.
 
-Threads publishing is disabled in app/main.py. The Threads channel was observed removed from the existing Buffer account on 2026-09-18. Its old channel ID must never be reused for beauty: authorize the beauty X account in Buffer and obtain its newly assigned channel ID.
+J.League was connected successfully to the new Buffer account. Channel `6aacf8e7ea19ca0bde760b9f` and the first public post were verified through Buffer Sent on 2026-09-18. Seven normal site-promotion posts for September 19–25 were created, then moved to Drafts following the owner's incident-first direction. They must not be requeued automatically. The everyday 12:15 Asia/Tokyo slot remains a scheduling preference, not proof that posts are queued.
 
-app/media_x_routes.py provides an explicit, verified send adapter. It rejects reserved channels (BUZZ NOW X, city/corporate X, old Threads), duplicate channel assignments, wrong handles, disconnected channels and missing settings. The safe read-only endpoint is /api/media-x/status. A configured credential is not proof of successful X authorization.
+The new Buffer API key and J.League server channel settings have not been configured. `app/media_x_routes.py` is a verified one-post send adapter, not a collector or scheduler. `/api/media-x/status` exposes actual credential/channel readiness separately from editorial policy. A recorded policy does not mean unattended publication is active.
 
-All four enable variables default to false. Beauty creation is confirmed by screenshot, and the owner supplied J.League's handle @issho_j on 2026-09-18. Tadage and Otona Koi account registration is not confirmed. X authorization and channel configuration for all four accounts remain pending. This change does not start a scheduler or publish any new posts. The caller must durably claim/deduplicate each post before send_verified; an uncertain result must never be blindly retried. Buffer acceptance is recorded separately from verified X publication.
+The adapter rejects reserved channels (BUZZ NOW X, city/corporate X and old Threads), duplicate channel assignments, wrong handles, disconnected channels and missing settings. The caller must durably reserve each post before sending; uncertain responses must not be retried blindly. Buffer acceptance and actual X publication are distinct.
 
-Before activation, confirm account ownership, identity, destination URL and posting content; set the relevant enable variable only after these are ready. Beauty account creation is confirmed by the owner's screenshot. J.League's @issho_j was supplied by the owner; the other two X handles are not confirmed yet. J.League's final public URL must be checked before publishing links.
+Threads publishing remains disabled in `app/main.py`. Its channel was observed removed on 2026-09-18 and its old ID must not be reused for beauty. Beauty's X account creation is confirmed; it is not connected. Tadage and Otona account creation is unconfirmed. All four server enable flags default to false.

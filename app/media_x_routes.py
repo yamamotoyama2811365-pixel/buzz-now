@@ -6,6 +6,7 @@ Buffer account and must never fall back to the existing account's credentials.
 import json
 import os
 import re
+from .x_editorial_policy import POLICIES, VERSION as EDITORIAL_VERSION
 
 SITES = {
     'biyo': ('美容医療コンパス', 'existing', 'BIYO', '7d2sz_biyo'),
@@ -39,6 +40,8 @@ def status(environ=None):
             'channel_configured': bool(c['channel_id']),
             'ready_to_verify': bool(c['enabled'] and c['api_key'] and c['channel_id'] and c['handle']),
         }
+        if site == 'jleague':
+            result[site]['editorial_policy'] = {'version': EDITORIAL_VERSION, **POLICIES['jleague']}
     return {'accounts': result, 'scheduler_started': False,
             'note': 'Configuration only. No automatic publication has been enabled by this module.'}
 

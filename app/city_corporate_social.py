@@ -7,6 +7,7 @@ already published by the two sites; no generated claims or inferred causes.
 import os
 import json
 from . import city_corporate_digest as digest
+from . import x_editorial_policy as editorial
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -85,6 +86,25 @@ def _bankruptcy_candidate(dsn, seen):
     return None
 
 
+def _incident_candidate(dsn, seen, today):
+    """Promote already-published, attributed incidents within existing slots."""
+    if not dsn:return None
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    con=psycopg2.connect(dsn,connect_timeout=5)
+    try:
+        with con.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SET LOCAL statement_timeout = '8s'")
+            cur.execute("""SELECT id,kind,company,prefecture,industry,reported_date,payload
+              FROM corporate_events WHERE published AND kind IN ('bankruptcy','risk')
+                AND reported_date BETWEEN %s AND %s
+                AND company NOT IN ('運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗')
+                AND COALESCE(payload->>'source_url','')<>''
+              ORDER BY reported_date DESC,id DESC LIMIT 100""", [today-timedelta(days=2),today])
+            return editorial.select_corporate([dict(r) for r in cur.fetchall()],seen,today)
+    finally:con.close()
+
+
 def _hashtags(*parts):
     tags=[]
     for value in parts:
@@ -134,17 +154,19 @@ def run(shared_db, sender, now=None):
         # keep a small durable sent-key set in system_state; no external-user data is stored.
         rows=c.execute("SELECT key FROM system_state WHERE key LIKE ?",(PREFIX+'sent:%',)).fetchall()
         seen={r['key'].removeprefix(PREFIX+'sent:') for r in rows}
-        regional = slot['kind']=='bankruptcy' and slot['start'].hour==18
+        incident = _incident_candidate(cfg['corporate_dsn'],seen,now.astimezone(JST).date())
+        regional = not incident and slot['kind']=='bankruptcy' and slot['start'].hour==18
         doc = digest.candidate(cfg['corporate_dsn'],seen,now.astimezone(JST).date()) if regional else None
-        candidate = (('digest:'+doc['id'], doc) if doc else None) if regional else (_close_candidate(cfg['open_close_dsn'],seen) if slot['kind']=='close' else _bankruptcy_candidate(cfg['corporate_dsn'],seen))
+        candidate = incident or ((('digest:'+doc['id'], doc) if doc else None) if regional else (_close_candidate(cfg['open_close_dsn'],seen) if slot['kind']=='close' else _bankruptcy_candidate(cfg['corporate_dsn'],seen)))
         _state_set(c,'slot:'+slot['key'],'reserved');c.commit()
         if not candidate:
             _state_set(c,'slot:'+slot['key'],'no_candidate');c.commit()
             return {'sent':0,'reason':'no_fresh_candidate','kind':slot['kind']}
         key,row=candidate
-        text=digest.post_text(doc) if regional else (close_text(row) if slot['kind']=='close' else bankruptcy_text(row))
+        post_kind='incident' if incident else slot['kind']
+        text=editorial.corporate_text(row) if incident else (digest.post_text(doc) if regional else (close_text(row) if slot['kind']=='close' else bankruptcy_text(row)))
         # X limit is 280 characters; keep link/hashtags but never truncate factual names into ambiguity.
-        if not regional and len(text)>275:
+        if not incident and not regional and len(text)>275:
             text='\n'.join(text.splitlines()[:3])+'\n'+('詳細 → https://open-close-map.onrender.com/store/'+str(row['id']) if slot['kind']=='close' else '詳細 → https://buzz-now-1.onrender.com/corporate/company/'+str(row['id']))
         # Reserve the item before submitting. An uncertain response must not
         # cause the same bankruptcy/closure to be sent again in another slot.
@@ -158,16 +180,16 @@ def run(shared_db, sender, now=None):
             result=sender(cfg['channel_id'],text,'','shareNow')
         except Exception:
             _state_set(c,'slot:'+slot['key'],'uncertain');c.commit()
-            return {'sent':0,'reason':'submission_uncertain','kind':slot['kind']}
+            return {'sent':0,'reason':'submission_uncertain','kind':post_kind}
 
         if regional:
             _state_set(c,'tracking:'+doc['id'],json.dumps({'format':'regional','utm_content':doc['id'],'attempted_at':now.isoformat(),'buffer_post_id':result.get('post_id'),'buffer_accepted':bool(result.get('ok'))}))
         if result.get('ok'):
             _state_set(c,'sent:'+key,now.isoformat())
             _state_set(c,'slot:'+slot['key'],'sent');c.commit()
-            return {'sent':1,'kind':slot['kind'],'slot':slot['key'],'post_id':result.get('post_id'),'source_key':key}
+            return {'sent':1,'kind':post_kind,'slot':slot['key'],'post_id':result.get('post_id'),'source_key':key}
         _state_set(c,'slot:'+slot['key'],'failed:'+str(result.get('reason','unknown'))[:100]);c.commit()
-        return {'sent':0,'reason':result.get('reason','buffer_submission_failed'),'kind':slot['kind']}
+        return {'sent':0,'reason':result.get('reason','buffer_submission_failed'),'kind':post_kind}
 
 
 def status():
@@ -177,5 +199,7 @@ def status():
             'daily_cap':cfg['daily_cap'],'timezone':'Asia/Tokyo',
             'slots':[{'time':f'{h:02d}:{m:02d}','kind':kind} for h,m,kind in SLOTS],
             'account_role':'街と企業の変化速報（X専用）',
+            'editorial_policy':{'version':editorial.VERSION,**editorial.POLICIES['corporate'],
+                                'priority_lookback_days':3,'scope':'published corporate_events only; no additional news collector'},
             'regional_pilot':{'version':digest.VERSION,'slot':'18:15','target_minimum_items':3,'fallback_minimum_items':1,'maximum_items':5,'period_days':7,'insufficient_items':'expand_prefecture_block_eastwest_national','comparison_slot':'10:30'}}
 
