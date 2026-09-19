@@ -84,6 +84,14 @@ SITES = [
         "ga4": "553939743",
         "first_party": "network",
     },
+    {
+        "id": "issho-jleague",
+        "name": "一生Jリーグ",
+        "url": "https://issho-jleague.pages.dev/",
+        "gsc": "https://issho-jleague.pages.dev/",
+        "ga4": "",
+        "first_party": "jleague_api",
+    },
 ]
 
 _token_cache: dict[str, Any] = {}
@@ -229,6 +237,20 @@ def collect_first_party(target_day: date | None = None) -> dict[str, Any]:
                        WHERE day=%s""",
                     (day,),
                 )
+            elif mode == "jleague_api":
+                with httpx.Client(timeout=20) as client:
+                    response=client.get(
+                        "https://issho-jleague.onrender.com/api/fan/traffic",
+                        params={"day":day.isoformat()},
+                    )
+                    response.raise_for_status()
+                    payload=response.json()
+                total=int(payload.get("pageviews") or 0)
+                sources={str(k):int(v or 0) for k,v in (payload.get("sources") or {}).items()}
+                top=[
+                    {"path":str(row.get("path") or "/"),"source":"","views":int(row.get("views") or 0)}
+                    for row in (payload.get("top_pages") or [])[:10]
+                ]
             else:
                 continue
             details = {"sources": sources, "top_pages": top}
@@ -324,6 +346,9 @@ def collect_ga4(target_day: date | None = None) -> dict[str, Any]:
     errors = []
     for site in SITES:
         sid = site["id"]
+        if not site.get("ga4"):
+            out[sid] = {"configured": False}
+            continue
         try:
             total_report = _ga4_report(site["ga4"], ds, ds)
             totals = _metric_map(total_report)
@@ -651,7 +676,7 @@ def site_ops_dashboard(key: str = Query(default="")):
         for s in data["statuses"]
     )
     return HTMLResponse(f"""<!doctype html><html lang="ja"><head><meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1"><title>5サイト運用ダッシュボード</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1"><title>6サイト運用ダッシュボード</title>
     <style>
     body{{font-family:system-ui,-apple-system,sans-serif;background:#f5f7fb;color:#172033;margin:0}}
     main{{max-width:1100px;margin:auto;padding:28px 18px 60px}}h1{{margin-bottom:4px}}
@@ -663,7 +688,7 @@ def site_ops_dashboard(key: str = Query(default="")):
     .grid span{{font-size:11px;color:#667085}}section{{background:white;margin-top:16px;border-radius:16px;padding:18px;border:1px solid #e7eaf0}}
     li{{margin:8px 0}}small{{color:#667085}}a{{color:#2563eb}}@media(max-width:520px){{.grid{{grid-template-columns:repeat(2,1fr)}}}}
     </style></head><body><main>
-    <h1>5サイト運用ダッシュボード</h1>
+    <h1>6サイト運用ダッシュボード</h1>
     <div class="sub">独自PV + GA4 + Google Search Console + Bing / 無料API中心</div>
     <div class="cards">{''.join(cards)}</div>
     <section><h2>接続状態</h2><ul>{status_html or '<li>まだ収集履歴がありません</li>'}</ul>
