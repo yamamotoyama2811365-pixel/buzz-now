@@ -66,7 +66,15 @@ def records(kind='',prefecture='',industry='',q='',page=1):
     key=('records',kind,prefecture,industry,q,page)
     def read():
         total=query('SELECT count(*) AS n FROM corporate_events WHERE '+clause,args)[0]['n']
-        items=query('SELECT id,payload,updated_at FROM corporate_events WHERE '+clause+' ORDER BY reported_date DESC,id LIMIT 40 OFFSET %s',args+[(page-1)*40])
+        items=query(
+            'SELECT id,payload,updated_at FROM corporate_events WHERE '+clause+
+            " ORDER BY reported_date DESC,"
+            " CASE WHEN kind='bankruptcy' AND COALESCE(payload->>'liability_text','')<>'' THEN 3"
+            "      WHEN kind='bankruptcy' THEN 2"
+            "      WHEN kind='risk' THEN 1 ELSE 0 END DESC,"
+            " id DESC LIMIT 40 OFFSET %s",
+            args+[(page-1)*40]
+        )
         return {'total':total,'items':items,'page':page}
     return cached(key,read)
 
@@ -119,12 +127,31 @@ def breadcrumbs(items):
     encoded=json.dumps(data,ensure_ascii=False).replace('<','\\u003c').replace('>','\\u003e').replace('&','\\u0026')
     return '<nav class="small" aria-label="パンくずリスト">'+links+'</nav><script type="application/ld+json">'+encoded+'</script>'
 
+def sensational_headline(p):
+    """Use verified facts to make bankruptcy headlines stronger without adding claims."""
+    company=(p.get('company') or '企業').strip()
+    if p.get('kind')!='bankruptcy':
+        return company
+    stage=(p.get('stage') or '倒産関連').replace('（報道）','').strip()
+    action={
+        '破産申請準備':'破産申請準備へ',
+        '破産関連':'破産関連',
+        '民事再生':'民事再生へ',
+        '特別清算':'特別清算',
+        '会社更生':'会社更生へ',
+    }.get(stage,stage)
+    debt=(p.get('liability_text') or '').strip()
+    prefix=('負債'+debt+'　') if debt else ''
+    area='・'.join(x for x in (p.get('prefecture'),p.get('industry')) if x)
+    tail=('　'+area) if area and not debt else ''
+    return prefix+'「'+company+'」が'+action+tail
+
 def cards(items):
     if not items:return '<p class="empty">該当する情報はありません。地域や業種の条件を変えてお試しください。</p>'
     html=''
     for r in items:
         p=r['payload'];kind=p['kind']; label='倒産速報' if kind=='bankruptcy' else '公表情報' if kind=='risk' else '新規法人'
-        html+='<article class="row"><div><span class="tag '+kind+'">'+label+'</span><span class="meta">'+e(p['reported_date'])+' · '+e(p.get('prefecture') or '地域確認中')+'</span></div><h3><a href="'+ROOT+'/company/'+r['id']+'">'+e(p['company'])+'</a></h3><div>'+e(p['stage'])+'</div><div class="meta">'+e(p.get('industry') or '業種未確認')+'　｜　出典：'+e(p['source_name'])+'</div></article>'
+        html+='<article class="row"><div><span class="tag '+kind+'">'+label+'</span><span class="meta">'+e(p['reported_date'])+' · '+e(p.get('prefecture') or '地域確認中')+'</span></div><h3><a href="'+ROOT+'/company/'+r['id']+'">'+e(sensational_headline(p))+'</a></h3><div>'+e(p['company'])+'　｜　'+e(p['stage'])+'</div><div class="meta">'+e(p.get('industry') or '業種未確認')+'　｜　出典：'+e(p['source_name'])+'</div></article>'
     return html
 
 def filters(kind,pref,industry,q):
@@ -218,8 +245,9 @@ def industry_page(industry:str,page:int=Query(1,ge=1,le=10000),kind:str=''):
 def detail(event_id:str):
     rows=query('SELECT id,payload FROM corporate_events WHERE id=%s AND published',[event_id])
     if not rows or rows[0]['payload']['company'] in {'運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗'}:raise HTTPException(404)
-    p=rows[0]['payload']; title=p['company']+'｜'+p['stage']
+    p=rows[0]['payload']; headline=sensational_headline(p); title=headline
     facts=[('状況',p['stage'])]
+    if p.get('liability_text'):facts.append(('負債',p['liability_text']))
     if p['kind']=='bankruptcy':
         if p.get('event_date'):facts.append((p.get('event_date_label') or '手続日',p['event_date']))
         facts.append(('報道日',p['reported_date']))
@@ -270,10 +298,10 @@ def detail(event_id:str):
     trail.append((p['company'],'/company/'+event_id))
     browse='<h2>地域・業種の掲載情報を見る</h2><div class="links">'+''.join('<a href="'+ROOT+url+'">'+e(label)+'</a>' for label,url in links)+'</div>'
     date_description=((p.get('event_date_label') or '手続日')+' '+p['event_date']+'、報道日 '+p['reported_date'] if p.get('event_date') else p['reported_date'])
-    description=p['company']+('（'+p['prefecture']+'）' if p.get('prefecture') else '')+'の'+topic+'。'+date_description+'、'+p['stage']+'。'
+    description=(headline+'。' if p['kind']=='bankruptcy' else p['company']+('（'+p['prefecture']+'）' if p.get('prefecture') else '')+'の'+topic+'。')+date_description+'、'+p['stage']+'。'
     description+=('業種：'+p['industry']+'。' if p.get('industry') else '')+'所在地と公開情報を出典付きで整理しています。'
     if p['kind']=='registration': description+='表示日は法人番号指定日で、設立日とは限りません。'
-    return shell(title,'<div class="detail">'+breadcrumbs(trail)+'<div class="panel"><div class="eyebrow">COMPANY REPORT</div><h1>'+e(p['company'])+'</h1><span class="tag '+p['kind']+'">'+e(p['stage'])+'</span><p>'+paragraph+'</p>'+facts_html+context_html+web_html+note+'<p><a class="source" href="'+e(p['source_url'],quote=True)+'" target="_blank" rel="noopener noreferrer">出典：'+e(p['source_name'])+'で確認する ↗</a></p><h2>関連情報を調べる</h2><p><a class="source" href="'+search_url+'" target="_blank" rel="noopener noreferrer">会社名・所在地でGoogleマップを検索 ↗</a></p><p class="small">検索結果のリンクです。同名企業との一致、営業状況、口コミは未確認です。</p>'+browse+'</div></div>','/company/'+event_id,description=description)
+    return shell(title,'<div class="detail">'+breadcrumbs(trail)+'<div class="panel"><div class="eyebrow">COMPANY REPORT</div><h1>'+e(headline)+'</h1><p class="meta">'+e(p['company'])+'</p><span class="tag '+p['kind']+'">'+e(p['stage'])+'</span><p>'+paragraph+'</p>'+facts_html+context_html+web_html+note+'<p><a class="source" href="'+e(p['source_url'],quote=True)+'" target="_blank" rel="noopener noreferrer">出典：'+e(p['source_name'])+'で確認する ↗</a></p><h2>関連情報を調べる</h2><p><a class="source" href="'+search_url+'" target="_blank" rel="noopener noreferrer">会社名・所在地でGoogleマップを検索 ↗</a></p><p class="small">検索結果のリンクです。同名企業との一致、営業状況、口コミは未確認です。</p>'+browse+'</div></div>','/company/'+event_id,description=description)
 @app.get('/signals')
 def signals():
     a=analysis();body='<div class="eyebrow">REGIONAL SIGNALS</div><h1>地域・業種の動き</h1><p>同じ地域・業種で、どのような事案が報道されているか。</p><div class="notice">全国の倒産統計や個別企業の信用評価ではありません。当サイトが収集し、会社名と地域で仮に名寄せした事案の参考集計です。業種不明の事案は分類別集計から除外します。</div>'
