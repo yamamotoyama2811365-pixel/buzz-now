@@ -7,9 +7,25 @@ AUDIENCE='https://buzz-now-1.onrender.com/corporate'
 REPO='yamamotoyama2811365-pixel/-corporate-signal'
 REPO_ID='1363535163'
 WORKFLOW=REPO+'/.github/workflows/collect.yml@refs/heads/main'
+BACKUP_REPO='yamamotoyama2811365-pixel/buzz-now'
+BACKUP_REPO_ID='1351407859'
+BACKUP_WORKFLOW=BACKUP_REPO+'/.github/workflows/corporate-collection-backup.yml@refs/heads/main'
+
 def allowed(c):
-    subjects={'repo:'+REPO+':ref:refs/heads/main','repo:yamamotoyama2811365-pixel@321271816/-corporate-signal@'+REPO_ID+':ref:refs/heads/main'}
-    return c.get('repository')==REPO and str(c.get('repository_id'))==REPO_ID and c.get('ref')=='refs/heads/main' and c.get('workflow_ref')==WORKFLOW and c.get('event_name') in {'schedule','workflow_dispatch','push'} and c.get('sub') in subjects
+    event_ok=c.get('event_name') in {'schedule','workflow_dispatch','push'}
+    ref_ok=c.get('ref')=='refs/heads/main'
+    if not (event_ok and ref_ok):
+        return False
+    repo=str(c.get('repository') or '')
+    repo_id=str(c.get('repository_id') or '')
+    workflow_ref=str(c.get('workflow_ref') or '')
+    sub=str(c.get('sub') or '')
+    if repo==REPO and repo_id==REPO_ID and workflow_ref==WORKFLOW:
+        subjects={'repo:'+REPO+':ref:refs/heads/main','repo:yamamotoyama2811365-pixel@321271816/-corporate-signal@'+REPO_ID+':ref:refs/heads/main'}
+        return sub in subjects
+    if repo==BACKUP_REPO and repo_id==BACKUP_REPO_ID and workflow_ref==BACKUP_WORKFLOW:
+        return sub=='repo:'+BACKUP_REPO+':ref:refs/heads/main'
+    return False
 @lru_cache(maxsize=1)
 def jwks(): return jwt.PyJWKClient(ISSUER+'/.well-known/jwks',cache_jwk_set=True,lifespan=300,timeout=5)
 def authorize(request):
