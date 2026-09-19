@@ -132,9 +132,10 @@ GDELT_NEWS_ENABLED = os.getenv("GDELT_NEWS_ENABLED", "true").lower() == "true"
 GDELT_NEWS_LIMIT = max(0, min(15, int(os.getenv("GDELT_NEWS_LIMIT", "8"))))
 GDELT_DOC_API = "https://api.gdeltproject.org/api/v2/doc/doc"
 
-# V35.44: fast, source-backed entertainment incident discovery.
-# Rumour-only allegations are excluded: automatic pickup requires a fresh report
-# from a known publisher plus arrest/referral/indictment language.
+# V35.45: fast, source-backed entertainment/scandal discovery.
+# Rumour-only allegations are excluded. Automatic pickup requires a fresh report
+# from a known publisher plus a concrete event phrase. Allegations remain
+# attributed as "報道" and are never rewritten as established facts.
 BREAKING_INCIDENT_NEWS_ENABLED = os.getenv("BREAKING_INCIDENT_NEWS_ENABLED", "true").lower() == "true"
 BREAKING_INCIDENT_SCAN_MINUTES = max(5, int(os.getenv("BREAKING_INCIDENT_SCAN_MINUTES", "10")))
 BREAKING_INCIDENT_LOOKBACK_HOURS = max(3, min(48, int(os.getenv("BREAKING_INCIDENT_LOOKBACK_HOURS", "24"))))
@@ -144,9 +145,20 @@ BREAKING_INCIDENT_QUERIES = (
     "インフルエンサー 逮捕 when:1d",
     "タレント OR アイドル 逮捕 when:1d",
     "(コカイン OR 覚醒剤 OR 大麻 OR 麻薬) (逮捕 OR 送検) (芸能人 OR インフルエンサー OR タレント) when:1d",
+    "(俳優 OR 女優 OR タレント OR アイドル OR 芸人 OR 歌手) (不倫 OR 離婚 OR 交際) (発表 OR 謝罪 OR 報道) when:1d",
+    "(俳優 OR 女優 OR タレント OR アイドル OR 芸人 OR 歌手) (活動休止 OR 契約解除 OR 降板 OR 脱退 OR 解散) when:1d",
 )
 BREAKING_INCIDENT_ACTION_TERMS = ("現行犯逮捕", "再逮捕", "逮捕", "書類送検", "送検", "起訴")
 BREAKING_INCIDENT_DRUG_TERMS = ("コカイン", "覚醒剤", "大麻", "麻薬", "違法薬物", "薬物")
+BREAKING_ENTERTAINMENT_EVENT_TERMS = (
+    "不倫報道", "不倫を認め", "不倫を謝罪", "離婚を発表", "離婚発表",
+    "交際を発表", "交際発表", "活動休止", "契約解除", "契約終了",
+    "降板", "脱退", "解散を発表", "解散発表",
+)
+BREAKING_ENTERTAINMENT_PERSON_TERMS = (
+    "俳優", "女優", "タレント", "アイドル", "芸人", "歌手", "声優",
+    "モデル", "インフルエンサー", "YouTuber", "ユーチューバー",
+)
 BREAKING_INCIDENT_TRUSTED_PUBLISHERS = (
     "NHK", "共同通信", "時事通信", "朝日新聞", "読売新聞", "毎日新聞", "日本経済新聞",
     "TBS", "NEWS DIG", "FNN", "フジテレビ", "テレビ朝日", "テレ朝", "日テレ", "日本テレビ",
@@ -1560,13 +1572,14 @@ def _fetch_google_news_rss_for_keyword(keyword, maxrecords=8):
         return [], f"{type(e).__name__}: {e}"
 
 def _breaking_incident_subject(title: str) -> str:
-    """Extract a conservative public-facing subject from an incident headline."""
+    """Extract a conservative public-facing subject from an entertainment headline."""
     headline = re.sub(r"\s+", " ", str(title or "")).strip()
     headline = re.sub(r"^[【\[]?(?:速報|独自|続報)[】\]]?\s*", "", headline)
+    event_terms = "|".join(map(re.escape, BREAKING_ENTERTAINMENT_EVENT_TERMS))
     for m in re.finditer(r"「([^」]{2,24})」", headline):
         alias = _clean_keyword(m.group(1))
-        tail = headline[m.end():m.end()+40]
-        if alias and re.search(r"(?:として活動|こと|逮捕|容疑者|送検|起訴)", tail):
+        tail = headline[m.end():m.end()+55]
+        if alias and re.search(rf"(?:として活動|こと|逮捕|容疑者|送検|起訴|{event_terms})", tail):
             return alias[:40]
     m = re.search(r"([一-龠々]{3,10})容疑者", headline)
     if m:
@@ -1575,14 +1588,26 @@ def _breaking_incident_subject(title: str) -> str:
             if name.startswith(prefix) and len(name) > len(prefix) + 1:
                 name = name[len(prefix):]
         return _clean_keyword(name)[:40]
-    m = re.search(r"「([^」]{2,24})」[^。]{0,28}(?:逮捕|送検|起訴)", headline)
+    m = re.search(rf"([一-龠々ぁ-んァ-ヶー]{{3,14}})[^。]{{0,35}}(?:逮捕|送検|起訴|{event_terms})", headline)
+    if m:
+        name = m.group(1)
+        for prefix in BREAKING_ENTERTAINMENT_PERSON_TERMS:
+            if name.startswith(prefix) and len(name) > len(prefix) + 1:
+                name = name[len(prefix):]
+        return _clean_keyword(name)[:40]
+    m = re.search(rf"「([^」]{{2,24}})」[^。]{{0,35}}(?:逮捕|送検|起訴|{event_terms})", headline)
     return _clean_keyword(m.group(1))[:40] if m else ""
 
 
 def _breaking_incident_article_ok(article, now=None) -> bool:
     title = " ".join(str(article.get("title") or "").split()).strip()
     publisher = " ".join(str(article.get("publisher") or "").split()).strip()
-    if not title or not any(term in title for term in BREAKING_INCIDENT_ACTION_TERMS):
+    has_incident = any(term in title for term in BREAKING_INCIDENT_ACTION_TERMS)
+    has_entertainment_event = any(term in title for term in BREAKING_ENTERTAINMENT_EVENT_TERMS)
+    if not title or not (has_incident or has_entertainment_event):
+        return False
+    if has_entertainment_event and not any(term.casefold() in title.casefold() for term in BREAKING_ENTERTAINMENT_PERSON_TERMS):
+        # Non-criminal scandal pickup is intentionally narrower than arrest pickup.
         return False
     if not any(token.casefold() in publisher.casefold() for token in BREAKING_INCIDENT_TRUSTED_PUBLISHERS):
         return False
@@ -1618,10 +1643,18 @@ def collect_breaking_incident_news(c, ts, limit=None):
                 continue
             seen_urls.add(url)
             title = " ".join(str(article.get("title") or "").split())
-            score = 99.0 if any(term in title for term in BREAKING_INCIDENT_DRUG_TERMS) else 96.0
+            if any(term in title for term in BREAKING_INCIDENT_DRUG_TERMS):
+                score = 100.0
+                source_label = "速報・薬物事件報道"
+            elif any(term in title for term in BREAKING_INCIDENT_ACTION_TERMS):
+                score = 98.0
+                source_label = "速報・事件報道"
+            else:
+                score = 97.0
+                source_label = "速報・芸能報道"
             upsert_real_trend(c, subject, source, score, score, url, url, ts)
             item = dict(article)
-            item["source_label"] = "速報・事件報道"
+            item["source_label"] = source_label
             _store_article_sources(c, subject, [item], ts)
             accepted += 1
     _collector_state(c, source, "ok", " | ".join(diagnostics)[:900], accepted, ts)
@@ -1629,7 +1662,7 @@ def collect_breaking_incident_news(c, ts, limit=None):
 
 
 def _breaking_incident_source_recent(source, now=None) -> bool:
-    if str(source.get("source_label") or "") != "速報・事件報道":
+    if str(source.get("source_label") or "") not in {"速報・事件報道", "速報・薬物事件報道", "速報・芸能報道"}:
         return False
     published = _parse_news_datetime(source.get("published_at"))
     if not published:
@@ -3426,15 +3459,22 @@ def _search_intent_priority(keyword: str, why_now: str = "", category: str = "")
 
     # Strong traffic categories: people, incidents, TV, products, sports, entertainment.
     strong_terms = [
-        "逮捕","事件","事故","食中毒","炎上","死去","結婚","離婚","不倫","謝罪",
+        "逮捕","事件","炎上","死去","結婚","離婚","不倫","謝罪","薬物","覚醒剤","大麻","コカイン",
+        "活動休止","契約解除","降板","脱退","解散",
         "ドラマ","映画","番組","放送","出演","最終回","打ち切り",
-        "発売","新商品","限定","予約","価格","値上げ",
         "試合","先発","優勝","移籍","引退","選手","監督",
         "俳優","女優","アイドル","芸人","歌手","声優","タレント","snow man","sixTONES",
     ]
     for term in strong_terms:
         if term.lower() in ctx:
             score += 3
+
+    # The site owner observed weak click response from routine economic news.
+    # Keep genuinely huge events available, but demote ordinary market/price stories.
+    economic_terms = ("決算","株価","為替","金利","日経平均","経済指標","値上げ","価格改定","企業業績")
+    entertainment_context = any(x in ctx for x in ("俳優","女優","アイドル","芸人","歌手","声優","タレント","逮捕","不倫","薬物","炎上"))
+    if not entertainment_context and any(term in ctx for term in economic_terms):
+        score -= 5
 
     # Japanese personal-name-ish strings often search well.
     if re.fullmatch(r"[一-龠々〆ヵヶぁ-んァ-ヶー]{3,12}", k):
