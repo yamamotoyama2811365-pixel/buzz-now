@@ -1590,7 +1590,7 @@ def _breaking_incident_subject(title: str) -> str:
         return _clean_keyword(name)[:40]
     roles = "|".join(map(re.escape, BREAKING_ENTERTAINMENT_PERSON_TERMS))
     m = re.search(
-        rf"(?:{roles})(?:の|「|『|\s)*([一-龠々ぁ-んァ-ヶー]{{2,12}})(?:」|』)?(?:が|は|、|を)?[^。]{{0,35}}(?:逮捕|送検|起訴|{event_terms})",
+        rf"(?:{roles})(?:の|「|『|\s)*([一-龠々ぁ-んァ-ヶー]{{2,12}}?)(?:」|』)?(?:が|は|、|を)?[^。]{{0,35}}(?:逮捕|送検|起訴|{event_terms})",
         headline,
     )
     if m:
