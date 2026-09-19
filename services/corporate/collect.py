@@ -64,6 +64,10 @@ def article_facts(soup,url,title,published):
         m=re.search(r'「[^」]+」は[（(]([^）)]+)[）)]に所在',description)
         if m:address=re.split('、|,|法人番号|登記記録上|商業登記',m[1])[0].strip()
     row['address']=address[:300]
+    debt=re.search(r'負債(?:総額|額)?(?:は|が|、|：|:)?\s*((?:約\s*)?[0-9０-９][0-9０-９,，.．]*(?:億(?:[0-9０-９][0-9０-９,，.．]*万)?|万)?円)',description)
+    if debt:
+        amount=re.sub(r'\s+','',debt.group(1)).translate(str.maketrans('０１２３４５６７８９，．','0123456789,.'))
+        row['liability_text']=amount
     # Do not attach one company's number to a multi-company report.
     numbers=set(re.findall(r'法人番号[：:\s]*([0-9]{13})(?![0-9])',description))
     if len(numbers)==1:row['corporate_number']=next(iter(numbers))
