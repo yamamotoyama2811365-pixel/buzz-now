@@ -40,6 +40,28 @@ class BreakingIncidentNewsTest(unittest.TestCase):
         }
         self.assertFalse(main._breaking_incident_article_ok(article, self.now))
 
+    def test_accepts_verified_entertainment_suspension(self):
+        article = {
+            "title": "俳優の山田太郎が活動休止を発表 所属事務所がコメント",
+            "publisher": "ORICON NEWS",
+            "published_at": "Thu, 17 Sep 2026 10:30:00 GMT",
+        }
+        self.assertTrue(main._breaking_incident_article_ok(article, self.now))
+        self.assertEqual(main._breaking_incident_subject(article["title"]), "山田太郎")
+
+    def test_rejects_unattributed_affair_rumour(self):
+        article = {
+            "title": "人気俳優に不倫疑惑 SNSで噂広がる",
+            "publisher": "ORICON NEWS",
+            "published_at": "Thu, 17 Sep 2026 10:30:00 GMT",
+        }
+        self.assertFalse(main._breaking_incident_article_ok(article, self.now))
+
+    def test_routine_economic_topic_is_demoted(self):
+        entertainment = main._search_intent_priority("山田太郎", "俳優が活動休止を発表", "芸能")
+        economy = main._search_intent_priority("ドル円", "為替と金利の最新ニュース", "経済")
+        self.assertGreater(entertainment, economy)
+
     def test_queries_are_freshness_bounded(self):
         self.assertTrue(main.BREAKING_INCIDENT_QUERIES)
         self.assertTrue(all("when:1d" in q for q in main.BREAKING_INCIDENT_QUERIES))
