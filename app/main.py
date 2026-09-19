@@ -1588,13 +1588,16 @@ def _breaking_incident_subject(title: str) -> str:
             if name.startswith(prefix) and len(name) > len(prefix) + 1:
                 name = name[len(prefix):]
         return _clean_keyword(name)[:40]
-    m = re.search(rf"([一-龠々ぁ-んァ-ヶー]{{3,14}})[^。]{{0,35}}(?:逮捕|送検|起訴|{event_terms})", headline)
+    roles = "|".join(map(re.escape, BREAKING_ENTERTAINMENT_PERSON_TERMS))
+    m = re.search(
+        rf"(?:{roles})(?:の|「|『|\s)*([一-龠々ぁ-んァ-ヶー]{{2,12}})(?:」|』)?(?:が|は|、|を)?[^。]{{0,35}}(?:逮捕|送検|起訴|{event_terms})",
+        headline,
+    )
     if m:
-        name = m.group(1)
-        for prefix in BREAKING_ENTERTAINMENT_PERSON_TERMS:
-            if name.startswith(prefix) and len(name) > len(prefix) + 1:
-                name = name[len(prefix):]
-        return _clean_keyword(name)[:40]
+        return _clean_keyword(m.group(1))[:40]
+    m = re.search(rf"([一-龠々]{{3,8}})(?:が|は|、)[^。]{{0,35}}(?:逮捕|送検|起訴|{event_terms})", headline)
+    if m:
+        return _clean_keyword(m.group(1))[:40]
     m = re.search(rf"「([^」]{{2,24}})」[^。]{{0,35}}(?:逮捕|送検|起訴|{event_terms})", headline)
     return _clean_keyword(m.group(1))[:40] if m else ""
 
