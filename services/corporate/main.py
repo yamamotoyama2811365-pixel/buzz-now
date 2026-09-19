@@ -245,7 +245,7 @@ def industry_page(industry:str,page:int=Query(1,ge=1,le=10000),kind:str=''):
 def detail(event_id:str):
     rows=query('SELECT id,payload FROM corporate_events WHERE id=%s AND published',[event_id])
     if not rows or rows[0]['payload']['company'] in {'運営会社','老舗','同社','会社','企業','事業者','飲食店','店舗'}:raise HTTPException(404)
-    p=rows[0]['payload']; headline=sensational_headline(p); title=headline
+    p=rows[0]['payload']; headline=sensational_headline(p); title=headline if p.get('kind')=='bankruptcy' else p['company']+'｜'+p['stage']
     facts=[('状況',p['stage'])]
     if p.get('liability_text'):facts.append(('負債',p['liability_text']))
     if p['kind']=='bankruptcy':
