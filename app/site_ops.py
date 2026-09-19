@@ -34,6 +34,7 @@ ACCESS_TOKEN = os.getenv("SITE_OPS_TOKEN", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 CORPORATE_DATABASE_URL = os.getenv("CORPORATE_DATABASE_URL", "").strip()
 OPEN_CLOSE_DATABASE_URL = os.getenv("OPEN_CLOSE_DATABASE_URL", "").strip()
+JLEAGUE_DATABASE_URL = os.getenv("JLEAGUE_DATABASE_URL", "").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 BING_API_KEY = os.getenv("BING_WEBMASTER_API_KEY", "").strip()
 IS_LEGACY = os.getenv("RENDER_SERVICE_ID", "") == "srv-daa321mk1f9s73fbjfcg"
