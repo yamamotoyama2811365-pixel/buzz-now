@@ -238,19 +238,34 @@ def collect_first_party(target_day: date | None = None) -> dict[str, Any]:
                     (day,),
                 )
             elif mode == "jleague_api":
-                with httpx.Client(timeout=20) as client:
-                    response=client.get(
-                        "https://issho-jleague.onrender.com/api/fan/traffic",
-                        params={"day":day.isoformat()},
+                if JLEAGUE_DATABASE_URL:
+                    start_dt = datetime(day.year, day.month, day.day, tzinfo=JST)
+                    start_ts = int(start_dt.timestamp())
+                    end_ts = int((start_dt + timedelta(days=1)).timestamp())
+                    total, sources, top = _query_counter(
+                        JLEAGUE_DATABASE_URL,
+                        """SELECT COALESCE(path,'/') AS path,
+                                  COALESCE(source,'unknown') AS source,
+                                  COUNT(*) AS views
+                           FROM fan_views
+                           WHERE created_at >= %s AND created_at < %s
+                           GROUP BY COALESCE(path,'/'), COALESCE(source,'unknown')""",
+                        (start_ts, end_ts),
                     )
-                    response.raise_for_status()
-                    payload=response.json()
-                total=int(payload.get("pageviews") or 0)
-                sources={str(k):int(v or 0) for k,v in (payload.get("sources") or {}).items()}
-                top=[
-                    {"path":str(row.get("path") or "/"),"source":"","views":int(row.get("views") or 0)}
-                    for row in (payload.get("top_pages") or [])[:10]
-                ]
+                else:
+                    with httpx.Client(timeout=20) as client:
+                        response=client.get(
+                            "https://issho-jleague.onrender.com/api/fan/traffic",
+                            params={"day":day.isoformat()},
+                        )
+                        response.raise_for_status()
+                        payload=response.json()
+                    total=int(payload.get("pageviews") or 0)
+                    sources={str(k):int(v or 0) for k,v in (payload.get("sources") or {}).items()}
+                    top=[
+                        {"path":str(row.get("path") or "/"),"source":"","views":int(row.get("views") or 0)}
+                        for row in (payload.get("top_pages") or [])[:10]
+                    ]
             else:
                 continue
             details = {"sources": sources, "top_pages": top}
